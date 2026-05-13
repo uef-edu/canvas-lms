@@ -37,10 +37,10 @@ import {TextInput} from '@instructure/ui-text-input'
 import {Tray} from '@instructure/ui-tray'
 import {View} from '@instructure/ui-view'
 import {List} from '@instructure/ui-list'
-import {debounce} from 'lodash'
+import {debounce} from 'es-toolkit/compat'
 import {useScope as createI18nScope} from '@canvas/i18n'
 import pandasBalloonUrl from './images/pandasBalloon.svg'
-import {showFlashAlert} from '@canvas/alerts/react/FlashAlert'
+import {showFlashAlert} from '@instructure/platform-alerts'
 import {
   SCREENREADER_ALERT_TIMEOUT,
   SEARCH_RESULT_ANNOUNCEMENT_DELAY,
@@ -83,12 +83,12 @@ const EmptyState = () => (
     <Text as="p" size="content">
       {I18n.t('You can create rules that support your learning goals for the assignment.')}
     </Text>
-    <Text size="content">
-      {/* TODO: Replace with link to documentation in EGG-1588 */}
+    {/* TODO: Add text and replace with link to documentation in EGG-1588 */}
+    {/* <Text size="content">
       <Link href="#" isWithinText={false} target="_blank">
         {I18n.t('Learn more about how peer review allocation works.')}
       </Link>
-    </Text>
+    </Text> */}
   </Flex>
 )
 
@@ -115,13 +115,13 @@ interface DeleteFocusInfo {
 
 const PeerReviewAllocationRulesTray = ({
   assignmentId,
-  requiredPeerReviewsCount,
+  requiredPeerReviewsCount: requiredPeerReviewsCountProp,
   isTrayOpen,
   closeTray,
   canEdit = false,
 }: {
   assignmentId: string
-  requiredPeerReviewsCount: number
+  requiredPeerReviewsCount?: number
   isTrayOpen: boolean
   closeTray: () => void
   canEdit: boolean
@@ -144,12 +144,16 @@ const PeerReviewAllocationRulesTray = ({
   const createRuleButtonRef = useRef<HTMLButtonElement | null>(null)
   const screenReaderAnnouncementTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
-  const {rules, totalCount, loading, error, refetch} = useAllocationRules(
-    assignmentId,
-    currentPage,
-    itemsPerPage,
-    searchTerm,
-  )
+  const {
+    rules,
+    totalCount,
+    loading,
+    error,
+    refetch,
+    requiredPeerReviewsCount: fetchedRequiredPeerReviewsCount,
+  } = useAllocationRules(assignmentId, currentPage, itemsPerPage, searchTerm)
+
+  const requiredPeerReviewsCount = requiredPeerReviewsCountProp ?? fetchedRequiredPeerReviewsCount
 
   const prevLoadingRef = useRef(loading)
   const prevSearchTermRef = useRef(searchTerm)

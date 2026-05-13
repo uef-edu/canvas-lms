@@ -77,7 +77,7 @@ module Canvas
       yaml_string = DynamicSettings.find(tree: :private, cluster:, default_ttl:)["#{config_name}.yml", failsafe_cache: failsafe_param]
       YAML.safe_load(yaml_string || "{}") || {}
     rescue => e
-      Rails.logger.warn("Failed to load #{config_name} from Consul: #{e.message}")
+      Rails.logger&.warn("Failed to load #{config_name} from Consul: #{e.message}")
       {}
     end
 
@@ -106,6 +106,61 @@ module Canvas
   #
   def self.load_config_from_consul_only(config_name, **)
     load_config_from_consul(config_name, **, fallback_to_filesystem: false)
+  end
+
+  # Load configuration with filesystem (ConfigFile) priority, Consul fallback
+  #
+  # This is the preferred method for configs that need to be overridable
+  # via filesystem (e.g., in Kubernetes/trigger deployments) while still
+  # defaulting to Consul in standard deployments.
+  #
+  # Priority order:
+  #   1. ConfigFile.load (filesystem YAML)
+  #   2. Consul (DynamicSettings, no filesystem fallback to avoid double read)
+  #
+  # @param config_name [String] The config file name (without .yml extension)
+  # @param kwargs [Hash] Same keyword arguments as load_config_from_consul_only
+  # @return [Hash, nil] Configuration hash or nil if not found anywhere
+  #
+  # @example Basic usage
+  #   config = Canvas.load_config_file_or_consul("domain")
+  #
+  # @example With failsafe cache for critical configs
+  #   config = Canvas.load_config_file_or_consul("redis", failsafe_cache: true)
+  #
+  def self.load_config_file_or_consul(config_name, **)
+    ConfigFile.load(config_name) || load_config_from_consul_only(config_name, **)
+  end
+
+  # Fetches a set of related keys from a Consul subtree with failsafe_cache
+  # applied. Each returned value is YAML-parsed, so scalar files containing a
+  # bare `true`, `false`, or string come back as native Ruby types.
+  #
+  # When failsafe_cache is enabled, cached copies are written to
+  # config/<prefix>/<key>.cached, one file per key. The prefix subdirectory
+  # is created if it doesn't exist.
+  #
+  # @param prefix [String] Consul subtree prefix (e.g. "outgoing_mail")
+  # @param keys [Array<String>] Key names under that prefix
+  # @param tree [Symbol] Consul tree, defaults to :private
+  # @param failsafe_cache [Boolean] Whether to use on-disk failsafe caching
+  # @return [Hash<Symbol, Object>] parsed value per key (nil if absent)
+  #
+  # @example
+  #   Canvas.load_consul_subtree("outgoing_mail",
+  #     keys: %w[smtp.yml reply_to delivery_method reply_to_disabled])
+  #
+  def self.load_consul_subtree(prefix, keys:, tree: :private, failsafe_cache: true)
+    proxy = DynamicSettings.find(prefix, tree:, default_ttl: 5.minutes)
+    cache = false
+    if failsafe_cache
+      cache = Rails.root.join("config", prefix)
+      FileUtils.mkdir_p(cache)
+    end
+    keys.each_with_object({}) do |key, out|
+      raw = proxy[key, failsafe_cache: cache]
+      out[key.sub(/\.ya?ml\z/, "").to_sym] = raw.nil? ? nil : YAML.safe_load(raw)
+    end
   end
 
   def self.lookup_cache_store(config, cluster)
@@ -175,7 +230,7 @@ module Canvas
     revision&.delete("-")
   end
 
-  DEFAULT_RETRY_CALLBACK = lambda do |ex, tries|
+  DEFAULT_RETRY_CALLBACK = lambda do |ex, tries, *|
     Rails.logger.debug do
       {
         error_class: ex.class,
@@ -194,9 +249,9 @@ module Canvas
   def self.retriable(opts = {}, &)
     if opts[:on_retry]
       original_callback = opts[:on_retry]
-      opts[:on_retry] = lambda do |ex, tries|
-        original_callback.call(ex, tries)
-        DEFAULT_RETRY_CALLBACK.call(ex, tries)
+      opts[:on_retry] = lambda do |*args|
+        original_callback.call(*args)
+        DEFAULT_RETRY_CALLBACK.call(*args)
       end
     end
     options = DEFAULT_RETRIABLE_OPTIONS.merge(opts)
@@ -235,11 +290,13 @@ module Canvas
     timeout = (Setting.get("service_#{service_name}_timeout", nil) || options[:fallback_timeout_length] || 15).to_f
 
     exception_class = options[:exception_class]
+    cutoff = options[:cutoff]
+
     if Canvas.redis_enabled?
       if timeout_protection_method(service_name) == "percentage"
         percent_short_circuit_timeout(Canvas.redis, service_name, timeout, exception_class, &)
       else
-        short_circuit_timeout(Canvas.redis, service_name, timeout, exception_class, &)
+        short_circuit_timeout(Canvas.redis, service_name, timeout, exception_class, cutoff:, &)
       end
     else
       Timeout.timeout(timeout, exception_class, &)
@@ -262,9 +319,9 @@ module Canvas
      Setting.get("service_generic_cutoff", 3.to_s)).to_i
   end
 
-  def self.short_circuit_timeout(redis, service_name, timeout, exception_class, &)
+  def self.short_circuit_timeout(redis, service_name, timeout, exception_class, cutoff: nil, &)
     redis_key = "service:timeouts:#{service_name}:error_count"
-    cutoff = timeout_protection_cutoff(service_name)
+    cutoff ||= timeout_protection_cutoff(service_name)
 
     error_count = redis.get(redis_key, failsafe: 0)
     if error_count.to_i >= cutoff

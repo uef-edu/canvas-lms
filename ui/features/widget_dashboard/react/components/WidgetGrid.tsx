@@ -16,25 +16,23 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-import React, {useMemo, useCallback} from 'react'
+import React, {useMemo, useCallback, useState, useRef, useEffect} from 'react'
+import {flushSync} from 'react-dom'
 import {useScope as createI18nScope} from '@canvas/i18n'
 import {Text} from '@instructure/ui-text'
-import {View} from '@instructure/ui-view'
 import {IconAddLine} from '@instructure/ui-icons'
+import {Button} from '@instructure/ui-buttons'
 import type {Widget, WidgetConfig} from '../types'
 import {getWidget} from './WidgetRegistry'
 import {useResponsiveContext} from '../hooks/useResponsiveContext'
 import {useWidgetLayout} from '../hooks/useWidgetLayout'
+import {useWidgetDashboard} from '../hooks/useWidgetDashboardContext'
+import {WIDGET_TYPES} from '../constants'
 import {Flex} from '@instructure/ui-flex'
 import {DragDropContext, Droppable, Draggable, type DropResult} from 'react-beautiful-dnd'
+import AddWidgetModal from './AddWidgetModal/AddWidgetModal'
 
 const I18n = createI18nScope('widget_dashboard')
-
-const sortWidgetsForStacking = (widgets: Widget[]): Widget[] => {
-  return [...widgets].sort((a, b) => {
-    return a.position.relative - b.position.relative
-  })
-}
 
 const widgetsAsColumns = (widgets: Widget[]): Widget[][] => {
   const inColumns = widgets.reduce(
@@ -61,8 +59,16 @@ interface WidgetGridProps {
 const WidgetGrid: React.FC<WidgetGridProps> = ({config, isEditMode = false}) => {
   const {matches} = useResponsiveContext()
   const {moveWidgetToPosition} = useWidgetLayout()
-  const sortedWidgets = useMemo(() => sortWidgetsForStacking(config.widgets), [config.widgets])
-  const widgetsByColumn = useMemo(() => widgetsAsColumns(config.widgets), [config.widgets])
+  const {currentUserRoles} = useWidgetDashboard()
+  const isObserver = currentUserRoles?.includes('observer') ?? false
+  const visibleWidgets = useMemo(
+    () => config.widgets.filter(w => !(isObserver && w.type === WIDGET_TYPES.INBOX)),
+    [config.widgets, isObserver],
+  )
+  const widgetsByColumn = useMemo(() => widgetsAsColumns(visibleWidgets), [visibleWidgets])
+  const [addModalOpen, setAddModalOpen] = useState(false)
+  const [addPosition, setAddPosition] = useState<{col: number; row: number} | null>(null)
+  const lastDraggedWidgetIdRef = useRef<string | null>(null)
 
   const handleDragEnd = useCallback(
     (result: DropResult) => {
@@ -72,8 +78,8 @@ const WidgetGrid: React.FC<WidgetGridProps> = ({config, isEditMode = false}) => 
       const destCol = parseInt(result.destination.droppableId.replace('column-', ''), 10)
       const destIndex = result.destination.index
 
-      const destColWidgets = config.widgets
-        .filter(w => w.position.col === destCol)
+      const destColWidgets = visibleWidgets
+        .filter(w => w.position.col === destCol && w.id !== result.draggableId)
         .sort((a, b) => a.position.row - b.position.row)
 
       const targetRow =
@@ -83,10 +89,52 @@ const WidgetGrid: React.FC<WidgetGridProps> = ({config, isEditMode = false}) => 
             ? Math.max(...destColWidgets.map(w => w.position.row)) + 1
             : 1
 
-      moveWidgetToPosition(result.draggableId, destCol, targetRow)
+      lastDraggedWidgetIdRef.current = result.draggableId
+
+      flushSync(() => {
+        moveWidgetToPosition(result.draggableId, destCol, targetRow)
+      })
+
+      const dragHandle = document.querySelector(
+        `[data-testid="${lastDraggedWidgetIdRef.current}-drag-handle"]`,
+      ) as HTMLElement
+      if (dragHandle) {
+        dragHandle.focus()
+      }
+      lastDraggedWidgetIdRef.current = null
     },
-    [moveWidgetToPosition, config.widgets],
+    [moveWidgetToPosition, visibleWidgets],
   )
+
+  // Prevent keyboard access to widget content (links, filters, pagination) during edit mode.
+  // Edit controls (drag handle + remove button) are excluded and remain keyboard-accessible.
+  useEffect(() => {
+    const FOCUSABLE = 'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    const EDIT_CONTROLS = '[data-testid$="-drag-handle"], [data-testid$="-remove-button"]'
+    const STORAGE_ATTR = 'data-original-tabindex'
+
+    if (isEditMode) {
+      const widgetColumns = document.querySelector('[data-testid="widget-columns"]')
+      if (!widgetColumns) return
+
+      widgetColumns.querySelectorAll<HTMLElement>(FOCUSABLE).forEach(el => {
+        if (!el.matches(EDIT_CONTROLS) && !el.hasAttribute(STORAGE_ATTR)) {
+          el.setAttribute(STORAGE_ATTR, el.getAttribute('tabindex') ?? '')
+          el.setAttribute('tabindex', '-1')
+        }
+      })
+    } else {
+      document.querySelectorAll<HTMLElement>(`[${STORAGE_ATTR}]`).forEach(el => {
+        const original = el.getAttribute(STORAGE_ATTR)!
+        if (original === '') {
+          el.removeAttribute('tabindex')
+        } else {
+          el.setAttribute('tabindex', original)
+        }
+        el.removeAttribute(STORAGE_ATTR)
+      })
+    }
+  }, [isEditMode, visibleWidgets.length])
 
   const renderWidget = (widget: Widget, dragHandleProps?: any) => {
     const widgetRenderer = getWidget(widget.type)
@@ -98,23 +146,47 @@ const WidgetGrid: React.FC<WidgetGridProps> = ({config, isEditMode = false}) => 
     }
 
     const WidgetComponent = widgetRenderer.component
+
+    // In edit mode, elevate the drag handle above the interaction-blocking overlay
+    const enhancedDragHandleProps =
+      isEditMode && dragHandleProps
+        ? {...dragHandleProps, style: {position: 'relative' as const, zIndex: 2}}
+        : dragHandleProps
+
+    const widgetElement = (
+      <WidgetComponent
+        {...widgetRenderer.props}
+        widget={widget}
+        isEditMode={isEditMode}
+        dragHandleProps={enhancedDragHandleProps}
+      />
+    )
+
+    if (!isEditMode) return widgetElement
+
+    // Overlay blocks all widget interactions (links, filters, pagination, etc.)
+    // during customization mode. The drag handle sits above the overlay via z-index.
     return (
-      <WidgetComponent widget={widget} isEditMode={isEditMode} dragHandleProps={dragHandleProps} />
+      <div style={{position: 'relative'}}>
+        {widgetElement}
+        <div aria-hidden="true" style={{position: 'absolute', inset: 0, zIndex: 1}} />
+      </div>
     )
   }
 
-  const renderAddWidgetPlaceholder = () => {
+  const renderAddWidgetPlaceholder = (col: number, row: number) => {
     if (!isEditMode) return null
 
     return (
-      <View
-        as="div"
-        padding="small"
+      <Button
+        onClick={() => {
+          setAddPosition({col, row})
+          setAddModalOpen(true)
+        }}
+        display="block"
         textAlign="center"
-        borderRadius="medium"
-        borderWidth="small"
-        borderColor="brand"
-        background="transparent"
+        withBackground={false}
+        color="primary"
         margin="x-small 0"
         themeOverride={{
           borderStyle: 'dashed',
@@ -122,15 +194,13 @@ const WidgetGrid: React.FC<WidgetGridProps> = ({config, isEditMode = false}) => 
       >
         <Flex direction="row" justifyItems="center" alignItems="center" gap="x-small">
           <Flex.Item>
-            <IconAddLine color="brand" />
+            <IconAddLine />
           </Flex.Item>
           <Flex.Item>
-            <Text size="small" color="brand">
-              {I18n.t('Add widget')}
-            </Text>
+            <Text size="small">{I18n.t('Add widget')}</Text>
           </Flex.Item>
         </Flex>
-      </View>
+      </Button>
     )
   }
 
@@ -159,7 +229,7 @@ const WidgetGrid: React.FC<WidgetGridProps> = ({config, isEditMode = false}) => 
                       data-testid="widget-column-1"
                       width="100%"
                     >
-                      {renderAddWidgetPlaceholder()}
+                      {renderAddWidgetPlaceholder(1, 1)}
                       {widgetsByColumn[0].map((widget, index) => (
                         <React.Fragment key={widget.id}>
                           <Draggable draggableId={widget.id} index={index}>
@@ -173,7 +243,7 @@ const WidgetGrid: React.FC<WidgetGridProps> = ({config, isEditMode = false}) => 
                               </div>
                             )}
                           </Draggable>
-                          {renderAddWidgetPlaceholder()}
+                          {renderAddWidgetPlaceholder(1, widget.position.row + 1)}
                         </React.Fragment>
                       ))}
                       {provided.placeholder}
@@ -208,7 +278,7 @@ const WidgetGrid: React.FC<WidgetGridProps> = ({config, isEditMode = false}) => 
                       data-testid="widget-column-2"
                       width="100%"
                     >
-                      {renderAddWidgetPlaceholder()}
+                      {renderAddWidgetPlaceholder(2, 1)}
                       {widgetsByColumn[1].map((widget, index) => (
                         <React.Fragment key={widget.id}>
                           <Draggable draggableId={widget.id} index={index}>
@@ -222,7 +292,7 @@ const WidgetGrid: React.FC<WidgetGridProps> = ({config, isEditMode = false}) => 
                               </div>
                             )}
                           </Draggable>
-                          {renderAddWidgetPlaceholder()}
+                          {renderAddWidgetPlaceholder(2, widget.position.row + 1)}
                         </React.Fragment>
                       ))}
                       {provided.placeholder}
@@ -247,30 +317,137 @@ const WidgetGrid: React.FC<WidgetGridProps> = ({config, isEditMode = false}) => 
     )
   }
 
-  const renderTabletStack = () => (
-    <Flex data-testid="widget-columns" width="100%">
-      <Flex.Item
-        data-testid="widget-column-tablet"
-        overflowX="visible"
-        overflowY="visible"
-        width="100%"
-      >
-        <Flex direction="column" gap="x-small" width="100%">
-          {sortedWidgets.map(widget => renderWidgetInView(widget))}
-        </Flex>
-      </Flex.Item>
-    </Flex>
-  )
+  const renderColumnSection = (
+    columnWidgets: Widget[],
+    columnNumber: number,
+    provided?: any,
+    showTopPlaceholder = true,
+  ) => {
+    const content = isEditMode ? (
+      <>
+        {showTopPlaceholder && renderAddWidgetPlaceholder(columnNumber, 1)}
+        {columnWidgets.map((widget, index) => (
+          <React.Fragment key={widget.id}>
+            <Draggable draggableId={widget.id} index={index}>
+              {draggableProvided => (
+                <div
+                  ref={draggableProvided.innerRef}
+                  {...draggableProvided.draggableProps}
+                  data-testid={`widget-container-${widget.id}`}
+                >
+                  {renderWidget(widget, draggableProvided.dragHandleProps)}
+                </div>
+              )}
+            </Draggable>
+            {renderAddWidgetPlaceholder(columnNumber, widget.position.row + 1)}
+          </React.Fragment>
+        ))}
+        {provided?.placeholder}
+      </>
+    ) : (
+      columnWidgets.map(widget => renderWidgetInView(widget))
+    )
 
-  const renderMobileStack = renderTabletStack
-
-  if (matches.includes('mobile')) {
-    return renderMobileStack()
-  } else if (matches.includes('tablet')) {
-    return renderTabletStack()
-  } else {
-    return renderDesktopGrid()
+    return (
+      <Flex direction="column" gap="x-small" width="100%">
+        {content}
+      </Flex>
+    )
   }
+
+  const renderStackedLayout = () => {
+    const stackedContent = (
+      <Flex data-testid="widget-columns" direction="column" gap="small" width="100%">
+        <Flex.Item
+          data-testid="widget-column-1-stacked"
+          overflowX="visible"
+          overflowY="visible"
+          width="100%"
+        >
+          {isEditMode ? (
+            <Droppable droppableId="column-1">
+              {provided => (
+                <div
+                  ref={provided.innerRef}
+                  {...provided.droppableProps}
+                  style={{minHeight: '50px'}}
+                >
+                  {renderColumnSection(widgetsByColumn[0], 1, provided)}
+                </div>
+              )}
+            </Droppable>
+          ) : (
+            renderColumnSection(widgetsByColumn[0], 1)
+          )}
+        </Flex.Item>
+        <Flex.Item
+          data-testid="widget-column-2-stacked"
+          overflowX="visible"
+          overflowY="visible"
+          width="100%"
+        >
+          {isEditMode ? (
+            <Droppable droppableId="column-2">
+              {provided => (
+                <div
+                  ref={provided.innerRef}
+                  {...provided.droppableProps}
+                  style={{minHeight: '50px'}}
+                >
+                  {renderColumnSection(widgetsByColumn[1], 2, provided, false)}
+                </div>
+              )}
+            </Droppable>
+          ) : (
+            renderColumnSection(widgetsByColumn[1], 2, undefined, false)
+          )}
+        </Flex.Item>
+      </Flex>
+    )
+
+    if (isEditMode) {
+      return <DragDropContext onDragEnd={handleDragEnd}>{stackedContent}</DragDropContext>
+    }
+
+    return stackedContent
+  }
+
+  const renderTabletStack = renderStackedLayout
+  const renderMobileStack = renderStackedLayout
+
+  let gridContent
+  if (matches.includes('mobile')) {
+    gridContent = renderMobileStack()
+  } else if (matches.includes('tablet')) {
+    gridContent = renderTabletStack()
+  } else {
+    gridContent = renderDesktopGrid()
+  }
+
+  return (
+    <>
+      {isEditMode && (
+        <style>{`
+          [data-testid="widget-columns"] [data-testid$="-remove-button"] {
+            position: relative !important;
+            z-index: 2 !important;
+          }
+        `}</style>
+      )}
+      {gridContent}
+      {addPosition && (
+        <AddWidgetModal
+          open={addModalOpen}
+          onClose={() => {
+            setAddModalOpen(false)
+            setAddPosition(null)
+          }}
+          targetColumn={addPosition.col}
+          targetRow={addPosition.row}
+        />
+      )}
+    </>
+  )
 }
 
 export default WidgetGrid

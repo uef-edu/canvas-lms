@@ -18,10 +18,10 @@
 
 import {useMemo, useEffect} from 'react'
 import {getSections, getStudents, getGroups, getDifferentiationTags} from './queryFn'
-import {showFlashError} from '@canvas/alerts/react/FlashAlert'
+import {showFlashError} from '@instructure/platform-alerts'
 import {useScope as createI18nScope} from '@canvas/i18n'
 import type {AssigneeOption} from '../../react/Item/types'
-import {uniqBy} from 'lodash'
+import {uniqBy} from 'es-toolkit/compat'
 import {useQuery} from '@tanstack/react-query'
 
 const I18n = createI18nScope('differentiated_modules')
@@ -86,9 +86,9 @@ export const useGetAssigneeOptions = ({
     isFetching: isDifferentiationTagsLoading,
     error: differentiationTagsError,
   } = useQuery({
-    queryKey: ['differentiationTags', ENV.current_user_id, courseId, params],
+    queryKey: ['differentiationTags', ENV?.current_user_id, courseId, params],
     queryFn: getDifferentiationTags,
-    enabled: shouldFetch,
+    enabled: shouldFetch && !!ENV?.current_user_id,
   })
 
   useEffect(() => {

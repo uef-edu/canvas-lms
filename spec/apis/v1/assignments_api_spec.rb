@@ -31,10 +31,8 @@ describe AssignmentsApiController, type: :request do
 
   specs_require_sharding
 
-  context "locked api item" do
+  it_behaves_like "a locked api item" do
     let(:item_type) { "assignment" }
-
-    include_examples "a locked api item"
 
     let_once(:locked_item) do
       @course.assignments.create!(title: "Locked Assignment")
@@ -591,6 +589,38 @@ describe AssignmentsApiController, type: :request do
                         search_term: "fir"
                       })
       expect(json.pluck("id").sort).to eq ids.sort
+    end
+
+    it "searches for assignments by a single character" do
+      matching = @course.assignments.create!(title: "Fibonacci")
+      non_matching = @course.assignments.create!(title: "Other")
+
+      json = api_call(:get,
+                      "/api/v1/courses/#{@course.id}/assignments.json?search_term=F",
+                      {
+                        controller: "assignments_api",
+                        action: "index",
+                        format: "json",
+                        course_id: @course.id.to_s,
+                        search_term: "F"
+                      })
+      expect(json.pluck("id")).to include(matching.id)
+      expect(json.pluck("id")).not_to include(non_matching.id)
+    end
+
+    it "returns all assignments for an empty search_term" do
+      api_call(:get,
+               "/api/v1/courses/#{@course.id}/assignments.json?search_term=",
+               {
+                 controller: "assignments_api",
+                 action: "index",
+                 format: "json",
+                 course_id: @course.id.to_s,
+                 search_term: ""
+               },
+               {},
+               {},
+               { expected_status: 200 })
     end
 
     it "allows filtering based on assignment_ids[] parameter" do
@@ -1734,6 +1764,66 @@ describe AssignmentsApiController, type: :request do
       expect(uri.path).to eq "/api/v1/courses/#{@course.id}/external_tools/sessionless_launch"
       expect(uri.query).to include("assignment_id=")
     end
+
+    context "peer review preloading" do
+      before :once do
+        course_with_teacher(active_all: true)
+        @course.enable_feature!(:peer_review_allocation_and_grading)
+      end
+
+      it "only preloads peer review submissions for Assignment instances" do
+        # Regular Assignment
+        regular_assignment = @course.assignments.create!(
+          title: "Regular Assignment",
+          peer_reviews: true,
+          peer_review_count: 2
+        )
+        # Discussion Checkpoint Assignment & Sub Assignment
+        @course.account.enable_feature!(:discussion_checkpoints)
+        parent_assignment = @course.assignments.create!(
+          title: "Parent Assignment",
+          has_sub_assignments: true
+        )
+        sub_assignment = parent_assignment.sub_assignments.create!(
+          context: parent_assignment.context,
+          sub_assignment_tag: CheckpointLabels::REPLY_TO_TOPIC,
+          points_possible: 5
+        )
+        # Peer Review Assignment & Sub Assignment
+        peer_review_parent = @course.assignments.create!(
+          title: "Peer Review Parent",
+          peer_reviews: true,
+          peer_review_count: 2
+        )
+        peer_review_sub = peer_review_parent.create_peer_review_sub_assignment!(
+          context: @course,
+          points_possible: 10
+        )
+
+        # Spy on Assignment.preload_peer_review_submissions to capture arguments
+        passed_assignments = nil
+        allow(Assignment).to receive(:preload_peer_review_submissions).and_wrap_original do |original_method, assignments|
+          passed_assignments = assignments
+          original_method.call(assignments)
+        end
+
+        # Call the API
+        api_get_assignments_index_from_course(@course)
+        expect(Assignment).to have_received(:preload_peer_review_submissions)
+        expect(passed_assignments).not_to be_nil
+
+        # All passed assignments should be Assignment instances (not SubAssignment or PeerReviewSubAssignment)
+        expect(passed_assignments).to all(be_an(Assignment))
+        expect(passed_assignments.map(&:class)).to all(eq(Assignment))
+
+        # None should be SubAssignment or PeerReviewSubAssignment
+        expect(passed_assignments).not_to include(sub_assignment)
+        expect(passed_assignments).not_to include(peer_review_sub)
+
+        # Should include regular assignments
+        expect(passed_assignments.map(&:id)).to include(regular_assignment.id, parent_assignment.id, peer_review_parent.id)
+      end
+    end
   end
 
   describe "GET /users/:user_id/courses/:course_id/assignments (#user_index)" do
@@ -2040,6 +2130,92 @@ describe AssignmentsApiController, type: :request do
       aggregate_failures do
         expect(audit_event.event_type).to eq "assignment_created"
         expect(audit_event.payload["anonymous_grading"]).to be true
+      end
+    end
+
+    context "when duplicating an assignment with a peer review sub assignment" do
+      let(:assignment_with_peer_review) do
+        a = assignment_model(
+          course: @course,
+          title: "PR Assignment",
+          points_possible: 10,
+          peer_review_count: 2,
+          peer_reviews: true,
+          submission_types: "online_text_entry"
+        )
+        peer_review_model(parent_assignment: a)
+        a.reload
+      end
+      let(:original_peer_review_sub) { assignment_with_peer_review.peer_review_sub_assignment }
+      let(:new_assignment) { Assignment.find_by!(duplicate_of: assignment_with_peer_review.id) }
+
+      context "when the feature flag is enabled" do
+        before do
+          api_call_as_user(
+            @teacher,
+            :post,
+            "/api/v1/courses/#{@course.id}/assignments/#{assignment_with_peer_review.id}/duplicate.json",
+            {
+              controller: "assignments_api",
+              action: "duplicate",
+              format: "json",
+              course_id: @course.id.to_s,
+              assignment_id: assignment_with_peer_review.id.to_s
+            },
+            {},
+            {},
+            { expected_status: 200 }
+          )
+        end
+
+        it "duplicates the peer review sub assignment" do
+          expect(new_assignment.peer_review_sub_assignment).to be_present
+        end
+
+        it "links the duplicated sub assignment to the new assignment" do
+          expect(new_assignment.peer_review_sub_assignment.parent_assignment_id).to eq(new_assignment.id)
+        end
+
+        it "preserves peer_review_count on the duplicated assignment" do
+          expect(new_assignment.peer_review_count).to eq(assignment_with_peer_review.peer_review_count)
+        end
+
+        it "preserves due_at, unlock_at, and lock_at on the duplicated peer review sub assignment" do
+          new_peer_review_sub = new_assignment.peer_review_sub_assignment
+          expect(new_peer_review_sub.due_at).to eq(original_peer_review_sub.due_at)
+          expect(new_peer_review_sub.unlock_at).to eq(original_peer_review_sub.unlock_at)
+          expect(new_peer_review_sub.lock_at).to eq(original_peer_review_sub.lock_at)
+        end
+      end
+
+      context "when the feature flag is disabled" do
+        before do
+          assignment_with_peer_review # force evaluation while flag is enabled by peer_review_model factory
+          @course.disable_feature!(:peer_review_allocation_and_grading)
+          api_call_as_user(
+            @teacher,
+            :post,
+            "/api/v1/courses/#{@course.id}/assignments/#{assignment_with_peer_review.id}/duplicate.json",
+            {
+              controller: "assignments_api",
+              action: "duplicate",
+              format: "json",
+              course_id: @course.id.to_s,
+              assignment_id: assignment_with_peer_review.id.to_s
+            },
+            {},
+            {},
+            { expected_status: 200 }
+          )
+        end
+
+        it "does not duplicate the peer review sub assignment" do
+          expect(new_assignment.peer_review_sub_assignment).to be_nil
+        end
+
+        it "does not cause regression for the duplicated assignment" do
+          expect(new_assignment.peer_review_count).to eq(0)
+        end
       end
     end
 
@@ -3008,7 +3184,7 @@ describe AssignmentsApiController, type: :request do
 
           mock_and_call_create_api_assignment(assignment, assignment_params, {
                                                 additional_mocks:,
-                                                prepare_options: { assignment:, valid: true, overrides: [double("override")] }
+                                                prepare_options: { assignment:, valid: true, overrides: [instance_double(AssignmentOverride)] }
                                               })
 
           expect(call_order).to eq(%i[assignment_with_overrides_created peer_review_created lifecycle_recompute])
@@ -3086,7 +3262,7 @@ describe AssignmentsApiController, type: :request do
           )
 
           allow_any_instance_of(Api::V1::Assignment).to receive(:prepare_assignment_create_or_update)
-            .and_return({ assignment:, valid: true, overrides: [double("override")] })
+            .and_return({ assignment:, valid: true, overrides: [instance_double(AssignmentOverride)] })
 
           allow_any_instance_of(Api::V1::Assignment).to receive(:create_api_assignment_with_overrides)
             .and_return(:created)
@@ -3644,6 +3820,731 @@ describe AssignmentsApiController, type: :request do
           expect(overrides_after.first.id).to eq(section_override_id)
           expect(overrides_after.first.due_at.to_i).to eq(new_section_due_date.to_i)
         end
+
+        it "creates peer review override during initial assignment creation (regression test)" do
+          # Regression test for bug where peer review overrides failed during initial
+          # assignment creation because parent assignment overrides association was stale
+          section_due_date = 1.week.from_now
+          peer_review_due_date = 2.weeks.from_now
+
+          post "/api/v1/courses/#{@course.id}/assignments",
+               params: {
+                 assignment: {
+                   name: "Regression Test Assignment",
+                   points_possible: 100,
+                   peer_reviews: true,
+                   assignment_overrides: [
+                     {
+                       course_section_id: @section1.id,
+                       due_at: section_due_date.iso8601
+                     }
+                   ],
+                   peer_review: {
+                     points_possible: 10,
+                     peer_review_overrides: [
+                       {
+                         course_section_id: @section1.id,
+                         due_at: peer_review_due_date.iso8601
+                       }
+                     ]
+                   }
+                 }
+               }.to_json,
+               headers: {
+                 "CONTENT_TYPE" => "application/json",
+                 "HTTP_AUTHORIZATION" => "Bearer #{access_token_for_user(@teacher)}"
+               }
+
+          expect(response).to be_successful
+          assignment = Assignment.where(title: "Regression Test Assignment").first
+          expect(assignment).to be_present
+          expect(assignment.peer_reviews).to be true
+
+          parent_overrides = assignment.assignment_overrides.active
+          expect(parent_overrides.count).to eq(1)
+          parent_override = parent_overrides.first
+          expect(parent_override.set_type).to eq("CourseSection")
+          expect(parent_override.set_id).to eq(@section1.id)
+          expect(parent_override.due_at.to_i).to eq(section_due_date.to_i)
+
+          peer_review_sub = assignment.peer_review_sub_assignment
+          expect(peer_review_sub).to be_present
+          expect(peer_review_sub.points_possible).to eq(10)
+
+          # Verify peer review override was created successfully (this was failing before the fix)
+          peer_overrides = peer_review_sub.assignment_overrides.active
+          expect(peer_overrides.count).to eq(1)
+          peer_override = peer_overrides.first
+          expect(peer_override.set_type).to eq("CourseSection")
+          expect(peer_override.set_id).to eq(@section1.id)
+          expect(peer_override.due_at.to_i).to eq(peer_review_due_date.to_i)
+
+          expect(peer_override.parent_override).to be_present
+          expect(peer_override.parent_override.id).to eq(parent_override.id)
+        end
+
+        describe "cached_due_date updates for peer review submissions" do
+          it "updates cached_due_date when creating assignment with peer reviews and student-specific override" do
+            student1 = student_in_course(course: @course, active_all: true).user
+            student2 = student_in_course(course: @course, active_all: true).user
+            student3 = student_in_course(course: @course, active_all: true).user
+
+            parent_base_due_date = 1.week.from_now
+            peer_review_base_due_date = 10.days.from_now
+            parent_override_due_date = 2.weeks.from_now
+            peer_review_override_due_date = 3.weeks.from_now
+
+            post "/api/v1/courses/#{@course.id}/assignments",
+                 params: {
+                   assignment: {
+                     name: "Assignment with Student Override",
+                     points_possible: 100,
+                     due_at: parent_base_due_date.iso8601,
+                     peer_reviews: true,
+                     assignment_overrides: [
+                       {
+                         student_ids: [student1.id],
+                         due_at: parent_override_due_date.iso8601
+                       }
+                     ],
+                     peer_review: {
+                       points_possible: 50,
+                       due_at: peer_review_base_due_date.iso8601,
+                       peer_review_overrides: [
+                         {
+                           student_ids: [student1.id],
+                           due_at: peer_review_override_due_date.iso8601
+                         }
+                       ]
+                     }
+                   }
+                 }.to_json,
+                 headers: {
+                   "CONTENT_TYPE" => "application/json",
+                   "HTTP_AUTHORIZATION" => "Bearer #{access_token_for_user(@teacher)}"
+                 }
+
+            expect(response).to be_successful
+            assignment = Assignment.where(title: "Assignment with Student Override").first
+            peer_review_sub = assignment.peer_review_sub_assignment
+
+            submission1 = Submission.find_by(user_id: student1.id, assignment_id: peer_review_sub.id)
+            submission2 = Submission.find_by(user_id: student2.id, assignment_id: peer_review_sub.id)
+            submission3 = Submission.find_by(user_id: student3.id, assignment_id: peer_review_sub.id)
+
+            expect(submission1).to be_present
+            expect(submission2).to be_present
+            expect(submission3).to be_present
+
+            # Student1 should have peer review override due date
+            expect(submission1.cached_due_date).to be_present
+            expect(submission1.cached_due_date.to_i).to eq(peer_review_override_due_date.to_i)
+
+            # Student2 and Student3 should have peer review base due date
+            expect(submission2.cached_due_date).to be_present
+            expect(submission2.cached_due_date.to_i).to eq(peer_review_base_due_date.to_i)
+            expect(submission3.cached_due_date).to be_present
+            expect(submission3.cached_due_date.to_i).to eq(peer_review_base_due_date.to_i)
+          end
+
+          it "updates cached_due_date when creating assignment with peer reviews and section override" do
+            student1 = student_in_course(course: @course, section: @section1, active_all: true).user
+            student2 = student_in_course(course: @course, section: @section2, active_all: true).user
+
+            parent_base_due_date = 1.week.from_now
+            peer_review_base_due_date = 10.days.from_now
+            parent_section1_due_date = 2.weeks.from_now
+            peer_review_section1_due_date = 3.weeks.from_now
+
+            post "/api/v1/courses/#{@course.id}/assignments",
+                 params: {
+                   assignment: {
+                     name: "Assignment with Section Override",
+                     points_possible: 100,
+                     due_at: parent_base_due_date.iso8601,
+                     peer_reviews: true,
+                     assignment_overrides: [
+                       {
+                         course_section_id: @section1.id,
+                         due_at: parent_section1_due_date.iso8601
+                       }
+                     ],
+                     peer_review: {
+                       points_possible: 50,
+                       due_at: peer_review_base_due_date.iso8601,
+                       peer_review_overrides: [
+                         {
+                           course_section_id: @section1.id,
+                           due_at: peer_review_section1_due_date.iso8601
+                         }
+                       ]
+                     }
+                   }
+                 }.to_json,
+                 headers: {
+                   "CONTENT_TYPE" => "application/json",
+                   "HTTP_AUTHORIZATION" => "Bearer #{access_token_for_user(@teacher)}"
+                 }
+
+            expect(response).to be_successful
+            assignment = Assignment.where(title: "Assignment with Section Override").first
+            peer_review_sub = assignment.peer_review_sub_assignment
+
+            submission1 = Submission.find_by(user_id: student1.id, assignment_id: peer_review_sub.id)
+            submission2 = Submission.find_by(user_id: student2.id, assignment_id: peer_review_sub.id)
+
+            expect(submission1).to be_present
+            expect(submission2).to be_present
+
+            # Student1 (in section1) should have peer review section override due date
+            expect(submission1.cached_due_date).to be_present
+            expect(submission1.cached_due_date.to_i).to eq(peer_review_section1_due_date.to_i)
+
+            # Student2 (in section2) should have peer review base due date
+            expect(submission2.cached_due_date).to be_present
+            expect(submission2.cached_due_date.to_i).to eq(peer_review_base_due_date.to_i)
+          end
+
+          it "updates cached_due_date when updating assignment with peer reviews and new override" do
+            student1 = student_in_course(course: @course, active_all: true).user
+            student2 = student_in_course(course: @course, active_all: true).user
+
+            parent_base_due_date = 1.week.from_now
+            peer_review_base_due_date = 10.days.from_now
+
+            post "/api/v1/courses/#{@course.id}/assignments",
+                 params: {
+                   assignment: {
+                     name: "Assignment for Update Test",
+                     points_possible: 100,
+                     due_at: parent_base_due_date.iso8601,
+                     peer_reviews: true,
+                     peer_review: {
+                       points_possible: 50,
+                       due_at: peer_review_base_due_date.iso8601
+                     }
+                   }
+                 }.to_json,
+                 headers: {
+                   "CONTENT_TYPE" => "application/json",
+                   "HTTP_AUTHORIZATION" => "Bearer #{access_token_for_user(@teacher)}"
+                 }
+
+            expect(response).to be_successful
+            assignment = Assignment.where(title: "Assignment for Update Test").first
+            peer_review_sub = assignment.peer_review_sub_assignment
+
+            submission1 = Submission.find_by(user_id: student1.id, assignment_id: peer_review_sub.id)
+            submission2 = Submission.find_by(user_id: student2.id, assignment_id: peer_review_sub.id)
+
+            expect(submission1.cached_due_date).to be_present
+            expect(submission1.cached_due_date.to_i).to eq(peer_review_base_due_date.to_i)
+            expect(submission2.cached_due_date).to be_present
+            expect(submission2.cached_due_date.to_i).to eq(peer_review_base_due_date.to_i)
+
+            # Update assignment with student-specific overrides
+            parent_override_due_date = 2.weeks.from_now
+            peer_review_override_due_date = 3.weeks.from_now
+
+            put "/api/v1/courses/#{@course.id}/assignments/#{assignment.id}",
+                params: {
+                  assignment: {
+                    assignment_overrides: [
+                      {
+                        student_ids: [student1.id],
+                        due_at: parent_override_due_date.iso8601
+                      }
+                    ],
+                    peer_review: {
+                      peer_review_overrides: [
+                        {
+                          student_ids: [student1.id],
+                          due_at: peer_review_override_due_date.iso8601
+                        }
+                      ]
+                    }
+                  }
+                }.to_json,
+                headers: {
+                  "CONTENT_TYPE" => "application/json",
+                  "HTTP_AUTHORIZATION" => "Bearer #{access_token_for_user(@teacher)}"
+                }
+
+            expect(response).to be_successful
+
+            submission1.reload
+            submission2.reload
+
+            # Student1 should now have peer review override due date
+            expect(submission1.cached_due_date).to be_present
+            expect(submission1.cached_due_date.to_i).to eq(peer_review_override_due_date.to_i)
+
+            # Student2 should still have peer review base due date
+            expect(submission2.cached_due_date).to be_present
+            expect(submission2.cached_due_date.to_i).to eq(peer_review_base_due_date.to_i)
+          end
+
+          it "updates cached_due_date when updating override to new date" do
+            student1 = student_in_course(course: @course, active_all: true).user
+
+            parent_base_due_date = 1.week.from_now
+            peer_review_base_due_date = 10.days.from_now
+            parent_first_override_date = 2.weeks.from_now
+            peer_review_first_override_date = 3.weeks.from_now
+
+            # Create assignment with initial override
+            post "/api/v1/courses/#{@course.id}/assignments",
+                 params: {
+                   assignment: {
+                     name: "Assignment for Override Update",
+                     points_possible: 100,
+                     due_at: parent_base_due_date.iso8601,
+                     peer_reviews: true,
+                     assignment_overrides: [
+                       {
+                         student_ids: [student1.id],
+                         due_at: parent_first_override_date.iso8601
+                       }
+                     ],
+                     peer_review: {
+                       points_possible: 50,
+                       due_at: peer_review_base_due_date.iso8601,
+                       peer_review_overrides: [
+                         {
+                           student_ids: [student1.id],
+                           due_at: peer_review_first_override_date.iso8601
+                         }
+                       ]
+                     }
+                   }
+                 }.to_json,
+                 headers: {
+                   "CONTENT_TYPE" => "application/json",
+                   "HTTP_AUTHORIZATION" => "Bearer #{access_token_for_user(@teacher)}"
+                 }
+
+            expect(response).to be_successful
+            assignment = Assignment.where(title: "Assignment for Override Update").first
+            peer_review_sub = assignment.peer_review_sub_assignment
+
+            submission1 = Submission.find_by(user_id: student1.id, assignment_id: peer_review_sub.id)
+            expect(submission1.cached_due_date).to be_present
+            expect(submission1.cached_due_date.to_i).to eq(peer_review_first_override_date.to_i)
+
+            parent_adhoc_override = assignment.assignment_overrides.active.find_by(set_type: "ADHOC")
+            expect(parent_adhoc_override).to be_present
+
+            peer_review_adhoc_override = peer_review_sub.assignment_overrides.active.find_by(set_type: "ADHOC")
+            expect(peer_review_adhoc_override).to be_present
+
+            # Update overrides to new dates
+            parent_second_override_date = 4.weeks.from_now
+            peer_review_second_override_date = 5.weeks.from_now
+
+            put "/api/v1/courses/#{@course.id}/assignments/#{assignment.id}",
+                params: {
+                  assignment: {
+                    assignment_overrides: [
+                      {
+                        id: parent_adhoc_override.id,
+                        student_ids: [student1.id],
+                        due_at: parent_second_override_date.iso8601
+                      }
+                    ],
+                    peer_review: {
+                      peer_review_overrides: [
+                        {
+                          id: peer_review_adhoc_override.id,
+                          student_ids: [student1.id],
+                          due_at: peer_review_second_override_date.iso8601
+                        }
+                      ]
+                    }
+                  }
+                }.to_json,
+                headers: {
+                  "CONTENT_TYPE" => "application/json",
+                  "HTTP_AUTHORIZATION" => "Bearer #{access_token_for_user(@teacher)}"
+                }
+
+            expect(response).to be_successful
+
+            # Verify cached_due_date was updated to new peer review override date
+            submission1.reload
+            expect(submission1.cached_due_date).to be_present
+            expect(submission1.cached_due_date.to_i).to eq(peer_review_second_override_date.to_i)
+          end
+
+          it "updates cached_due_date with multiple override types" do
+            student1 = student_in_course(course: @course, section: @section1, active_all: true).user
+            student2 = student_in_course(course: @course, section: @section1, active_all: true).user
+            student3 = student_in_course(course: @course, section: @section2, active_all: true).user
+
+            parent_base_due_date = 1.week.from_now
+            peer_review_base_due_date = 10.days.from_now
+            parent_section1_due_date = 2.weeks.from_now
+            peer_review_section1_due_date = 3.weeks.from_now
+            parent_student1_due_date = 4.weeks.from_now
+            peer_review_student1_due_date = 5.weeks.from_now
+
+            post "/api/v1/courses/#{@course.id}/assignments",
+                 params: {
+                   assignment: {
+                     name: "Assignment with Multiple Overrides",
+                     points_possible: 100,
+                     due_at: parent_base_due_date.iso8601,
+                     peer_reviews: true,
+                     assignment_overrides: [
+                       {
+                         course_section_id: @section1.id,
+                         due_at: parent_section1_due_date.iso8601
+                       },
+                       {
+                         student_ids: [student1.id],
+                         due_at: parent_student1_due_date.iso8601
+                       }
+                     ],
+                     peer_review: {
+                       points_possible: 50,
+                       due_at: peer_review_base_due_date.iso8601,
+                       peer_review_overrides: [
+                         {
+                           course_section_id: @section1.id,
+                           due_at: peer_review_section1_due_date.iso8601
+                         },
+                         {
+                           student_ids: [student1.id],
+                           due_at: peer_review_student1_due_date.iso8601
+                         }
+                       ]
+                     }
+                   }
+                 }.to_json,
+                 headers: {
+                   "CONTENT_TYPE" => "application/json",
+                   "HTTP_AUTHORIZATION" => "Bearer #{access_token_for_user(@teacher)}"
+                 }
+
+            expect(response).to be_successful
+            assignment = Assignment.where(title: "Assignment with Multiple Overrides").first
+            peer_review_sub = assignment.peer_review_sub_assignment
+
+            submission1 = Submission.find_by(user_id: student1.id, assignment_id: peer_review_sub.id)
+            submission2 = Submission.find_by(user_id: student2.id, assignment_id: peer_review_sub.id)
+            submission3 = Submission.find_by(user_id: student3.id, assignment_id: peer_review_sub.id)
+
+            # Student1 should have peer review student-specific override (most specific)
+            expect(submission1.cached_due_date).to be_present
+            expect(submission1.cached_due_date.to_i).to eq(peer_review_student1_due_date.to_i)
+
+            # Student2 should have peer review section override
+            expect(submission2.cached_due_date).to be_present
+            expect(submission2.cached_due_date.to_i).to eq(peer_review_section1_due_date.to_i)
+
+            # Student3 should have peer review base due date
+            expect(submission3.cached_due_date).to be_present
+            expect(submission3.cached_due_date.to_i).to eq(peer_review_base_due_date.to_i)
+          end
+
+          it "updates cached_due_date when creating assignment without overrides" do
+            student1 = student_in_course(course: @course, active_all: true).user
+            student2 = student_in_course(course: @course, active_all: true).user
+
+            parent_base_due_date = 1.week.from_now
+            peer_review_base_due_date = 10.days.from_now
+
+            post "/api/v1/courses/#{@course.id}/assignments",
+                 params: {
+                   assignment: {
+                     name: "Assignment without Overrides",
+                     points_possible: 100,
+                     due_at: parent_base_due_date.iso8601,
+                     peer_reviews: true,
+                     peer_review: {
+                       points_possible: 50,
+                       due_at: peer_review_base_due_date.iso8601
+                     }
+                   }
+                 }.to_json,
+                 headers: {
+                   "CONTENT_TYPE" => "application/json",
+                   "HTTP_AUTHORIZATION" => "Bearer #{access_token_for_user(@teacher)}"
+                 }
+
+            expect(response).to be_successful
+            assignment = Assignment.where(title: "Assignment without Overrides").first
+            peer_review_sub = assignment.peer_review_sub_assignment
+
+            submission1 = Submission.find_by(user_id: student1.id, assignment_id: peer_review_sub.id)
+            submission2 = Submission.find_by(user_id: student2.id, assignment_id: peer_review_sub.id)
+
+            expect(submission1).to be_present
+            expect(submission2).to be_present
+
+            expect(submission1.cached_due_date).to be_present
+            expect(submission1.cached_due_date.to_i).to eq(peer_review_base_due_date.to_i)
+            expect(submission2.cached_due_date).to be_present
+            expect(submission2.cached_due_date.to_i).to eq(peer_review_base_due_date.to_i)
+          end
+
+          it "updates cached_due_date when updating assignment without overrides" do
+            student1 = student_in_course(course: @course, active_all: true).user
+            student2 = student_in_course(course: @course, active_all: true).user
+
+            parent_base_due_date = 1.week.from_now
+            peer_review_base_due_date = 10.days.from_now
+
+            post "/api/v1/courses/#{@course.id}/assignments",
+                 params: {
+                   assignment: {
+                     name: "Assignment for Base Date Update",
+                     points_possible: 100,
+                     due_at: parent_base_due_date.iso8601,
+                     peer_reviews: true,
+                     peer_review: {
+                       points_possible: 50,
+                       due_at: peer_review_base_due_date.iso8601
+                     }
+                   }
+                 }.to_json,
+                 headers: {
+                   "CONTENT_TYPE" => "application/json",
+                   "HTTP_AUTHORIZATION" => "Bearer #{access_token_for_user(@teacher)}"
+                 }
+
+            expect(response).to be_successful
+            assignment = Assignment.where(title: "Assignment for Base Date Update").first
+            peer_review_sub = assignment.peer_review_sub_assignment
+
+            submission1 = Submission.find_by(user_id: student1.id, assignment_id: peer_review_sub.id)
+            submission2 = Submission.find_by(user_id: student2.id, assignment_id: peer_review_sub.id)
+
+            expect(submission1.cached_due_date).to be_present
+            expect(submission1.cached_due_date.to_i).to eq(peer_review_base_due_date.to_i)
+            expect(submission2.cached_due_date).to be_present
+            expect(submission2.cached_due_date.to_i).to eq(peer_review_base_due_date.to_i)
+
+            parent_new_base_due_date = 3.weeks.from_now
+            peer_review_new_base_due_date = 4.weeks.from_now
+
+            put "/api/v1/courses/#{@course.id}/assignments/#{assignment.id}",
+                params: {
+                  assignment: {
+                    due_at: parent_new_base_due_date.iso8601,
+                    peer_review: {
+                      due_at: peer_review_new_base_due_date.iso8601
+                    }
+                  }
+                }.to_json,
+                headers: {
+                  "CONTENT_TYPE" => "application/json",
+                  "HTTP_AUTHORIZATION" => "Bearer #{access_token_for_user(@teacher)}"
+                }
+
+            expect(response).to be_successful
+
+            submission1.reload
+            submission2.reload
+
+            expect(submission1.cached_due_date).to be_present
+            expect(submission1.cached_due_date.to_i).to eq(peer_review_new_base_due_date.to_i)
+            expect(submission2.cached_due_date).to be_present
+            expect(submission2.cached_due_date.to_i).to eq(peer_review_new_base_due_date.to_i)
+          end
+
+          it "respects calculate_grades parameter when set to false" do
+            student1 = student_in_course(course: @course, active_all: true).user
+
+            parent_base_due_date = 1.week.from_now
+            peer_review_base_due_date = 10.days.from_now
+
+            allow(SubmissionLifecycleManager).to receive(:recompute).and_call_original
+
+            post "/api/v1/courses/#{@course.id}/assignments?calculate_grades=false",
+                 params: {
+                   assignment: {
+                     name: "Assignment with calculate_grades false",
+                     points_possible: 100,
+                     due_at: parent_base_due_date.iso8601,
+                     peer_reviews: true,
+                     peer_review: {
+                       points_possible: 50,
+                       due_at: peer_review_base_due_date.iso8601
+                     }
+                   }
+                 }.to_json,
+                 headers: {
+                   "CONTENT_TYPE" => "application/json",
+                   "HTTP_AUTHORIZATION" => "Bearer #{access_token_for_user(@teacher)}"
+                 }
+
+            expect(response).to be_successful
+            assignment = Assignment.where(title: "Assignment with calculate_grades false").first
+            peer_review_sub = assignment.peer_review_sub_assignment
+
+            expect(SubmissionLifecycleManager).to have_received(:recompute).with(
+              assignment,
+              update_grades: false,
+              executing_user: @teacher
+            )
+
+            expect(SubmissionLifecycleManager).to have_received(:recompute).with(
+              peer_review_sub,
+              update_grades: false,
+              executing_user: @teacher
+            )
+
+            submission1 = Submission.find_by(user_id: student1.id, assignment_id: peer_review_sub.id)
+            expect(submission1).to be_present
+            expect(submission1.cached_due_date).to be_present
+            expect(submission1.cached_due_date.to_i).to eq(peer_review_base_due_date.to_i)
+          end
+
+          context "when a teacher extends the due date on an assignment that has peer reviews (regression test)" do
+            let(:original_due) { 1.week.from_now }
+            let(:extended_due) { 2.weeks.from_now }
+
+            before do
+              @course.enable_feature!(:peer_review_allocation_and_grading)
+              @student = student_in_course(course: @course, active_all: true).user
+
+              post "/api/v1/courses/#{@course.id}/assignments",
+                   params: {
+                     assignment: {
+                       name: "Essay with Peer Review",
+                       points_possible: 100,
+                       due_at: original_due.iso8601,
+                       peer_reviews: true,
+                       peer_review_count: 1,
+                       submission_types: "online_text_entry",
+                       peer_review: {
+                         points_possible: 50,
+                         due_at: (original_due + 1.day).iso8601
+                       }
+                     }
+                   }.to_json,
+                   headers: {
+                     "CONTENT_TYPE" => "application/json",
+                     "HTTP_AUTHORIZATION" => "Bearer #{access_token_for_user(@teacher)}"
+                   }
+
+              expect(response).to be_successful
+              @assignment_with_peer_review = Assignment.where(title: "Essay with Peer Review").first
+            end
+
+            it "reflects the extended deadline in each student's cached due date" do
+              assignment_submission = Submission.find_by!(user_id: @student.id, assignment_id: @assignment_with_peer_review.id)
+              expect(assignment_submission.cached_due_date.to_i).to eq(original_due.to_i)
+
+              put "/api/v1/courses/#{@course.id}/assignments/#{@assignment_with_peer_review.id}",
+                  params: {
+                    assignment: {
+                      due_at: extended_due.iso8601,
+                      peer_review: {
+                        due_at: (extended_due + 1.day).iso8601,
+                      }
+                    }
+                  }.to_json,
+                  headers: {
+                    "CONTENT_TYPE" => "application/json",
+                    "HTTP_AUTHORIZATION" => "Bearer #{access_token_for_user(@teacher)}"
+                  }
+
+              expect(response).to be_successful
+              expect(assignment_submission.reload.cached_due_date.to_i).to eq(extended_due.to_i)
+            end
+          end
+
+          context "when feature flag is disabled" do
+            before do
+              @course.disable_feature!(:peer_review_allocation_and_grading)
+            end
+
+            it "does not create peer review sub assignment" do
+              student_in_course(course: @course, active_all: true).user
+
+              parent_base_due_date = 1.week.from_now
+
+              post "/api/v1/courses/#{@course.id}/assignments",
+                   params: {
+                     assignment: {
+                       name: "Assignment with feature flag disabled",
+                       points_possible: 100,
+                       due_at: parent_base_due_date.iso8601,
+                       peer_reviews: true
+                     }
+                   }.to_json,
+                   headers: {
+                     "CONTENT_TYPE" => "application/json",
+                     "HTTP_AUTHORIZATION" => "Bearer #{access_token_for_user(@teacher)}"
+                   }
+
+              expect(response).to be_successful
+              assignment = Assignment.where(title: "Assignment with feature flag disabled").first
+              expect(assignment.peer_reviews).to be true
+              expect(assignment.peer_review_sub_assignment).to be_nil
+            end
+
+            it "does not recompute peer review sub assignment on update" do
+              @course.enable_feature!(:peer_review_allocation_and_grading)
+
+              parent_base_due_date = 1.week.from_now
+              peer_review_base_due_date = 10.days.from_now
+
+              post "/api/v1/courses/#{@course.id}/assignments",
+                   params: {
+                     assignment: {
+                       name: "Assignment created with feature enabled",
+                       points_possible: 100,
+                       due_at: parent_base_due_date.iso8601,
+                       peer_reviews: true,
+                       peer_review: {
+                         points_possible: 50,
+                         due_at: peer_review_base_due_date.iso8601
+                       }
+                     }
+                   }.to_json,
+                   headers: {
+                     "CONTENT_TYPE" => "application/json",
+                     "HTTP_AUTHORIZATION" => "Bearer #{access_token_for_user(@teacher)}"
+                   }
+
+              expect(response).to be_successful
+              assignment = Assignment.where(title: "Assignment created with feature enabled").first
+              expect(assignment.peer_review_sub_assignment).to be_present
+
+              @course.disable_feature!(:peer_review_allocation_and_grading)
+
+              parent_new_due_date = 2.weeks.from_now
+
+              allow(SubmissionLifecycleManager).to receive(:recompute).and_call_original
+
+              put "/api/v1/courses/#{@course.id}/assignments/#{assignment.id}",
+                  params: {
+                    assignment: {
+                      due_at: parent_new_due_date.iso8601
+                    }
+                  }.to_json,
+                  headers: {
+                    "CONTENT_TYPE" => "application/json",
+                    "HTTP_AUTHORIZATION" => "Bearer #{access_token_for_user(@teacher)}"
+                  }
+
+              expect(response).to be_successful
+
+              expect(SubmissionLifecycleManager).to have_received(:recompute).with(
+                assignment,
+                update_grades: true,
+                executing_user: @teacher
+              ).once
+
+              expect(SubmissionLifecycleManager).not_to have_received(:recompute).with(
+                assignment.peer_review_sub_assignment,
+                anything
+              )
+            end
+          end
+        end
       end
     end
 
@@ -3775,7 +4676,7 @@ describe AssignmentsApiController, type: :request do
             due_at: params[:due_at],
             unlock_at: params[:unlock_at],
             lock_at: params[:lock_at]
-          ).and_return(double("peer_review_sub_assignment"))
+          ).and_return(instance_double(PeerReviewSubAssignment))
 
           test_object.send(:create_api_peer_review_sub_assignment, parent_assignment, params)
         end
@@ -3786,7 +4687,7 @@ describe AssignmentsApiController, type: :request do
           expect(PeerReview::PeerReviewCreatorService).to receive(:call).with(
             parent_assignment:,
             points_possible: 25
-          ).and_return(double("peer_review_sub_assignment"))
+          ).and_return(instance_double(PeerReviewSubAssignment))
 
           test_object.send(:create_api_peer_review_sub_assignment, parent_assignment, params)
         end
@@ -3796,7 +4697,7 @@ describe AssignmentsApiController, type: :request do
 
           expect(PeerReview::PeerReviewCreatorService).to receive(:call).with(
             parent_assignment:
-          ).and_return(double("peer_review_sub_assignment"))
+          ).and_return(instance_double(PeerReviewSubAssignment))
 
           test_object.send(:create_api_peer_review_sub_assignment, parent_assignment, params)
         end
@@ -3806,7 +4707,7 @@ describe AssignmentsApiController, type: :request do
 
           expect(PeerReview::PeerReviewCreatorService).to receive(:call).with(
             parent_assignment:
-          ).and_return(double("peer_review_sub_assignment"))
+          ).and_return(instance_double(PeerReviewSubAssignment))
 
           test_object.send(:create_api_peer_review_sub_assignment, parent_assignment, params)
         end
@@ -3822,7 +4723,7 @@ describe AssignmentsApiController, type: :request do
 
           expect(PeerReview::PeerReviewCreatorService).to receive(:call).with(
             parent_assignment:
-          ).and_return(double("peer_review_sub_assignment"))
+          ).and_return(instance_double(PeerReviewSubAssignment))
 
           test_object.send(:create_api_peer_review_sub_assignment, parent_assignment, params)
         end
@@ -3839,8 +4740,9 @@ describe AssignmentsApiController, type: :request do
           expect(PeerReview::PeerReviewCreatorService).to receive(:call).with(
             parent_assignment:,
             points_possible: 30,
-            due_at: params[:due_at]
-          ).and_return(double("peer_review_sub_assignment"))
+            due_at: params[:due_at],
+            lock_at: nil
+          ).and_return(instance_double(PeerReviewSubAssignment))
 
           test_object.send(:create_api_peer_review_sub_assignment, parent_assignment, params)
         end
@@ -3853,7 +4755,7 @@ describe AssignmentsApiController, type: :request do
           expect(PeerReview::PeerReviewCreatorService).to receive(:call).with(
             parent_assignment:,
             points_possible: 100
-          ).and_return(double("peer_review_sub_assignment"))
+          ).and_return(instance_double(PeerReviewSubAssignment))
 
           test_object.send(:create_api_peer_review_sub_assignment, parent_assignment, params)
         end
@@ -3865,7 +4767,7 @@ describe AssignmentsApiController, type: :request do
             expect(PeerReview::PeerReviewCreatorService).to receive(:call).with(
               parent_assignment:,
               grading_type:
-            ).and_return(double("peer_review_sub_assignment"))
+            ).and_return(instance_double(PeerReviewSubAssignment))
 
             test_object.send(:create_api_peer_review_sub_assignment, parent_assignment, params)
           end
@@ -3887,7 +4789,7 @@ describe AssignmentsApiController, type: :request do
             due_at: due_date,
             unlock_at: unlock_date,
             lock_at: lock_date
-          ).and_return(double("peer_review_sub_assignment"))
+          ).and_return(instance_double(PeerReviewSubAssignment))
 
           test_object.send(:create_api_peer_review_sub_assignment, parent_assignment, params)
         end
@@ -3956,12 +4858,13 @@ describe AssignmentsApiController, type: :request do
             ]
           }
 
-          peer_review_sub_assignment = double("peer_review_sub_assignment")
+          peer_review_sub_assignment = instance_double(PeerReviewSubAssignment)
           allow(PeerReview::PeerReviewCreatorService).to receive(:call).and_return(peer_review_sub_assignment)
 
           expect(PeerReview::DateOverriderService).to receive(:call).with(
             peer_review_sub_assignment:,
-            overrides: params[:peer_review_overrides]
+            overrides: params[:peer_review_overrides],
+            reload_associations: true
           )
 
           test_object.send(:create_api_peer_review_sub_assignment, parent_assignment, params)
@@ -3970,7 +4873,7 @@ describe AssignmentsApiController, type: :request do
         it "does not call DateOverriderService when peer_review_overrides are not provided" do
           params = { points_possible: 50 }
 
-          peer_review_sub_assignment = double("peer_review_sub_assignment")
+          peer_review_sub_assignment = instance_double(PeerReviewSubAssignment)
           allow(PeerReview::PeerReviewCreatorService).to receive(:call).and_return(peer_review_sub_assignment)
 
           expect(PeerReview::DateOverriderService).not_to receive(:call)
@@ -3984,12 +4887,13 @@ describe AssignmentsApiController, type: :request do
             peer_review_overrides: []
           }
 
-          peer_review_sub_assignment = double("peer_review_sub_assignment")
+          peer_review_sub_assignment = instance_double(PeerReviewSubAssignment)
           allow(PeerReview::PeerReviewCreatorService).to receive(:call).and_return(peer_review_sub_assignment)
 
           expect(PeerReview::DateOverriderService).to receive(:call).with(
             peer_review_sub_assignment:,
-            overrides: []
+            overrides: [],
+            reload_associations: true
           )
 
           test_object.send(:create_api_peer_review_sub_assignment, parent_assignment, params)
@@ -4004,8 +4908,8 @@ describe AssignmentsApiController, type: :request do
             ]
           }
 
-          peer_review_sub_assignment = double("peer_review_sub_assignment")
-          allow(PeerReview::DateOverriderService).to receive(:call)
+          peer_review_sub_assignment = instance_double(PeerReviewSubAssignment)
+          allow(PeerReview::DateOverriderService).to receive(:call).and_return(1)
 
           expect(PeerReview::PeerReviewCreatorService).to receive(:call).with(
             parent_assignment:,
@@ -4024,13 +4928,15 @@ describe AssignmentsApiController, type: :request do
             ]
           }
 
-          peer_review_sub_assignment = double("peer_review_sub_assignment")
+          peer_review_sub_assignment = instance_double(PeerReviewSubAssignment)
           allow(PeerReview::PeerReviewCreatorService).to receive(:call).and_return(peer_review_sub_assignment)
-          allow(PeerReview::DateOverriderService).to receive(:call)
+          allow(PeerReview::DateOverriderService).to receive(:call).and_return(1)
 
           result = test_object.send(:create_api_peer_review_sub_assignment, parent_assignment, params)
 
-          expect(result).to eq(peer_review_sub_assignment)
+          expect(result).to be_a(Hash)
+          expect(result[:peer_review_sub_assignment]).to eq(peer_review_sub_assignment)
+          expect(result[:overrides_affected]).to eq(1)
         end
 
         it "successfully creates peer review sub assignment with overrides via real service calls" do
@@ -4190,7 +5096,7 @@ describe AssignmentsApiController, type: :request do
           expect(result).to eq({})
         end
 
-        it "ignores nil values" do
+        it "includes explicit nil values for clearing" do
           params = {
             points_possible: nil,
             grading_type: nil,
@@ -4201,23 +5107,31 @@ describe AssignmentsApiController, type: :request do
 
           result = test_object.send(:prepare_peer_review_params, params)
 
-          expect(result).to eq({})
+          # All nil values are included to support explicit clearing
+          expect(result).to eq({
+                                 points_possible: nil,
+                                 grading_type: nil,
+                                 due_at: nil,
+                                 unlock_at: nil,
+                                 lock_at: nil
+                               })
         end
 
-        it "ignores only blank values while preserving present ones" do
+        it "ignores blank strings while preserving present values and explicit nil" do
           params = {
             points_possible: 100,
-            grading_type: "",
+            grading_type: "",       # blank string - excluded
             due_at: 1.week.from_now,
-            unlock_at: nil,
-            lock_at: ""
+            unlock_at: nil,         # explicit nil - included for clearing
+            lock_at: ""             # blank string - excluded
           }
 
           result = test_object.send(:prepare_peer_review_params, params)
 
           expect(result).to eq({
                                  points_possible: 100,
-                                 due_at: params[:due_at]
+                                 due_at: params[:due_at],
+                                 unlock_at: nil
                                })
         end
       end
@@ -4242,13 +5156,13 @@ describe AssignmentsApiController, type: :request do
       end
 
       context "when params contains mixed valid and invalid values" do
-        it "extracts only valid present values" do
+        it "extracts valid present values and explicit nil for clearing" do
           params = {
             points_possible: 0, # zero is valid
             grading_type: "pass_fail",
-            due_at: "",
+            due_at: "",              # blank string - excluded
             unlock_at: 1.day.from_now,
-            lock_at: nil,
+            lock_at: nil,            # explicit nil - included for clearing
             invalid_param: "ignored"
           }
 
@@ -4257,7 +5171,25 @@ describe AssignmentsApiController, type: :request do
           expect(result).to eq({
                                  points_possible: 0,
                                  grading_type: "pass_fail",
-                                 unlock_at: params[:unlock_at]
+                                 unlock_at: params[:unlock_at],
+                                 lock_at: nil
+                               })
+        end
+
+        it "distinguishes between blank strings, explicit nil, and missing keys" do
+          params = {
+            points_possible: 50,     # present value - include
+            grading_type: "",        # blank string - exclude
+            due_at: nil,             # explicit nil - include for clearing
+            # unlock_at: missing     # not in params - exclude
+            lock_at: "  " # whitespace - exclude
+          }
+
+          result = test_object.send(:prepare_peer_review_params, params)
+
+          expect(result).to eq({
+                                 points_possible: 50,
+                                 due_at: nil
                                })
         end
       end
@@ -4377,74 +5309,261 @@ describe AssignmentsApiController, type: :request do
     end
 
     describe "update_api_assignment" do
+      def call_update_assignment_api(assignment, params, user)
+        controller = AssignmentsApiController.new
+        controller.instance_variable_set(:@current_user, user)
+        controller.instance_variable_set(:@context, assignment.context)
+        # Extract assignment params just like the real controller does
+        assignment_params = (params.is_a?(ActionController::Parameters) && params.key?(:assignment)) ? params[:assignment] : params
+        controller.send(:update_api_assignment, assignment, assignment_params, user)
+      end
+
       describe "peer review sub assignment logic" do
         let(:course) { course_model }
         let(:assignment) { assignment_model(context: course, name: "Main Assignment") }
-        let(:test_object) { Object.new.extend(Api::V1::Assignment) }
         let(:user) { user_model }
+        let(:test_object) do
+          obj = Object.new.extend(Api::V1::Assignment)
+          obj.define_singleton_method(:strong_anything) { ArbitraryStrongishParams::ANYTHING }
+          obj
+        end
         let(:assignment_params) { ActionController::Parameters.new({ peer_review: { points_possible: 50 } }).permit! }
-        let(:prepared_update) { { assignment: } }
 
         before do
           course.enable_feature!(:peer_review_allocation_and_grading)
-          allow(test_object).to receive(:prepare_assignment_create_or_update).and_return(prepared_update.merge(valid: true))
-          allow(SubmissionLifecycleManager).to receive(:recompute)
         end
 
         context "when assignment update succeeds and peer review grading feature is enabled" do
           context "when assignment has existing peer review sub assignment" do
-            let(:peer_review_sub_assignment) { double("peer_review_sub_assignment") }
-
-            before do
-              allow(assignment).to receive(:peer_review_sub_assignment).and_return(peer_review_sub_assignment)
+            let!(:peer_review_sub_assignment) do
+              result = peer_review_model(parent_assignment: assignment)
+              assignment.reload
+              result
             end
 
             context "when assignment has peer_reviews enabled" do
-              before do
-                allow(assignment).to receive(:peer_reviews).and_return(true)
-              end
-
               it "calls update_api_peer_review_sub_assignment" do
-                expect(test_object).to receive(:update_api_peer_review_sub_assignment)
+                expect_any_instance_of(AssignmentsApiController).to receive(:update_api_peer_review_sub_assignment)
                   .with(assignment, assignment_params[:peer_review])
+                  .and_call_original
 
-                result = test_object.send(:update_api_assignment, assignment, assignment_params, user)
+                result = call_update_assignment_api(assignment, assignment_params, user)
                 expect(result).to eq(:ok)
               end
             end
 
             context "when assignment has peer_reviews disabled" do
               before do
-                allow(assignment).to receive(:peer_reviews).and_return(false)
+                assignment.update!(peer_reviews: false)
               end
 
               it "calls destroy on peer_review_sub_assignment" do
-                expect(peer_review_sub_assignment).to receive(:destroy)
-
-                result = test_object.send(:update_api_assignment, assignment, assignment_params, user)
+                result = call_update_assignment_api(assignment, assignment_params, user)
                 expect(result).to eq(:ok)
+                expect(peer_review_sub_assignment.reload.workflow_state).to eq("deleted")
               end
             end
           end
 
           context "when assignment has no existing peer review sub assignment" do
-            before do
-              allow(assignment).to receive_messages(peer_review_sub_assignment: nil, peer_reviews: true)
+            context "when assignment has legacy peer reviews" do
+              let!(:assignment_with_legacy_pr) do
+                assignment_model(
+                  context: course,
+                  peer_reviews: true,
+                  name: "Assignment with Legacy Peer Reviews"
+                )
+              end
+
+              it "does not create a peer review sub assignment when updating" do
+                assignment_params_local = ActionController::Parameters.new({
+                                                                             assignment: {
+                                                                               peer_reviews: true
+                                                                             },
+                                                                             peer_review: { points_possible: 50 }
+                                                                           }).permit!
+
+                expect(assignment_with_legacy_pr.peer_review_sub_assignment).to be_nil
+
+                result = call_update_assignment_api(assignment_with_legacy_pr, assignment_params_local, user)
+
+                expect(result).to eq(:ok)
+                assignment_with_legacy_pr.reload
+                expect(assignment_with_legacy_pr.peer_review_sub_assignment).to be_nil
+              end
             end
 
-            it "calls create_api_peer_review_sub_assignment" do
-              expect(test_object).to receive(:create_api_peer_review_sub_assignment)
-                .with(assignment, assignment_params[:peer_review])
+            context "when peer_reviews is being newly enabled" do
+              let!(:assignment_without_peer_reviews) do
+                assignment_model(
+                  context: course,
+                  peer_reviews: false,
+                  name: "Assignment without Peer Reviews",
+                  points_possible: 100
+                )
+              end
 
-              result = test_object.send(:update_api_assignment, assignment, assignment_params, user)
-              expect(result).to eq(:ok)
+              it "creates a peer review sub assignment" do
+                params = ActionController::Parameters.new({
+                                                            assignment: {
+                                                              peer_reviews: true,
+                                                              peer_review: { points_possible: 50, grading_type: "points" }
+                                                            }
+                                                          }).permit!
+
+                expect(assignment_without_peer_reviews.peer_review_sub_assignment).to be_nil
+
+                result = call_update_assignment_api(assignment_without_peer_reviews, params, user)
+
+                expect(result).to eq(:ok)
+                assignment_without_peer_reviews.reload
+                expect(assignment_without_peer_reviews.peer_review_sub_assignment).to be_present
+                expect(assignment_without_peer_reviews.peer_review_sub_assignment.points_possible).to eq(50)
+              end
+
+              context "parameter passing" do
+                it "passes correct peer_review parameters to create method" do
+                  peer_review_params = ActionController::Parameters.new({
+                                                                          points_possible: 75,
+                                                                          grading_type: "percent",
+                                                                          due_at: 1.week.from_now,
+                                                                          unlock_at: 1.day.from_now,
+                                                                          lock_at: 2.weeks.from_now
+                                                                        }).permit!
+                  params = ActionController::Parameters.new({
+                                                              assignment: {
+                                                                peer_reviews: true,
+                                                                peer_review: peer_review_params
+                                                              }
+                                                            }).permit!
+
+                  expect_any_instance_of(AssignmentsApiController).to receive(:create_api_peer_review_sub_assignment)
+                    .with(assignment_without_peer_reviews, peer_review_params)
+                    .and_call_original
+
+                  call_update_assignment_api(assignment_without_peer_reviews, params, user)
+                end
+
+                it "passes nil peer_review parameters when not provided" do
+                  params = ActionController::Parameters.new({
+                                                              assignment: {
+                                                                peer_reviews: true
+                                                              }
+                                                            }).permit!
+
+                  expect_any_instance_of(AssignmentsApiController).to receive(:create_api_peer_review_sub_assignment)
+                    .with(assignment_without_peer_reviews, nil)
+                    .and_call_original
+
+                  call_update_assignment_api(assignment_without_peer_reviews, params, user)
+                end
+
+                it "handles empty peer_review parameters" do
+                  params = ActionController::Parameters.new({
+                                                              assignment: {
+                                                                peer_reviews: true,
+                                                                peer_review: {}
+                                                              }
+                                                            }).permit!
+
+                  expect_any_instance_of(AssignmentsApiController).to receive(:create_api_peer_review_sub_assignment) do |_controller, assignment_arg, params_arg|
+                    expect(assignment_arg).to eq(assignment_without_peer_reviews)
+                    expect(params_arg).to be_a(ActionController::Parameters)
+                    expect(params_arg.to_h).to be_empty
+                  end.and_call_original
+
+                  call_update_assignment_api(assignment_without_peer_reviews, params, user)
+                end
+              end
+
+              context "transaction behavior" do
+                it "wraps assignment update and peer review creation in transaction" do
+                  params = ActionController::Parameters.new({
+                                                              assignment: {
+                                                                peer_reviews: true,
+                                                                peer_review: { points_possible: 50 }
+                                                              }
+                                                            }).permit!
+
+                  expect(Assignment).to receive(:transaction).at_least(:once).and_call_original
+
+                  call_update_assignment_api(assignment_without_peer_reviews, params, user)
+                end
+
+                it "creates peer review sub assignment when peer reviews is newly enabled" do
+                  params = ActionController::Parameters.new({
+                                                              assignment: {
+                                                                peer_reviews: true,
+                                                                peer_review: { points_possible: 50 }
+                                                              }
+                                                            }).permit!
+
+                  expect(assignment_without_peer_reviews.peer_review_sub_assignment).to be_nil
+
+                  call_update_assignment_api(assignment_without_peer_reviews, params, user)
+
+                  assignment_without_peer_reviews.reload
+                  expect(assignment_without_peer_reviews.peer_review_sub_assignment).to be_present
+                end
+              end
+
+              context "error handling" do
+                it "raises error when peer review sub assignment creation fails" do
+                  params = ActionController::Parameters.new({
+                                                              assignment: {
+                                                                peer_reviews: true,
+                                                                peer_review: { points_possible: 50 }
+                                                              }
+                                                            }).permit!
+
+                  allow_any_instance_of(AssignmentsApiController).to receive(:create_api_peer_review_sub_assignment)
+                    .and_raise(StandardError.new("Creation failed"))
+
+                  expect do
+                    call_update_assignment_api(assignment_without_peer_reviews, params, user)
+                  end.to raise_error(StandardError, "Creation failed")
+                end
+
+                it "returns false when create_api_peer_review_sub_assignment returns false" do
+                  params = ActionController::Parameters.new({
+                                                              assignment: {
+                                                                peer_reviews: true,
+                                                                peer_review: { points_possible: 50 }
+                                                              }
+                                                            }).permit!
+
+                  allow_any_instance_of(AssignmentsApiController).to receive(:create_api_peer_review_sub_assignment)
+                    .and_return(false)
+
+                  result = call_update_assignment_api(assignment_without_peer_reviews, params, user)
+
+                  expect(result).to be false
+                  assignment_without_peer_reviews.reload
+                  expect(assignment_without_peer_reviews.peer_review_sub_assignment).to be_nil
+                end
+              end
+
+              context "association reloading" do
+                it "reloads peer_review_sub_assignment association when creating new peer review sub assignment" do
+                  params = ActionController::Parameters.new({
+                                                              assignment: {
+                                                                peer_reviews: true,
+                                                                peer_review: { points_possible: 50 }
+                                                              }
+                                                            }).permit!
+
+                  expect(assignment_without_peer_reviews.association(:peer_review_sub_assignment)).to receive(:reload).and_call_original
+
+                  call_update_assignment_api(assignment_without_peer_reviews, params, user)
+                end
+              end
             end
           end
         end
 
         context "when assignment update fails" do
           before do
-            allow(test_object).to receive(:prepare_assignment_create_or_update).and_return(prepared_update.merge(valid: false))
+            allow(test_object).to receive(:prepare_assignment_create_or_update).and_return({ valid: false })
           end
 
           it "does not execute the peer review sub assignment update logic" do
@@ -4471,25 +5590,164 @@ describe AssignmentsApiController, type: :request do
           end
         end
 
+        context "peer review sub assignment recompute via SubmissionLifecycleManager" do
+          let!(:peer_review_sub_assignment) do
+            result = peer_review_model(parent_assignment: assignment, due_at: 1.week.from_now)
+            assignment.reload
+            result
+          end
+
+          context "when peer review dates change" do
+            it "calls SubmissionLifecycleManager" do
+              new_due_at = 2.weeks.from_now
+              assignment_params_with_date = ActionController::Parameters.new({
+                                                                               peer_review: { due_at: new_due_at }
+                                                                             }).permit!
+
+              slm_recompute_called = false
+              allow(SubmissionLifecycleManager).to receive(:recompute) do |assignment_obj, options|
+                if assignment_obj.is_a?(PeerReviewSubAssignment) && options[:executing_user] == user
+                  slm_recompute_called = true
+                end
+              end
+
+              test_object.send(:update_api_assignment, assignment, assignment_params_with_date, user)
+
+              expect(slm_recompute_called).to be true
+            end
+          end
+
+          context "when peer review dates do not change" do
+            it "does not call SubmissionLifecycleManager when overrides do not change" do
+              assignment_params_no_date = ActionController::Parameters.new({
+                                                                             peer_review: { points_possible: 100 }
+                                                                           }).permit!
+
+              slm_recompute_called = false
+              allow(SubmissionLifecycleManager).to receive(:recompute) do |assignment_obj, options|
+                if assignment_obj.is_a?(PeerReviewSubAssignment) && options[:executing_user] == user
+                  slm_recompute_called = true
+                end
+              end
+
+              test_object.send(:update_api_assignment, assignment, assignment_params_no_date, user)
+
+              expect(slm_recompute_called).to be false
+            end
+
+            it "calls SubmissionLifecycleManager when override is created" do
+              section1 = assignment.context.course_sections.create!(name: "Test Section 1")
+
+              assignment.assignment_overrides.create!(
+                set_type: "CourseSection",
+                set_id: section1.id,
+                due_at: 2.weeks.from_now
+              )
+
+              assignment_params_with_override = ActionController::Parameters.new({
+                                                                                   peer_review: {
+                                                                                     peer_review_overrides: [
+                                                                                       { course_section_id: section1.id, due_at: 2.weeks.from_now }
+                                                                                     ]
+                                                                                   }
+                                                                                 }).permit!
+
+              slm_recompute_called = false
+              allow(SubmissionLifecycleManager).to receive(:recompute) do |assignment_obj, options|
+                if assignment_obj.is_a?(PeerReviewSubAssignment) && options[:executing_user] == user
+                  slm_recompute_called = true
+                end
+              end
+
+              test_object.send(:update_api_assignment, assignment, assignment_params_with_override, user)
+
+              expect(slm_recompute_called).to be true
+            end
+
+            it "calls SubmissionLifecycleManager when override is updated" do
+              section1 = assignment.context.course_sections.create!(name: "Test Section 2")
+
+              parent_override = assignment.assignment_overrides.create!(
+                set_type: "CourseSection",
+                set_id: section1.id,
+                due_at: 2.weeks.from_now
+              )
+
+              peer_review_override = peer_review_sub_assignment.assignment_overrides.create!(
+                set_type: "CourseSection",
+                set_id: section1.id,
+                due_at: 2.weeks.from_now,
+                parent_override:
+              )
+
+              parent_override.update!(due_at: 3.weeks.from_now)
+
+              assignment_params_with_updated_override = ActionController::Parameters.new({
+                                                                                           peer_review: {
+                                                                                             peer_review_overrides: [
+                                                                                               { id: peer_review_override.id, course_section_id: section1.id, due_at: 3.weeks.from_now }
+                                                                                             ]
+                                                                                           }
+                                                                                         }).permit!
+
+              slm_recompute_called = false
+              allow(SubmissionLifecycleManager).to receive(:recompute) do |assignment_obj, options|
+                if assignment_obj.is_a?(PeerReviewSubAssignment) && options[:executing_user] == user
+                  slm_recompute_called = true
+                end
+              end
+
+              test_object.send(:update_api_assignment, assignment, assignment_params_with_updated_override, user)
+
+              expect(slm_recompute_called).to be true
+            end
+
+            it "calls SubmissionLifecycleManager when override is deleted" do
+              section1 = assignment.context.course_sections.create!(name: "Test Section 3")
+
+              parent_override = assignment.assignment_overrides.create!(
+                set_type: "CourseSection",
+                set_id: section1.id,
+                due_at: 2.weeks.from_now
+              )
+
+              peer_review_sub_assignment.assignment_overrides.create!(
+                set_type: "CourseSection",
+                set_id: section1.id,
+                due_at: 2.weeks.from_now,
+                parent_override:
+              )
+
+              assignment_params_with_no_overrides = ActionController::Parameters.new({
+                                                                                       peer_review: {
+                                                                                         peer_review_overrides: []
+                                                                                       }
+                                                                                     }).permit!
+
+              slm_recompute_called = false
+              allow(SubmissionLifecycleManager).to receive(:recompute) do |assignment_obj, options|
+                if assignment_obj.is_a?(PeerReviewSubAssignment) && options[:executing_user] == user
+                  slm_recompute_called = true
+                end
+              end
+
+              test_object.send(:update_api_assignment, assignment, assignment_params_with_no_overrides, user)
+
+              expect(slm_recompute_called).to be true
+            end
+          end
+        end
+
         context "error handling" do
           before do
             allow(test_object).to receive(:update_api_assignment_with_overrides).and_return(:ok)
             allow(assignment).to receive_messages(peer_review_sub_assignment: nil, peer_reviews: true)
           end
 
-          it "raises error when create_api_peer_review_sub_assignment fails (wrapped in transaction)" do
-            allow(test_object).to receive(:create_api_peer_review_sub_assignment)
-              .and_raise(StandardError.new("Creation failed"))
-
-            expect do
-              test_object.send(:update_api_assignment, assignment, assignment_params, user)
-            end.to raise_error(StandardError, "Creation failed")
-          end
-
           it "raises error when update_api_peer_review_sub_assignment fails (wrapped in transaction)" do
-            peer_review_sub_assignment = double("peer_review_sub_assignment")
-            peer_reviews = true
-            allow(assignment).to receive_messages(peer_review_sub_assignment:, peer_reviews:)
+            peer_review_sub_assignment = instance_double(PeerReviewSubAssignment)
+            allow(assignment).to receive_messages(peer_review_sub_assignment:, peer_reviews: true)
+            allow(peer_review_sub_assignment).to receive(:update_cached_due_dates?).and_return(false)
             allow(test_object).to receive(:update_api_peer_review_sub_assignment)
               .and_raise(StandardError.new("Update failed"))
 
@@ -4499,9 +5757,9 @@ describe AssignmentsApiController, type: :request do
           end
 
           it "raises error when peer_review_sub_assignment.destroy fails (wrapped in transaction)" do
-            peer_review_sub_assignment = double("peer_review_sub_assignment")
-            peer_reviews = false
-            allow(assignment).to receive_messages(peer_review_sub_assignment:, peer_reviews:)
+            peer_review_sub_assignment = instance_double(PeerReviewSubAssignment)
+            allow(assignment).to receive_messages(peer_review_sub_assignment:, peer_reviews: false)
+            allow(peer_review_sub_assignment).to receive(:update_cached_due_dates?).and_return(false)
             allow(peer_review_sub_assignment).to receive(:destroy)
               .and_raise(StandardError.new("Deletion failed"))
 
@@ -4510,19 +5768,10 @@ describe AssignmentsApiController, type: :request do
             end.to raise_error(StandardError, "Deletion failed")
           end
 
-          it "rolls back transaction when create_api_peer_review_sub_assignment returns false" do
-            allow(test_object).to receive(:create_api_peer_review_sub_assignment)
-              .and_return(false)
-
-            result = test_object.send(:update_api_assignment, assignment, assignment_params, user)
-
-            expect(result).to be false
-          end
-
           it "rolls back transaction when update_api_peer_review_sub_assignment returns false" do
-            peer_review_sub_assignment = double("peer_review_sub_assignment")
-            peer_reviews = true
-            allow(assignment).to receive_messages(peer_review_sub_assignment:, peer_reviews:)
+            peer_review_model(parent_assignment: assignment)
+            assignment.reload
+            allow(assignment).to receive(:peer_review_sub_assignment).and_call_original
             allow(test_object).to receive(:update_api_peer_review_sub_assignment)
               .and_return(false)
 
@@ -4537,82 +5786,28 @@ describe AssignmentsApiController, type: :request do
             allow(test_object).to receive(:update_api_assignment_with_overrides).and_return(:ok)
           end
 
-          it "reloads peer_review_sub_assignment association when creating new peer review sub assignment" do
-            allow(assignment).to receive(:peer_review_sub_assignment).and_return(nil)
-            allow(test_object).to receive(:create_api_peer_review_sub_assignment)
-
-            expect(assignment.association(:peer_review_sub_assignment)).to receive(:reload)
-
-            test_object.send(:update_api_assignment, assignment, assignment_params, user)
-          end
-
           it "reloads peer_review_sub_assignment association when updating existing peer review sub assignment" do
-            peer_review_sub_assignment = double("peer_review_sub_assignment")
-            peer_reviews = true
-            allow(assignment).to receive_messages(peer_review_sub_assignment:, peer_reviews:)
-            allow(test_object).to receive(:update_api_peer_review_sub_assignment)
+            peer_review_model(parent_assignment: assignment)
+            assignment.reload
+            expect(assignment.peer_review_sub_assignment).to be_present
+            allow(test_object).to receive(:update_api_peer_review_sub_assignment).and_call_original
 
-            expect(assignment.association(:peer_review_sub_assignment)).to receive(:reload)
+            expect(assignment.association(:peer_review_sub_assignment)).to receive(:reload).and_call_original
 
             test_object.send(:update_api_assignment, assignment, assignment_params, user)
           end
 
           it "reloads peer_review_sub_assignment association when destroying existing peer review sub assignment" do
-            peer_review_sub_assignment = double("peer_review_sub_assignment")
-            peer_reviews = false
-            allow(assignment).to receive_messages(peer_review_sub_assignment:, peer_reviews:)
-            allow(peer_review_sub_assignment).to receive(:destroy)
+            peer_review_sub_assignment = peer_review_model(parent_assignment: assignment)
+            assignment.update!(peer_reviews: false)
+            assignment.reload
 
-            expect(assignment.association(:peer_review_sub_assignment)).to receive(:reload)
+            expect(assignment.association(:peer_review_sub_assignment)).to receive(:reload).at_least(:once).and_call_original
 
-            test_object.send(:update_api_assignment, assignment, assignment_params, user)
-          end
-        end
+            result = test_object.send(:update_api_assignment, assignment, assignment_params, user)
 
-        context "parameter passing" do
-          before do
-            allow(test_object).to receive(:update_api_assignment_with_overrides).and_return(:ok)
-            allow(assignment).to receive_messages(peer_review_sub_assignment: nil, peer_reviews: true)
-          end
-
-          it "passes correct peer_review parameters to create method" do
-            peer_review_params = {
-              points_possible: 75,
-              grading_type: "percent",
-              due_at: 1.week.from_now,
-              unlock_at: 1.day.from_now,
-              lock_at: 2.weeks.from_now
-            }
-            assignment_params = ActionController::Parameters.new({ peer_review: peer_review_params }).permit!
-
-            expect(test_object).to receive(:create_api_peer_review_sub_assignment) do |assignment_arg, params_arg|
-              expect(assignment_arg).to eq(assignment)
-              expect(params_arg).to be_a(ActionController::Parameters)
-              expect(params_arg.to_h.symbolize_keys).to include(peer_review_params)
-            end
-
-            test_object.send(:update_api_assignment, assignment, assignment_params, user)
-          end
-
-          it "passes nil peer_review parameters when not provided" do
-            assignment_params_without_peer_review = ActionController::Parameters.new({}).permit!
-
-            expect(test_object).to receive(:create_api_peer_review_sub_assignment)
-              .with(assignment, nil)
-
-            test_object.send(:update_api_assignment, assignment, assignment_params_without_peer_review, user)
-          end
-
-          it "handles empty peer_review parameters" do
-            assignment_params = ActionController::Parameters.new({ peer_review: {} }).permit!
-
-            expect(test_object).to receive(:create_api_peer_review_sub_assignment) do |assignment_arg, params_arg|
-              expect(assignment_arg).to eq(assignment)
-              expect(params_arg).to be_a(ActionController::Parameters)
-              expect(params_arg.to_h).to be_empty
-            end
-
-            test_object.send(:update_api_assignment, assignment, assignment_params, user)
+            expect(result).to eq(:ok)
+            expect(peer_review_sub_assignment.reload.workflow_state).to eq("deleted")
           end
         end
 
@@ -4629,37 +5824,145 @@ describe AssignmentsApiController, type: :request do
                                              }).permit!
           end
 
+          context "when assignment has graded peer reviews" do
+            before do
+              peer_review_model(parent_assignment: assignment)
+              assignment.reload
+              allow(test_object).to receive(:update_api_assignment_with_overrides).and_return(:ok)
+            end
+
+            it "wraps assignment update and peer review update in transaction when peer_review_allocation_and_grading is enabled" do
+              expect(Assignment).to receive(:transaction).at_least(:once).and_call_original
+
+              test_object.send(:update_api_assignment, assignment, assignment_params_with_overrides, user)
+            end
+
+            it "raises error when peer review update fails" do
+              allow(test_object).to receive(:update_api_peer_review_sub_assignment)
+                .and_raise(StandardError.new("Peer review update failed"))
+
+              expect do
+                test_object.send(:update_api_assignment, assignment, assignment_params_with_overrides, user)
+              end.to raise_error(StandardError, "Peer review update failed")
+            end
+          end
+        end
+      end
+
+      context "when overrides is an empty array" do
+        let(:course) { course_model }
+        let(:user) { user_model }
+        let(:assignment) do
+          assignment_model(
+            context: course,
+            peer_reviews: true
+          )
+        end
+        let(:assignment_params_with_empty_overrides) do
+          ActionController::Parameters.new({
+                                             assignment: {
+                                               assignment_overrides: [],
+                                               peer_review: {
+                                                 points_possible: 50,
+                                                 grading_type: "points"
+                                               }
+                                             }
+                                           }).permit!
+        end
+
+        before do
+          course.enable_feature!(:peer_review_allocation_and_grading)
+        end
+
+        it "calls update_api_assignment_with_overrides" do
+          expect_any_instance_of(AssignmentsApiController).to receive(:update_api_assignment_with_overrides).and_call_original
+
+          result = call_update_assignment_api(assignment, assignment_params_with_empty_overrides, user)
+          expect(result).to eq(:ok)
+        end
+
+        it "does not bypass override processing" do
+          expect_any_instance_of(AssignmentsApiController).to receive(:update_api_assignment_with_overrides).and_call_original
+
+          call_update_assignment_api(assignment, assignment_params_with_empty_overrides, user)
+        end
+
+        it "does not create peer review sub assignment for legacy peer reviews" do
+          expect(assignment.peer_review_sub_assignment).to be_nil
+
+          result = call_update_assignment_api(assignment, assignment_params_with_empty_overrides, user)
+
+          expect(result).to eq(:ok)
+          assignment.reload
+          expect(assignment.peer_review_sub_assignment).to be_nil
+        end
+
+        context "when assignment has graded peer reviews" do
           before do
-            allow(test_object).to receive(:update_api_assignment_with_overrides).and_return(:ok)
-            allow(assignment).to receive_messages(peer_review_sub_assignment: nil, peer_reviews: true)
-            allow(PeerReview::PeerReviewCreatorService).to receive(:call).and_return(double("peer_review_sub_assignment"))
-            allow(PeerReview::DateOverriderService).to receive(:call)
+            peer_review_model(parent_assignment: assignment)
+            assignment.reload
           end
 
-          it "wraps assignment update and peer review update in transaction when peer_review_allocation_and_grading is enabled" do
+          it "handles peer review update in transaction" do
             expect(Assignment).to receive(:transaction).at_least(:once).and_call_original
 
-            allow(assignment.association(:peer_review_sub_assignment)).to receive(:reload)
+            result = call_update_assignment_api(assignment, assignment_params_with_empty_overrides, user)
+            expect(result).to eq(:ok)
+          end
+        end
 
-            test_object.send(:update_api_assignment, assignment, assignment_params_with_overrides, user)
+        it "clears existing overrides" do
+          existing_section = course.course_sections.create!(name: "Section 1")
+          assignment.assignment_overrides.create!(
+            set: existing_section,
+            due_at: 1.week.from_now
+          )
+
+          expect_any_instance_of(AssignmentsApiController).to receive(:update_api_assignment_with_overrides) do |_controller, prep_update, _user|
+            expect(prep_update[:overrides]).to eq([])
+            :ok
           end
 
-          it "raises error and rolls back transaction when peer review update fails" do
-            allow(PeerReview::DateOverriderService).to receive(:call)
-              .and_raise(StandardError.new("Peer review update failed"))
+          call_update_assignment_api(assignment, assignment_params_with_empty_overrides, user)
+        end
 
-            expect do
-              test_object.send(:update_api_assignment, assignment, assignment_params_with_overrides, user)
-            end.to raise_error(StandardError, "Peer review update failed")
+        context "with peer review overrides" do
+          let(:assignment_params_with_peer_review_overrides) do
+            ActionController::Parameters.new({
+                                               assignment: {
+                                                 assignment_overrides: [],
+                                                 peer_review: {
+                                                   points_possible: 50,
+                                                   peer_review_overrides: []
+                                                 }
+                                               }
+                                             }).permit!
           end
 
-          it "raises error when peer review sub assignment creation fails" do
-            allow(test_object).to receive(:create_api_peer_review_sub_assignment)
-              .and_raise(StandardError.new("Creation failed"))
+          it "does not create peer review sub assignment for legacy peer reviews" do
+            expect(assignment.peer_review_sub_assignment).to be_nil
 
-            expect do
-              test_object.send(:update_api_assignment, assignment, assignment_params_with_overrides, user)
-            end.to raise_error(StandardError, "Creation failed")
+            result = call_update_assignment_api(assignment, assignment_params_with_peer_review_overrides, user)
+
+            expect(result).to eq(:ok)
+            assignment.reload
+            expect(assignment.peer_review_sub_assignment).to be_nil
+          end
+
+          context "when assignment has graded peer reviews" do
+            before do
+              peer_review_model(parent_assignment: assignment)
+              assignment.reload
+            end
+
+            it "handles empty peer_review_overrides alongside empty assignment_overrides" do
+              result = call_update_assignment_api(assignment, assignment_params_with_peer_review_overrides, user)
+
+              expect(result).to eq(:ok)
+              assignment.reload
+              expect(assignment.peer_review_sub_assignment).to be_present
+              expect(assignment.peer_review_sub_assignment.assignment_overrides.active.count).to eq(0)
+            end
           end
         end
       end
@@ -4823,7 +6126,7 @@ describe AssignmentsApiController, type: :request do
             due_at: params[:due_at],
             unlock_at: params[:unlock_at],
             lock_at: params[:lock_at]
-          ).and_return(double("peer_review_sub_assignment"))
+          ).and_return(instance_double(PeerReviewSubAssignment))
 
           test_object.send(:update_api_peer_review_sub_assignment, parent_assignment, params)
         end
@@ -4834,7 +6137,7 @@ describe AssignmentsApiController, type: :request do
           expect(PeerReview::PeerReviewUpdaterService).to receive(:call).with(
             parent_assignment:,
             points_possible: 25
-          ).and_return(double("peer_review_sub_assignment"))
+          ).and_return(instance_double(PeerReviewSubAssignment))
 
           test_object.send(:update_api_peer_review_sub_assignment, parent_assignment, params)
         end
@@ -4844,7 +6147,7 @@ describe AssignmentsApiController, type: :request do
 
           expect(PeerReview::PeerReviewUpdaterService).to receive(:call).with(
             parent_assignment:
-          ).and_return(double("peer_review_sub_assignment"))
+          ).and_return(instance_double(PeerReviewSubAssignment))
 
           test_object.send(:update_api_peer_review_sub_assignment, parent_assignment, params)
         end
@@ -4854,7 +6157,7 @@ describe AssignmentsApiController, type: :request do
 
           expect(PeerReview::PeerReviewUpdaterService).to receive(:call).with(
             parent_assignment:
-          ).and_return(double("peer_review_sub_assignment"))
+          ).and_return(instance_double(PeerReviewSubAssignment))
 
           test_object.send(:update_api_peer_review_sub_assignment, parent_assignment, params)
         end
@@ -4870,7 +6173,7 @@ describe AssignmentsApiController, type: :request do
 
           expect(PeerReview::PeerReviewUpdaterService).to receive(:call).with(
             parent_assignment:
-          ).and_return(double("peer_review_sub_assignment"))
+          ).and_return(instance_double(PeerReviewSubAssignment))
 
           test_object.send(:update_api_peer_review_sub_assignment, parent_assignment, params)
         end
@@ -4891,7 +6194,7 @@ describe AssignmentsApiController, type: :request do
             due_at: due_date,
             unlock_at: unlock_date,
             lock_at: lock_date
-          ).and_return(double("peer_review_sub_assignment"))
+          ).and_return(instance_double(PeerReviewSubAssignment))
 
           allow(parent_assignment.association(:peer_review_sub_assignment)).to receive(:reload)
 
@@ -4912,12 +6215,13 @@ describe AssignmentsApiController, type: :request do
             ]
           }
 
-          peer_review_sub_assignment = double("peer_review_sub_assignment")
+          peer_review_sub_assignment = instance_double(PeerReviewSubAssignment)
           allow(PeerReview::PeerReviewUpdaterService).to receive(:call).and_return(peer_review_sub_assignment)
 
           expect(PeerReview::DateOverriderService).to receive(:call).with(
             peer_review_sub_assignment:,
-            overrides: params[:peer_review_overrides]
+            overrides: params[:peer_review_overrides],
+            reload_associations: true
           )
 
           test_object.send(:update_api_peer_review_sub_assignment, parent_assignment, params)
@@ -4926,7 +6230,7 @@ describe AssignmentsApiController, type: :request do
         it "does not call DateOverriderService when peer_review_overrides are not provided" do
           params = { points_possible: 50 }
 
-          peer_review_sub_assignment = double("peer_review_sub_assignment")
+          peer_review_sub_assignment = instance_double(PeerReviewSubAssignment)
           allow(PeerReview::PeerReviewUpdaterService).to receive(:call).and_return(peer_review_sub_assignment)
 
           expect(PeerReview::DateOverriderService).not_to receive(:call)
@@ -4940,12 +6244,13 @@ describe AssignmentsApiController, type: :request do
             peer_review_overrides: []
           }
 
-          peer_review_sub_assignment = double("peer_review_sub_assignment")
+          peer_review_sub_assignment = instance_double(PeerReviewSubAssignment)
           allow(PeerReview::PeerReviewUpdaterService).to receive(:call).and_return(peer_review_sub_assignment)
 
           expect(PeerReview::DateOverriderService).to receive(:call).with(
             peer_review_sub_assignment:,
-            overrides: []
+            overrides: [],
+            reload_associations: true
           )
 
           test_object.send(:update_api_peer_review_sub_assignment, parent_assignment, params)
@@ -4960,8 +6265,8 @@ describe AssignmentsApiController, type: :request do
             ]
           }
 
-          peer_review_sub_assignment = double("peer_review_sub_assignment")
-          allow(PeerReview::DateOverriderService).to receive(:call)
+          peer_review_sub_assignment = instance_double(PeerReviewSubAssignment)
+          allow(PeerReview::DateOverriderService).to receive(:call).and_return(1)
 
           expect(PeerReview::PeerReviewUpdaterService).to receive(:call).with(
             parent_assignment:,
@@ -4980,13 +6285,107 @@ describe AssignmentsApiController, type: :request do
             ]
           }
 
-          peer_review_sub_assignment = double("peer_review_sub_assignment")
+          peer_review_sub_assignment = instance_double(PeerReviewSubAssignment)
           allow(PeerReview::PeerReviewUpdaterService).to receive(:call).and_return(peer_review_sub_assignment)
-          allow(PeerReview::DateOverriderService).to receive(:call)
+          allow(PeerReview::DateOverriderService).to receive(:call).and_return(1)
 
           result = test_object.send(:update_api_peer_review_sub_assignment, parent_assignment, params)
 
-          expect(result).to eq(peer_review_sub_assignment)
+          expect(result).to be_a(Hash)
+          expect(result[:peer_review_sub_assignment]).to eq(peer_review_sub_assignment)
+          expect(result[:overrides_affected]).to eq(1)
+        end
+      end
+
+      context "date preservation and clearing" do
+        let!(:peer_review_sub) do
+          parent_assignment.create_peer_review_sub_assignment!(
+            title: "Peer Review",
+            points_possible: 10,
+            due_at: 5.days.from_now,
+            unlock_at: 3.days.from_now,
+            lock_at: 1.week.from_now
+          )
+        end
+
+        it "preserves dates when updating without date params" do
+          original_due_at = peer_review_sub.due_at
+          original_unlock_at = peer_review_sub.unlock_at
+          original_lock_at = peer_review_sub.lock_at
+
+          params = { points_possible: 15 }
+
+          test_object.send(:update_api_peer_review_sub_assignment, parent_assignment, params)
+          peer_review_sub.reload
+
+          expect(peer_review_sub.due_at).to eq(original_due_at)
+          expect(peer_review_sub.unlock_at).to eq(original_unlock_at)
+          expect(peer_review_sub.lock_at).to eq(original_lock_at)
+          expect(peer_review_sub.points_possible).to eq(15)
+        end
+
+        it "clears dates when explicitly set to nil" do
+          params = {
+            due_at: nil,
+            unlock_at: nil,
+            lock_at: nil
+          }
+
+          test_object.send(:update_api_peer_review_sub_assignment, parent_assignment, params)
+          peer_review_sub.reload
+
+          expect(peer_review_sub.due_at).to be_nil
+          expect(peer_review_sub.unlock_at).to be_nil
+          expect(peer_review_sub.lock_at).to be_nil
+        end
+
+        it "updates dates when explicitly provided new values" do
+          new_due_at = 10.days.from_now
+          new_unlock_at = 8.days.from_now
+          new_lock_at = 15.days.from_now
+
+          params = {
+            due_at: new_due_at,
+            unlock_at: new_unlock_at,
+            lock_at: new_lock_at
+          }
+
+          test_object.send(:update_api_peer_review_sub_assignment, parent_assignment, params)
+          peer_review_sub.reload
+
+          expect(peer_review_sub.due_at).to be_within(1.second).of(new_due_at)
+          expect(peer_review_sub.unlock_at).to be_within(1.second).of(new_unlock_at)
+          expect(peer_review_sub.lock_at).to be_within(1.second).of(new_lock_at)
+        end
+
+        it "preserves dates when only clearing one date" do
+          original_due_at = peer_review_sub.due_at
+          original_unlock_at = peer_review_sub.unlock_at
+
+          params = { lock_at: nil }
+
+          test_object.send(:update_api_peer_review_sub_assignment, parent_assignment, params)
+          peer_review_sub.reload
+
+          expect(peer_review_sub.due_at).to eq(original_due_at)
+          expect(peer_review_sub.unlock_at).to eq(original_unlock_at)
+          expect(peer_review_sub.lock_at).to be_nil
+        end
+
+        it "handles mix of updates and clears" do
+          new_due_at = 6.days.from_now
+
+          params = {
+            due_at: new_due_at,
+            lock_at: nil,
+          }
+
+          test_object.send(:update_api_peer_review_sub_assignment, parent_assignment, params)
+          peer_review_sub.reload
+
+          expect(peer_review_sub.due_at).to be_within(1.second).of(new_due_at)
+          expect(peer_review_sub.unlock_at).to be_within(1.second).of(3.days.from_now)
+          expect(peer_review_sub.lock_at).to be_nil
         end
       end
 
@@ -5000,9 +6399,9 @@ describe AssignmentsApiController, type: :request do
             points_possible: 50,
             peer_review_overrides: [{ course_section_id: 1, due_at: "invalid" }]
           }
-          error_message = "Unlock date cannot be after lock date"
+          error_message = "Available from date cannot be after until date"
 
-          peer_review_sub_assignment = double("peer_review_sub_assignment")
+          peer_review_sub_assignment = instance_double(PeerReviewSubAssignment)
           allow(PeerReview::PeerReviewUpdaterService).to receive(:call).and_return(peer_review_sub_assignment)
           allow(PeerReview::DateOverriderService).to receive(:call)
             .and_raise(PeerReview::InvalidDatesError.new(error_message))
@@ -5023,6 +6422,47 @@ describe AssignmentsApiController, type: :request do
           expect do
             test_object.send(:update_api_peer_review_sub_assignment, parent_assignment, params)
           end.to raise_error(ActiveRecord::ConnectionNotEstablished, error_message)
+        end
+
+        context "when model validations fail" do
+          let(:peer_review_sub_assignment) do
+            peer_review_model(parent_assignment:, points_possible: 10)
+          end
+          let(:student) { user_model }
+          let(:assessor) { user_model }
+          let(:student_submission) { submission_model(assignment: parent_assignment, user: student) }
+          let(:assessor_submission) { submission_model(assignment: parent_assignment, user: assessor) }
+
+          before do
+            peer_review_sub_assignment
+            parent_assignment.reload
+          end
+
+          it "raises ActiveRecord::RecordInvalid when points_possible validation fails" do
+            AssessmentRequest.create!(
+              user: student,
+              asset: student_submission,
+              assessor_asset: assessor_submission,
+              assessor:,
+              workflow_state: "completed"
+            )
+
+            params = { points_possible: 20 }
+
+            expect do
+              test_object.send(:update_api_peer_review_sub_assignment, parent_assignment, params)
+            end.to raise_error(ActiveRecord::RecordInvalid, /Points possible/)
+          end
+
+          it "allows points_possible update when no peer review submissions exist" do
+            params = { points_possible: 20 }
+
+            result = test_object.send(:update_api_peer_review_sub_assignment, parent_assignment, params)
+
+            expect(result).to be_a(Hash)
+            expect(result[:peer_review_sub_assignment]).to be_a(PeerReviewSubAssignment)
+            expect(result[:peer_review_sub_assignment].points_possible).to eq(20)
+          end
         end
       end
     end
@@ -5078,7 +6518,7 @@ describe AssignmentsApiController, type: :request do
       api_create_assignment_in_course(@course, { description: "description",
                                                  allowed_extensions: "--docx" * 50 })
       json = JSON.parse response.body
-      expect(json["errors"]).to_not be_nil
+      expect(json["errors"]).not_to be_nil
       expect(json["errors"]&.keys).to eq ["assignment[allowed_extensions]"]
       expect(json["errors"]["assignment[allowed_extensions]"].first["message"]).to eq("Value too long, allowed length is 255")
     end
@@ -5105,7 +6545,7 @@ describe AssignmentsApiController, type: :request do
       api_create_assignment_in_course(@course, { "description" => "description",
                                                  "secure_params" => jwt })
       json = JSON.parse response.body
-      expect(json["errors"]).to_not be_nil
+      expect(json["errors"]).not_to be_nil
       expect(json["errors"]&.keys).to eq ["assignment[lti_context_id]"]
       expect(json["errors"]["assignment[lti_context_id]"].first["message"]).to eq("lti_context_id should be unique")
     end
@@ -5474,6 +6914,13 @@ describe AssignmentsApiController, type: :request do
             }
           end
 
+          # As from now we are validating that Nuw Quizzes is enabled when an Assignment with
+          # external tool Quizzes 2 is created, we need to enable the feature to make these
+          # specs pass
+          before do
+            allow(NewQuizzesFeaturesHelper).to receive(:new_quizzes_enabled?).and_return(true)
+          end
+
           it "doesn't retain peer review settings" do
             api_call(:post,
                      "/api/v1/courses/#{@course.id}/assignments",
@@ -5487,6 +6934,44 @@ describe AssignmentsApiController, type: :request do
                      { expected_status: 200 })
 
             expect(@course.assignments.last.peer_reviews).to be_falsey
+          end
+
+          it "identifies the assignment as quiz_lti and sets it up correctly" do
+            api_call(:post,
+                     "/api/v1/courses/#{@course.id}/assignments",
+                     {
+                       controller: "assignments_api",
+                       action: "create",
+                       format: "json",
+                       course_id: @course.id.to_s
+                     },
+                     { assignment: assignment_params },
+                     { expected_status: 200 })
+
+            assignment = @course.assignments.last
+            expect(assignment.quiz_lti?).to be true
+            expect(assignment.submission_types).to eq "external_tool"
+          end
+
+          context "when New Quizzes is not enabled" do
+            before do
+              allow(NewQuizzesFeaturesHelper).to receive(:new_quizzes_enabled?).and_return(false)
+            end
+
+            it "returns an error" do
+              response = api_call(:post,
+                                  "/api/v1/courses/#{@course.id}/assignments",
+                                  {
+                                    controller: "assignments_api",
+                                    action: "create",
+                                    format: "json",
+                                    course_id: @course.id.to_s
+                                  },
+                                  { assignment: assignment_params },
+                                  { expected_status: 400 })
+
+              expect(response["errors"]["external_tool_tag_attributes[url]"]).to be_present
+            end
           end
         end
 
@@ -6304,7 +7789,7 @@ describe AssignmentsApiController, type: :request do
 
         json = api_create_assignment_in_course(@course, assignment_params)
 
-        expect(json["errors"]).to_not be_nil
+        expect(json["errors"]).not_to be_nil
         expect(json["errors"]&.keys).to eq ["title"]
         expect(json["errors"]["title"].first["message"]).to eq("The title cannot be longer than 10 characters")
       end
@@ -7377,7 +8862,7 @@ describe AssignmentsApiController, type: :request do
                    { assignment: { assignment_overrides: { 0 => { course_section_id: @course.default_section.id, due_at: @section_due_at.iso8601 } } } },
                    {},
                    { expected_status: 403 })
-          expect(@assignment.assignment_overrides).to_not be_exists
+          expect(@assignment.assignment_overrides).not_to be_exists
 
           tag.update_attribute(:restrictions, { content: true }) # unrestrict due_dates
 
@@ -8217,6 +9702,121 @@ describe AssignmentsApiController, type: :request do
 
         expect(response).to be_successful
       end
+
+      context "when updating points_possible on peer review sub assignment" do
+        before :once do
+          @assignment = @course.assignments.create!(
+            name: "Assignment with Peer Reviews",
+            points_possible: 100,
+            peer_reviews: true
+          )
+
+          @peer_review_sub = PeerReview::PeerReviewCreatorService.call(
+            parent_assignment: @assignment,
+            points_possible: 50,
+            grading_type: "points"
+          )
+
+          @student = User.create!(name: "Test Student")
+          @assessor = User.create!(name: "Test Assessor")
+          @student_submission = submission_model(assignment: @assignment, user: @student)
+          @assessor_submission = submission_model(assignment: @assignment, user: @assessor)
+          @user = @teacher
+        end
+
+        it "allows updating points_possible when no peer review submissions exist" do
+          api_call(:put,
+                   "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}",
+                   {
+                     controller: "assignments_api",
+                     action: "update",
+                     format: "json",
+                     course_id: @course.id.to_s,
+                     id: @assignment.to_param
+                   },
+                   {
+                     assignment: {
+                       peer_reviews: true,
+                       peer_review: {
+                         points_possible: 75
+                       }
+                     }
+                   })
+
+          expect(response).to be_successful
+          @peer_review_sub.reload
+          expect(@peer_review_sub.points_possible).to eq(75)
+        end
+
+        it "returns error when updating points_possible after peer review submissions exist" do
+          AssessmentRequest.create!(
+            user: @student,
+            asset: @student_submission,
+            assessor_asset: @assessor_submission,
+            assessor: @assessor,
+            workflow_state: "completed"
+          )
+
+          api_call(:put,
+                   "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}",
+                   {
+                     controller: "assignments_api",
+                     action: "update",
+                     format: "json",
+                     course_id: @course.id.to_s,
+                     id: @assignment.to_param
+                   },
+                   {
+                     assignment: {
+                       peer_reviews: true,
+                       peer_review: {
+                         points_possible: 75
+                       }
+                     }
+                   },
+                   {},
+                   expected_status: 400)
+
+          expect(response).to have_http_status(:bad_request)
+          json = JSON.parse(response.body)
+          expect(json["errors"]).to be_present
+        end
+
+        it "does not change points_possible when validation fails" do
+          AssessmentRequest.create!(
+            user: @student,
+            asset: @student_submission,
+            assessor_asset: @assessor_submission,
+            assessor: @assessor,
+            workflow_state: "completed"
+          )
+
+          original_points = @peer_review_sub.points_possible
+
+          api_call(:put,
+                   "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}",
+                   {
+                     controller: "assignments_api",
+                     action: "update",
+                     format: "json",
+                     course_id: @course.id.to_s,
+                     id: @assignment.to_param
+                   },
+                   {
+                     assignment: {
+                       peer_reviews: true,
+                       peer_review: {
+                         points_possible: 75
+                       }
+                     }
+                   },
+                   {},
+                   expected_status: 400)
+
+          @peer_review_sub.reload
+          expect(@peer_review_sub.points_possible).to eq(original_points)
+        end
+      end
     end
 
     context "assignment that uses LTI 1.3" do
@@ -8623,7 +10223,7 @@ describe AssignmentsApiController, type: :request do
 
       it "translates assignment descriptions without verifiers" do
         course_with_teacher(active_all: true)
-        should_translate_user_content(@course, false) do |content|
+        should_translate_user_content(@course, include_verifiers: false) do |content|
           assignment = @course.assignments.create!(description: content, saving_user: @teacher)
           json = api_get_assignment_in_course(assignment, @course, no_verifiers: true)
           json["description"]
@@ -9436,12 +11036,7 @@ describe AssignmentsApiController, type: :request do
       context "when include_peer_review is false" do
         it "does not include peer_review_sub_assignment in JSON" do
           @course.enable_feature!(:peer_review_allocation_and_grading)
-          PeerReviewSubAssignment.create!(
-            title: "Peer Review Sub Assignment",
-            context: @course,
-            parent_assignment: @assignment,
-            points_possible: 50
-          )
+          peer_review_model(parent_assignment: @assignment, points_possible: 50)
 
           result = assignment_json(@assignment, @teacher, {}, { include_peer_review: false })
 
@@ -9452,12 +11047,7 @@ describe AssignmentsApiController, type: :request do
       context "when include_peer_review is not provided" do
         it "does not include peer_review_sub_assignment" do
           @course.enable_feature!(:peer_review_allocation_and_grading)
-          PeerReviewSubAssignment.create!(
-            title: "Peer Review Sub Assignment",
-            context: @course,
-            parent_assignment: @assignment,
-            points_possible: 50
-          )
+          peer_review_model(parent_assignment: @assignment, points_possible: 50)
 
           result = assignment_json(@assignment, @teacher, {}, {})
 
@@ -9471,30 +11061,21 @@ describe AssignmentsApiController, type: :request do
             @course.disable_feature!(:peer_review_allocation_and_grading)
           end
 
-          it "does not include peer_review_sub_assignment in JSON" do
-            result = assignment_json(@assignment, @teacher, {}, { include_peer_review: true })
+          context "when peer review sub assignment does not exist" do
+            it "does not include peer_review_sub_assignment in JSON" do
+              result = assignment_json(@assignment, @teacher, {}, { include_peer_review: true })
 
-            expect(result).not_to have_key("peer_review_sub_assignment")
-          end
-        end
-
-        context "when feature flag is enabled" do
-          before do
-            @course.enable_feature!(:peer_review_allocation_and_grading)
+              expect(result).not_to have_key("peer_review_sub_assignment")
+            end
           end
 
           context "when peer review sub assignment exists" do
             before do
-              @peer_review_sub = PeerReviewSubAssignment.create!(
-                title: "Peer Review Sub Assignment",
-                context: @course,
+              @peer_review_sub = peer_review_model(
                 parent_assignment: @assignment,
-                points_possible: 50,
-                grading_type: "points",
-                due_at: 1.week.from_now,
-                unlock_at: 1.day.from_now,
-                lock_at: 2.weeks.from_now
+                points_possible: 30
               )
+              @assignment.reload
             end
 
             it "includes peer_review_sub_assignment in JSON" do
@@ -9508,7 +11089,43 @@ describe AssignmentsApiController, type: :request do
               result = assignment_json(@assignment, @teacher, {}, { include_peer_review: true })
 
               peer_review_data = result["peer_review_sub_assignment"]
-              expect(peer_review_data["name"]).to eq("Peer Review Sub Assignment")
+              expect(peer_review_data["name"]).to eq(@peer_review_sub.title)
+              expect(peer_review_data["points_possible"]).to eq(30)
+              expect(peer_review_data["grading_type"]).to eq("points")
+            end
+          end
+        end
+
+        context "when feature flag is enabled" do
+          before do
+            @course.enable_feature!(:peer_review_allocation_and_grading)
+          end
+
+          context "when peer review sub assignment exists" do
+            before do
+              @peer_review_sub = peer_review_model(
+                parent_assignment: @assignment,
+                points_possible: 50,
+                grading_type: "points",
+                due_at: 1.week.from_now,
+                unlock_at: 1.day.from_now,
+                lock_at: 2.weeks.from_now
+              )
+              @assignment.reload
+            end
+
+            it "includes peer_review_sub_assignment in JSON" do
+              result = assignment_json(@assignment, @teacher, {}, { include_peer_review: true })
+
+              expect(result).to have_key("peer_review_sub_assignment")
+              expect(result["peer_review_sub_assignment"]).to be_a(Hash)
+            end
+
+            it "serializes peer review sub assignment with correct attributes" do
+              result = assignment_json(@assignment, @teacher, {}, { include_peer_review: true })
+
+              peer_review_data = result["peer_review_sub_assignment"]
+              expect(peer_review_data["name"]).to eq(@peer_review_sub.title)
               expect(peer_review_data["points_possible"]).to eq(50)
               expect(peer_review_data["grading_type"]).to eq("points")
               expect(peer_review_data["id"]).to eq(@peer_review_sub.id)
@@ -10163,7 +11780,7 @@ describe AssignmentsApiController, type: :request do
                           "id" => @a0.id,
                           "all_dates" => [{ "base" => true, "due_at" => @new_dates[1].iso8601 }]
                         }])
-        expect(@a0.cache_key(:availability)).to_not eq old_key
+        expect(@a0.cache_key(:availability)).not_to eq old_key
       end
 
       it "clears cache register values for quizzes" do
@@ -10172,7 +11789,7 @@ describe AssignmentsApiController, type: :request do
                           "id" => @q0.assignment.id,
                           "all_dates" => [{ "base" => true, "due_at" => @new_dates[1].iso8601 }]
                         }])
-        expect(@q0.cache_key(:availability)).to_not eq old_key
+        expect(@q0.cache_key(:availability)).not_to eq old_key
       end
     end
 
@@ -10466,10 +12083,11 @@ describe AssignmentsApiController, type: :request do
                                       resource_workflow_state: "published",
                                       resource_updated_at: Time.zone.now,
                                       context_url: "/courses/#{@course.id}/assignments/#{@assignment.id}",
+                                      resource_scan_path: nil,
                                       workflow_state: "completed",
                                       error_message: nil,
                                       issue_count: 0,
-                                      accessibility_issues: double(select: []))
+                                      accessibility_issues: instance_double(ActiveRecord::Relation, select: []))
 
         expect(Accessibility::ResourceScannerService).to receive(:new)
           .with(resource: @assignment)
@@ -10492,6 +12110,103 @@ describe AssignmentsApiController, type: :request do
 
       it "returns forbidden for students" do
         accessibility_scan_request(@student, @assignment.id.to_s, expected_status: 403)
+      end
+    end
+  end
+
+  describe "POST accessibility_queue_scan" do
+    before :once do
+      course_with_teacher(active_all: true)
+      @student = student_in_course(active_all: true).user
+      @assignment = @course.assignments.create!(
+        title: "Test Assignment",
+        description: "<h1>Title</h1><p>Content</p>"
+      )
+    end
+
+    def accessibility_queue_scan_request(user, assignment_id, expected_status: 200)
+      url = "/api/v1/courses/#{@course.id}/assignments/#{assignment_id}/accessibility/queue_scan"
+      path = {
+        controller: "assignments_api",
+        action: "accessibility_queue_scan",
+        format: "json",
+        course_id: @course.id.to_s,
+        assignment_id:
+      }
+      api_call_as_user(user, :post, url, path, {}, {}, { expected_status: })
+    end
+
+    context "when a11y_checker feature is enabled" do
+      before do
+        @course.account.enable_feature!(:a11y_checker)
+        @course.enable_feature!(:a11y_checker_eap)
+      end
+
+      it "requires manage course content permissions" do
+        accessibility_queue_scan_request(@student, @assignment.id.to_s, expected_status: 403)
+      end
+
+      it "queues an asynchronous accessibility scan and returns scan object with queued state" do
+        json = accessibility_queue_scan_request(@teacher, @assignment.id.to_s)
+
+        expect(json["id"]).to be_present
+        expect(json["resource_id"]).to eq(@assignment.id)
+        expect(json["resource_type"]).to eq("Assignment")
+        expect(json["resource_name"]).to eq("Test Assignment")
+        expect(json["workflow_state"]).to eq("queued")
+      end
+
+      it "returns 404 for non-existent assignment" do
+        accessibility_queue_scan_request(@teacher, "999999", expected_status: 404)
+      end
+
+      it "calls ResourceScannerService with the assignment using async call method" do
+        service = Accessibility::ResourceScannerService.new(resource: @assignment)
+
+        expect(Accessibility::ResourceScannerService).to receive(:new)
+          .with(resource: @assignment)
+          .and_return(service)
+        # Stub delay to prevent actual job queueing but allow scan creation
+        expect(service).to receive(:delay).and_return(service)
+        expect(service).to receive(:scan_resource)
+
+        accessibility_queue_scan_request(@teacher, @assignment.id.to_s)
+      end
+
+      it "does not queue duplicate scans if one is already queued" do
+        # Create an existing queued scan
+        existing_scan = AccessibilityResourceScan.create!(
+          context: @assignment,
+          course_id: @course.id,
+          workflow_state: "queued",
+          resource_name: @assignment.title,
+          resource_workflow_state: "published",
+          resource_updated_at: @assignment.updated_at
+        )
+
+        # Should not create a new delayed job
+        expect(Delayed::Job).not_to receive(:enqueue)
+
+        json = accessibility_queue_scan_request(@teacher, @assignment.id.to_s)
+
+        # Should return the existing scan
+        expect(json["id"]).to eq(existing_scan.id)
+        expect(json["workflow_state"]).to eq("queued")
+      end
+    end
+
+    context "when a11y_checker feature is disabled" do
+      before do
+        @course.account.disable_feature!(:a11y_checker)
+        @course.disable_feature!(:a11y_checker_eap)
+      end
+
+      it "returns forbidden even for teachers" do
+        accessibility_queue_scan_request(@teacher, @assignment.id.to_s, expected_status: 403)
+      end
+
+      it "returns forbidden for students" do
+        accessibility_queue_scan_request(@student, @assignment.id.to_s, expected_status: 403)
       end
     end
   end

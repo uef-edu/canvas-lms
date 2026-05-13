@@ -18,11 +18,10 @@
 
 import React from 'react'
 import {render, screen, fireEvent} from '@testing-library/react'
-import '@testing-library/jest-dom'
 import NotificationAlert, {AccountNotificationData} from '../NotificationAlert'
 
 describe('NotificationAlert', () => {
-  const mockOnDismiss = jest.fn()
+  const mockOnDismiss = vi.fn()
 
   const baseNotification: AccountNotificationData = {
     id: '1',
@@ -54,14 +53,14 @@ describe('NotificationAlert', () => {
 
     render(<NotificationAlert notification={siteAdminNotification} onDismiss={mockOnDismiss} />)
 
-    expect(screen.getByText('This is a message from')).toBeInTheDocument()
+    expect(screen.getByText('This is an announcement from')).toBeInTheDocument()
     expect(screen.getByText('Canvas Administration')).toBeInTheDocument()
   })
 
   it('displays account name when notification is not from site admin', () => {
     render(<NotificationAlert notification={baseNotification} onDismiss={mockOnDismiss} />)
 
-    expect(screen.getByText('This is a message from')).toBeInTheDocument()
+    expect(screen.getByText('This is an announcement from')).toBeInTheDocument()
     expect(screen.getByText('Test Account')).toBeInTheDocument()
   })
 

@@ -19,9 +19,7 @@
 #
 class ImpossibleCredentialsError < ArgumentError; end
 
-class Pseudonym < ActiveRecord::Base
-  self.ignored_columns += %w[auth_type login_attribute verification_token]
-
+class Pseudonym < ApplicationRecord
   # this field is used for audit logging.
   # if a request is deleting a pseudonym, it should set this value
   # before persisting the change.
@@ -221,6 +219,10 @@ class Pseudonym < ActiveRecord::Base
     p.dispatch :pseudonym_registration_done
     p.to { communication_channel || user.communication_channel }
     p.whenever { @send_registration_done_notification }
+
+    p.dispatch :pseudonym_suspended_after_failed_login
+    p.to { communication_channel || user.communication_channel }
+    p.whenever { @send_failed_login_notification }
   end
 
   def update_account_associations_if_account_changed
@@ -233,6 +235,14 @@ class Pseudonym < ActiveRecord::Base
     elsif saved_change_to_account_id?
       user.update_account_associations_later
     end
+  end
+
+  def suspend_with_notification!
+    self.workflow_state = "suspended"
+    @send_failed_login_notification = true
+    save!
+  ensure
+    @send_failed_login_notification = false
   end
 
   def must_be_root_account
@@ -259,22 +269,14 @@ class Pseudonym < ActiveRecord::Base
     @send_confirmation = false
   end
 
-  scope :by_unique_id, lambda { |unique_id|
-    # only do normalized lookups once the migration has completed on this shard
-    if ((s = primary_shard).is_a?(Shard) && s.settings["pseudonyms_normalized"]) ||
-       s.is_a?(Switchman::DefaultShard)
-      unique_id = if unique_id.is_a?(Array)
-                    unique_id.map { |uid| Pseudonym.normalize(uid) }
-                  else
-                    Pseudonym.normalize(unique_id.to_s)
-                  end
-      where(unique_id_normalized: unique_id)
-    elsif unique_id.is_a?(Array)
-      where("LOWER(unique_id) IN (?)", unique_id)
-    else
-      where("LOWER(unique_id)=LOWER(?)", unique_id.to_s)
-    end
-  }
+  scope(:by_unique_id, lambda do |unique_id|
+    unique_id = if unique_id.is_a?(Array)
+                  unique_id.map { |uid| Pseudonym.normalize(uid) }
+                else
+                  Pseudonym.normalize(unique_id.to_s)
+                end
+    where(unique_id_normalized: unique_id)
+  end)
   scope :sis, -> { where.not(sis_user_id: nil) }
   scope :not_instructure_identity, -> { all }
 
@@ -319,10 +321,17 @@ class Pseudonym < ActiveRecord::Base
 
   def audit_log_update
     return if Setting.get("pseudonym_auditor_killswitch", "false") == "true"
-    return unless workflow_state_changed? && workflow_state == "deleted"
+    return unless workflow_state_changed?
+
+    action = if %w[deleted suspended].include?(workflow_state)
+               workflow_state
+             elsif workflow_state_was == "suspended"
+               "unsuspended"
+             end
+    return unless action
 
     performing_user = @current_user || Canvas.infer_user
-    Auditors::Pseudonym.record(self, performing_user, action: "deleted")
+    Auditors::Pseudonym.record(self, performing_user, action:)
   end
 
   def set_password_changed
@@ -386,7 +395,7 @@ class Pseudonym < ActiveRecord::Base
     :email_login
   end
 
-  def works_for_account?(_account, _allow_implicit = false, ignore_types: [:implicit])
+  def works_for_account?(_account, allow_implicit: false, ignore_types: [:implicit])
     true
   end
 
@@ -408,7 +417,11 @@ class Pseudonym < ActiveRecord::Base
 
     return unless unique_id
 
-    self.unique_id_normalized = self.class.normalize(unique_id) if unique_id_changed?
+    # Always ensure unique_id_normalized is correct, even if unique_id hasn't changed.
+    # This fixes cases where unique_id_normalized was corrupted (e.g., callbacks not running
+    # because update_all or save(validate: false), ect.)
+    normalized = self.class.normalize(unique_id)
+    self.unique_id_normalized = normalized if unique_id_changed? || unique_id_normalized != normalized
     if invalid_email?
       errors.add(:unique_id, "not_email")
       throw :abort

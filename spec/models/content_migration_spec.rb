@@ -161,6 +161,11 @@ describe ContentMigration do
       expect(@cm.import_object?("content_migrations", CC::CCHelper.create_key(@cm))).to be true
     end
 
+    it "returns true for empty string if the all_ option is true" do
+      @cm.migration_ids_to_import = { copy: { all_course_settings: "1" } }
+      expect(@cm.import_object?("course_settings", "")).to be true
+    end
+
     it "returns false for objects not selected" do
       @cm.save!
       @cm.migration_ids_to_import = { copy: { all_content_migrations: "0" } }
@@ -212,7 +217,7 @@ describe ContentMigration do
 
   it "excludes user-hidden migration plugins" do
     ab = Canvas::Plugin.find(:academic_benchmark_importer)
-    expect(ContentMigration.migration_plugins(true)).not_to include(ab)
+    expect(ContentMigration.migration_plugins(exclude_hidden: true)).not_to include(ab)
   end
 
   context "zip file import" do
@@ -250,7 +255,7 @@ describe ContentMigration do
     end
 
     it "records the job id" do
-      allow(Delayed::Worker).to receive(:current_job).and_return(double("Delayed::Job", id: 123))
+      allow(Delayed::Worker).to receive(:current_job).and_return(instance_double(Delayed::Job, id: 123))
       cm = setup_zip_import(@course)
       test_zip_import(@course, cm)
       expect(cm.reload.migration_settings[:job_ids]).to eq([123])
@@ -282,7 +287,7 @@ describe ContentMigration do
     it "does not expand the mac system folder" do
       cm = setup_zip_import(@course, "macfile.zip")
       test_zip_import(@course, cm, 4)
-      expect(@course.folders.pluck(:name)).to_not include("__MACOSX")
+      expect(@course.folders.pluck(:name)).not_to include("__MACOSX")
     end
 
     it "updates unzip progress often" do
@@ -351,7 +356,8 @@ describe ContentMigration do
                                              global_identifiers: true,
                                              for_content_export: true)
       end
-      let(:dev_key) { DeveloperKey.create! }
+      let(:lti_registration) { lti_registration_with_tool(account: course.account) }
+      let(:dev_key) { lti_registration.developer_key }
       let(:tool) do
         # ContentMigrations change things that were nil to their default values,
         # like an empty array or hash. This changes the identity hash, so we
@@ -440,7 +446,7 @@ describe ContentMigration do
         let(:assignments) do
           assignments = []
           3.times do |i|
-            dev_key = DeveloperKey.create!
+            dev_key = lti_registration_with_tool(account: course.account).developer_key
             tool = external_tool_1_3_model(context: course,
                                            opts: {
                                              developer_key: dev_key,
@@ -1036,7 +1042,7 @@ describe ContentMigration do
           .and_return(false)
       end
 
-      let(:importer) { class_double("Importers::CourseContentImporter") }
+      let(:importer) { class_double(Importers::CourseContentImporter) }
 
       it "should not calls QuizzesNext::Importers" do
         expect(QuizzesNext::Importers::CourseContentImporter)
@@ -1924,10 +1930,10 @@ describe ContentMigration do
     it "creates attachment associations during imports" do
       @copy_to = @cm.context
       mig_att = @copy_to.attachments.create(filename: "first", display_name: "first", uploaded_data: fixture_file_upload("migration/migration_example.imscc"))
-      user_att1 = @teacher.attachments.create(id: 100_000_000_001, uploaded_data: fixture_file_upload("cn_image.jpg"))
-      user_att2 = @teacher.attachments.create(id: 100_000_000_002, uploaded_data: fixture_file_upload("instructure.png"))
-      user_att3 = @teacher.attachments.create(id: 100_000_000_003, uploaded_data: fixture_file_upload("test_image.jpg"))
-      user_att4 = @teacher.attachments.create(id: 100_000_000_004, uploaded_data: fixture_file_upload("cn_image.jpg"))
+      user_att1 = @teacher.attachments.create(id: 100_000_000_001, uploaded_data: fixture_file_upload("cn_image.jpg"), uuid: "sekret")
+      user_att2 = @teacher.attachments.create(id: 100_000_000_002, uploaded_data: fixture_file_upload("instructure.png"), uuid: "sekret2")
+      user_att3 = @teacher.attachments.create(id: 100_000_000_003, uploaded_data: fixture_file_upload("test_image.jpg"), uuid: "sekret3")
+      user_att4 = @teacher.attachments.create(id: 100_000_000_004, uploaded_data: fixture_file_upload("cn_image.jpg"), uuid: "sekret4")
       run_import(mig_att.id)
       course_att1 = @copy_to.attachments.find_by(migration_id: "ge928eec163f37c0b61e80a894e6fd1ba")
       course_att2 = @copy_to.attachments.find_by(migration_id: "gd91205577b505bf54004413542b7bc8f")
@@ -2006,6 +2012,46 @@ describe ContentMigration do
       aq2 = @copy_to.assessment_questions.find { |aq| aq.migration_id == "gaf93143a49786b1582443d81cd6e2b4a" }
       expect(aq1.attachments.pluck(:display_name)).to match_array(%w[27.jpg ab.jpg basic_sql.png beavercode1.png])
       expect(aq2.attachments.pluck(:display_name)).to match_array(%w[cn_image.jpg instructure.png test_image.jpg])
+    end
+
+    context "with sharding" do
+      specs_require_sharding
+
+      it "creates attachment_associations during content migration for user attachments with matching UUIDs" do
+        other_user = user_factory
+        @copy_to = @cm.context
+        mig_att = @copy_to.attachments.create(filename: "first", display_name: "first", uploaded_data: fixture_file_upload("migration/migration_example.imscc"))
+        user_att1 = other_user.attachments.create(id: 100_000_000_001, uploaded_data: fixture_file_upload("cn_image.jpg"), uuid: "sekret")
+        @shard1.update(id: 5)
+        @shard1.activate do
+          second_shard_user = user_factory
+          @user_att2 = second_shard_user.attachments.create(id: 50_000_000_000_005, uploaded_data: fixture_file_upload("292.mp3"), uuid: "sekret")
+        end
+        run_import(mig_att.id)
+        page2 = @copy_to.wiki_pages.find_by(migration_id: "g5870e63ac70483ee49477ae0ee284d66")
+        expect(page2.attachment_associations.pluck(:attachment_id)).to match_array([user_att1.id, @user_att2.id])
+      end
+    end
+
+    it "does not create attachment_associations during content migration for user attachments without matching UUIDs" do
+      other_user = user_factory
+      @copy_to = @cm.context
+      mig_att = @copy_to.attachments.create(filename: "first", display_name: "first", uploaded_data: fixture_file_upload("migration/migration_example.imscc"))
+      user_att1 = other_user.attachments.create(id: 100_000_000_001, uploaded_data: fixture_file_upload("cn_image.jpg"), uuid: "wrong_sekret")
+      user_att2 = other_user.attachments.create(id: 100_000_000_005, uploaded_data: fixture_file_upload("292.mp3"), uuid: "wrong_sekret")
+      run_import(mig_att.id)
+      page2 = @copy_to.wiki_pages.find_by(migration_id: "g5870e63ac70483ee49477ae0ee284d66")
+      expect(page2.attachment_associations.pluck(:attachment_id)).not_to match_array([user_att1.id, user_att2.id])
+    end
+
+    it "does not create attachment_associations during content migration for other course files" do
+      other_course = course_factory
+      other_file = other_course.attachments.create!(id: 100_000_000_001, uploaded_data: fixture_file_upload("cn_image.jpg"), uuid: "sekret")
+      @copy_to = @cm.context
+      mig_att = @copy_to.attachments.create(filename: "first", display_name: "first", uploaded_data: fixture_file_upload("migration/migration_example.imscc"))
+      run_import(mig_att.id)
+      page1 = @copy_to.wiki_pages.find_by(migration_id: "gd7317fea42eb13fb5bc92127baabdf8d")
+      expect(page1.attachment_associations.pluck(:attachment_id)).not_to match_array([other_file.id])
     end
   end
 
@@ -2203,7 +2249,7 @@ describe ContentMigration do
         before { subscription.create_content_tag_for!(assignment) }
 
         context "without downstream changes" do
-          include_examples "processes asset processor deletion", :deleted
+          it_behaves_like "processes asset processor deletion", :deleted
         end
 
         context "with downstream changes and not locked" do
@@ -2212,7 +2258,7 @@ describe ContentMigration do
             content_tag.update!(downstream_changes: ["content"])
           end
 
-          include_examples "processes asset processor deletion", :active
+          it_behaves_like "processes asset processor deletion", :active
         end
 
         context "with downstream changes but locked" do
@@ -2223,7 +2269,7 @@ describe ContentMigration do
             allow_any_instance_of(Assignment).to receive(:editing_restricted?).with(:any).and_return(true)
           end
 
-          include_examples "processes asset processor deletion", :deleted
+          it_behaves_like "processes asset processor deletion", :deleted
         end
       end
 
@@ -2250,7 +2296,7 @@ describe ContentMigration do
             discussion_content_tag.update!(downstream_changes: ["content"])
           end
 
-          include_examples "processes asset processor deletion", :active
+          it_behaves_like "processes asset processor deletion", :active
         end
 
         context "with downstream changes but locked" do
@@ -2261,7 +2307,7 @@ describe ContentMigration do
             allow_any_instance_of(DiscussionTopic).to receive(:editing_restricted?).with(:any).and_return(true)
           end
 
-          include_examples "processes asset processor deletion", :deleted
+          it_behaves_like "processes asset processor deletion", :deleted
         end
       end
     end
@@ -2702,18 +2748,27 @@ describe ContentMigration do
     end
 
     before do
+      # Save empty course as target
       @copy_to = @course
+
+      # Set up new course as source
       course_with_teacher(active_all: true)
       @copy_from = @course
       root = Folder.root_folders(@copy_from).first
       uploaded_media_folder = root.sub_folders.create!(name: "Uploaded Media", context: @copy_from)
-      @att1 = Attachment.create!(filename: "first.webm", uploaded_data: stub_file_data("first.webm", "asdf", "video/mp4"), folder: uploaded_media_folder, context: @copy_from, media_entry_id: "m-media_id_1")
-      @att2 = Attachment.create!(filename: "second.webm", uploaded_data: stub_file_data("second.webm", "asdf", "video/mp4"), folder: uploaded_media_folder, context: @copy_from, media_entry_id: "m-media_id_2")
+      att1_file = stub_file_data("first.webm", "asdf", "video/mp4")
+      att2_file = stub_file_data("second.webm", "asdf", "video/mp4")
+      @att1 = Attachment.create!(filename: "first.webm", uploaded_data: att1_file, folder: uploaded_media_folder, context: @copy_from, media_entry_id: "m-media_id_1")
+      @att2 = Attachment.create!(filename: "second.webm", uploaded_data: att2_file, folder: uploaded_media_folder, context: @copy_from, media_entry_id: "m-media_id_2")
       MediaObject.create!(attachment_id: @att1.id, media_id: "m-media_id_1")
       MediaObject.create!(attachment_id: @att2.id, media_id: "m-media_id_2")
       @copy_from.wiki_pages.create! title: "wp1", body: "<iframe data-media-type=\"audio\" data-media-id=\"#{@att1.media_entry_id}\" src=\"/media_attachments_iframe/#{@att1.id}?type=audio\"></iframe>", saving_user: @teacher
       @copy_from.wiki_pages.create! title: "wp2", body: "<iframe data-media-type=\"video\" data-media-id=\"#{@att2.media_entry_id}\" src=\"/media_attachments_iframe/#{@att2.id}?type=video\"></iframe>", saving_user: @teacher
-      @kaltura = double("CanvasKaltura::ClientV3")
+
+      # Mock Kaltura Config
+      allow(CanvasKaltura::ClientV3).to receive(:config).and_return({})
+
+      # Mock API calls for bulk upload
       @kaltura_media_handler = instance_double(KalturaMediaFileHandler)
       expect(@kaltura_media_handler).to receive(:add_media_files) do |_attachments, _wait_for_completion|
         att3 = @copy_to.attachments.where(migration_id: mig_id(@att1)).first.id
@@ -2735,7 +2790,23 @@ describe ContentMigration do
         MediaObject.build_media_objects(bulk_upload_response, @course.root_account_id)
       end
       expect(KalturaMediaFileHandler).to receive(:new).and_return(@kaltura_media_handler)
-      expect(CanvasKaltura::ClientV3).to receive(:config).and_return({})
+
+      # Mock API calls for Kaltura redirects during media downloads
+      kaltura_client_double = instance_double(CanvasKaltura::ClientV3)
+
+      allow(kaltura_client_double).to receive(:media_download_url).with("m-media_id_1").and_return("http://kaltura.example/download/t-123")
+      Net::HTTPSuccess.new(1.1, 200, "OK").tap do |response|
+        allow(response).to receive(:read_body).and_yield(att1_file.tap(&:rewind).read)
+        allow(CanvasHttp).to receive(:get).with("http://kaltura.example/download/t-123?filename=first.webm").and_yield(response)
+      end
+
+      allow(kaltura_client_double).to receive(:media_download_url).with("m-media_id_2").and_return("http://kaltura.example/download/t-234")
+      Net::HTTPSuccess.new(1.1, 200, "OK").tap do |response|
+        allow(response).to receive(:read_body).and_yield(att2_file.tap(&:rewind).read)
+        allow(CanvasHttp).to receive(:get).with("http://kaltura.example/download/t-234?filename=second.webm").and_yield(response)
+      end
+
+      allow(CanvasKaltura::ClientV3).to receive_messages(new: kaltura_client_double)
     end
 
     it "properly migrates webm embeds" do
@@ -2752,7 +2823,12 @@ describe ContentMigration do
     end
 
     it "properly migrates media files without extensions" do
-      @att1.update(filename: "first", display_name: "first", uploaded_data: fixture_file_upload("292"))
+      att1_file = fixture_file_upload("292")
+      Net::HTTPSuccess.new(1.1, 200, "OK").tap do |response|
+        allow(response).to receive(:read_body).and_yield(att1_file.tap(&:rewind).read)
+        allow(CanvasHttp).to receive(:get).with("http://kaltura.example/download/t-123?filename=first").and_yield(response)
+      end
+      @att1.update(filename: "first", display_name: "first", uploaded_data: att1_file)
 
       run_export_and_import
 

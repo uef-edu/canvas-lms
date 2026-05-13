@@ -19,6 +19,7 @@
 #
 
 class Mutations::UpdateWidgetDashboardConfig < Mutations::BaseMutation
+  argument :dashboard_type, Types::WidgetDashboardTypeEnum, required: false
   argument :filters, GraphQL::Types::JSON, required: false
   argument :widget_id, String, required: true
 
@@ -31,19 +32,21 @@ class Mutations::UpdateWidgetDashboardConfig < Mutations::BaseMutation
 
     validate_filters!(widget_id, filters) if filters
 
-    config = current_user.get_preference(:widget_dashboard_config) || {}
+    pref_key = educator_dashboard?(input) ? :educator_dashboard_config : :widget_dashboard_config
+    config = current_user.get_preference(pref_key) || {}
 
     if filters
       config["filters"] ||= {}
       config["filters"][widget_id] = filters.is_a?(ActionController::Parameters) ? filters.to_unsafe_h : filters
     end
 
-    current_user.set_preference(:widget_dashboard_config, config)
+    current_user.set_preference(pref_key, config)
 
     { widget_id:, filters: }
   end
 
   ANNOUNCEMENTS_WIDGET_ID = "announcements-widget"
+  TODO_LIST_WIDGET_ID = "todo-list-widget"
   COURSE_WORK_WIDGET_IDS = %w[
     course-work-widget
     course-work-combined-widget
@@ -51,9 +54,19 @@ class Mutations::UpdateWidgetDashboardConfig < Mutations::BaseMutation
   ].freeze
 
   VALID_ANNOUNCEMENT_FILTERS = %w[unread read all].freeze
+  VALID_TODO_FILTERS = %w[incomplete_items complete_items all].freeze
   VALID_DATE_FILTERS = %w[not_submitted missing submitted].freeze
 
   private
+
+  # TODO: Remove this entire helper method once platform-ui passes dashboard_type (EGG-2539)
+  # The resolver should directly use input[:dashboard_type] after that.
+  def educator_dashboard?(input)
+    return input[:dashboard_type] == "educator" if input[:dashboard_type].present?
+
+    context[:domain_root_account]&.feature_enabled?(:educator_dashboard) &&
+      current_user.educator_dashboard_user?
+  end
 
   def validate_filters!(widget_id, filters)
     # Accept Hash or ActionController::Parameters (which GraphQL JSON type may produce)
@@ -73,6 +86,8 @@ class Mutations::UpdateWidgetDashboardConfig < Mutations::BaseMutation
   def validate_filter_structure!(widget_id, filters)
     if widget_id == ANNOUNCEMENTS_WIDGET_ID
       validate_announcements_filters!(filters)
+    elsif widget_id == TODO_LIST_WIDGET_ID
+      validate_todo_list_filters!(filters)
     elsif COURSE_WORK_WIDGET_IDS.include?(widget_id)
       validate_course_work_filters!(filters)
     else
@@ -91,6 +106,20 @@ class Mutations::UpdateWidgetDashboardConfig < Mutations::BaseMutation
     invalid_keys = filters.keys - ["filter"]
     unless invalid_keys.empty?
       raise GraphQL::ExecutionError, "invalid filter keys for announcements widget: #{invalid_keys.join(", ")}"
+    end
+  end
+
+  def validate_todo_list_filters!(filters)
+    if filters.key?("filter")
+      filter_value = filters["filter"]
+      unless filter_value.is_a?(String) && VALID_TODO_FILTERS.include?(filter_value)
+        raise GraphQL::ExecutionError, "filter must be one of: #{VALID_TODO_FILTERS.join(", ")}"
+      end
+    end
+
+    invalid_keys = filters.keys - ["filter"]
+    unless invalid_keys.empty?
+      raise GraphQL::ExecutionError, "invalid filter keys for todo list widget: #{invalid_keys.join(", ")}"
     end
   end
 
@@ -127,7 +156,7 @@ class Mutations::UpdateWidgetDashboardConfig < Mutations::BaseMutation
     case value
     when String, Numeric, TrueClass, FalseClass
       true
-    when Hash
+    when Hash, ActionController::Parameters
       value.each_value { |v| validate_filter_value!(v) }
     when Array
       value.each { |v| validate_filter_value!(v) }

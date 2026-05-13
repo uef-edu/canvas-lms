@@ -107,8 +107,8 @@ module DataFixup::NormalizePseudonyms
           lower(unique_id)<>unique_id_normalized,
           id DESC
         SQL
-                   .offset(1)
-                   .pluck(:id, :unique_id).each do |id, unique_id|
+          .offset(1)
+          .pluck(:id, :unique_id).each do |id, unique_id|
           unique_id = "NORMALIZATION-COLLISION-#{SecureRandom.uuid}-#{unique_id}"
           unique_id_normalized = normalize(unique_id)
           Pseudonym.where(id:).update_all(unique_id:, unique_id_normalized:, updated_at: Time.zone.now)

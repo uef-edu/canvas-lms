@@ -18,7 +18,6 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
-require_relative "../spec_helper"
 require_relative "../apis/api_spec_helper"
 
 describe AssignmentGroupsController do
@@ -85,12 +84,7 @@ describe AssignmentGroupsController do
         user_session(@admin)
       end
 
-      context "when new_quizzes_surveys feature is enabled" do
-        before do
-          allow(Account.site_admin).to receive(:feature_enabled?).and_call_original
-          allow(Account.site_admin).to receive(:feature_enabled?).with(:new_quizzes_surveys).and_return(true)
-        end
-
+      context "ungraded survey filtering" do
         it "excludes assignments with new_quizzes type ungraded_survey from the response" do
           regular_assignment = @course.assignments.create!(
             title: "Regular Assignment",
@@ -199,50 +193,6 @@ describe AssignmentGroupsController do
 
           expect(assignment_ids).to include(assignment_with_null_new_quizzes.id)
           expect(assignment_ids).to include(assignment_with_other_keys.id)
-        end
-      end
-
-      context "when new_quizzes_surveys feature is disabled" do
-        before do
-          allow(Account.site_admin).to receive(:feature_enabled?).and_call_original
-          allow(Account.site_admin).to receive(:feature_enabled?).with(:new_quizzes_surveys).and_return(false)
-        end
-
-        it "includes all assignments including ungraded surveys when feature is disabled" do
-          regular_assignment = @course.assignments.create!(
-            title: "Regular Assignment",
-            assignment_group: @group,
-            workflow_state: "published"
-          )
-          ungraded_survey_assignment = @course.assignments.create!(
-            title: "Ungraded Survey Assignment",
-            assignment_group: @group,
-            workflow_state: "published",
-            settings: {
-              "new_quizzes" => {
-                "type" => "ungraded_survey"
-              }
-            }
-          )
-
-          get :index,
-              params: {
-                course_id: @course.id,
-                include: %w[assignments],
-              },
-              format: "json"
-
-          expect(response).to be_successful
-          group = json_parse(response.body).first
-          assignments = group["assignments"]
-          assignment_ids = assignments.pluck("id")
-          assignment_titles = assignments.pluck("name")
-
-          expect(assignment_ids).to include(regular_assignment.id)
-          expect(assignment_ids).to include(ungraded_survey_assignment.id)
-
-          expect(assignment_titles).to include("Regular Assignment")
-          expect(assignment_titles).to include("Ungraded Survey Assignment")
         end
       end
     end
@@ -357,7 +307,7 @@ describe AssignmentGroupsController do
           user_session(@admin)
           get :index, params: index_params.merge(grading_period_id: feb_grading_period.id), format: :json
           expect(assignments_ids).to include assignment_with_override.id
-          expect(assignments_ids).to_not include assignment.id
+          expect(assignments_ids).not_to include assignment.id
         end
 
         it "includes an assignment if any of its overrides fall within the given grading period" do
@@ -372,7 +322,7 @@ describe AssignmentGroupsController do
            "date for the requesting user falls within the given grading period" do
           user_session(student)
           get :index, params: index_params.merge(grading_period_id: jan_grading_period.id, scope_assignments_to_student: true), format: :json
-          expect(assignments_ids).to_not include assignment_with_override.id
+          expect(assignments_ids).not_to include assignment_with_override.id
           expect(assignments_ids).to include assignment.id
         end
 
@@ -384,7 +334,7 @@ describe AssignmentGroupsController do
           override.assignment_override_students.create!(user: fake_student)
           user_session(fake_student)
           get :index, params: index_params.merge(grading_period_id: jan_grading_period.id, scope_assignments_to_student: true), format: :json
-          expect(assignments_ids).to_not include assignment_with_override.id
+          expect(assignments_ids).not_to include assignment_with_override.id
           expect(assignments_ids).to include assignment.id
         end
 
@@ -833,9 +783,9 @@ describe AssignmentGroupsController do
         )
       end
 
-      context "peer_reviews_for_a2 FF disabled" do
+      context "assignments_2_student FF disabled" do
         before(:once) do
-          @course.disable_feature! :peer_reviews_for_a2
+          @course.disable_feature! :assignments_2_student
         end
 
         it "does not include assessment_requests when the current user is a teacher" do
@@ -857,9 +807,9 @@ describe AssignmentGroupsController do
         end
       end
 
-      context "peer_reviews_for_a2 FF enabled" do
+      context "assignments_2_student FF enabled" do
         before(:once) do
-          @course.enable_feature! :peer_reviews_for_a2
+          @course.enable_feature! :assignments_2_student
         end
 
         it "does not include assessment_requests when the current user is a teacher" do

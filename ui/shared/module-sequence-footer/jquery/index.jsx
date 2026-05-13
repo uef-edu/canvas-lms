@@ -16,13 +16,13 @@
 // with this program. If not, see <http://www.gnu.org/licenses/>.
 
 import React from 'react'
-import ReactDOM from 'react-dom'
+import {legacyRender} from '@canvas/react'
 import {Flex} from '@instructure/ui-flex'
 import {Button} from '@instructure/ui-buttons'
 import {Tooltip} from '@instructure/ui-tooltip'
 import {IconMiniArrowEndLine, IconMiniArrowStartLine} from '@instructure/ui-icons'
 import $ from 'jquery'
-import {find} from 'lodash'
+import {find} from 'es-toolkit/compat'
 import template from '../jst/ModuleSequenceFooter.handlebars'
 import {useScope as createI18nScope} from '@canvas/i18n'
 import htmlEscape from '@instructure/html-escape'
@@ -99,7 +99,7 @@ $.fn.moduleSequenceFooter = function (options = {}) {
             this.msfInstance.previous.externalItem ? ` - ${I18n.t('opens in new window')}` : ''
           }`
 
-          ReactDOM.render(
+          legacyRender(
             <Tooltip
               aria-label={label}
               as={Button}
@@ -123,7 +123,7 @@ $.fn.moduleSequenceFooter = function (options = {}) {
             this.msfInstance.next.externalItem ? ` - ${I18n.t('opens in new window')}` : ''
           }`
 
-          ReactDOM.render(
+          legacyRender(
             <Tooltip
               aria-label={label}
               as={Button}

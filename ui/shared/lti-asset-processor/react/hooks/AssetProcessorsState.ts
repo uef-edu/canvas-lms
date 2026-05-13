@@ -18,7 +18,7 @@
 
 import {create} from 'zustand'
 
-import {showFlashAlert, showFlashError} from '@canvas/alerts/react/FlashAlert'
+import {showFlashAlert, showFlashError} from '@instructure/platform-alerts'
 import {DeepLinkResponse} from '@canvas/deep-linking/DeepLinkResponse'
 import {
   AssetProcessorContentItem,
@@ -35,7 +35,8 @@ import {
 } from '@canvas/lti/model/AssetProcessor'
 import {IframeDimensions} from '@canvas/lti/model/common'
 import {useScope as createI18nScope} from '@canvas/i18n'
-import {confirmDanger} from '@canvas/instui-bindings/react/Confirm'
+import {getActiveCanvasTheme} from '@canvas/react'
+import {confirmDanger} from '@instructure/platform-instui-bindings'
 import {
   LtiLaunchDefinition,
   LtiLaunchPlacement,
@@ -56,7 +57,11 @@ export type AssetProcessorsState = {
     tool,
     data,
     type,
-  }: {tool: LtiLaunchDefinition; data: DeepLinkResponse; type: AssetProcessorType}) => void
+  }: {
+    tool: LtiLaunchDefinition
+    data: DeepLinkResponse
+    type: AssetProcessorType
+  }) => void
   removeAttachedProcessor: (index: number, onRemove?: () => void) => Promise<void>
   setFromExistingAttachedProcessors: (processors: ExistingAttachedAssetProcessor[]) => void
 }
@@ -97,7 +102,10 @@ export type AttachedAssetProcessor = {
 function newAttachedAssetProcessor({
   tool,
   contentItem,
-}: {tool: LtiLaunchDefinition; contentItem: AssetProcessorContentItem}): AttachedAssetProcessor {
+}: {
+  tool: LtiLaunchDefinition
+  contentItem: AssetProcessorContentItem
+}): AttachedAssetProcessor {
   const placement = placementData(tool, placementForContentItemType(contentItem))
   return {
     toolId: tool.definition_id,
@@ -205,6 +213,9 @@ export const useAssetProcessorsState = create<AssetProcessorsState>((set, get) =
         message: null,
         messageDangerouslySetInnerHTML,
         confirmButtonLabel,
+        cancelButtonLabel: I18n.t('Cancel'),
+        closeButtonLabel: I18n.t('Close'),
+        theme: getActiveCanvasTheme(),
       })
     ) {
       set({attachedProcessors: get().attachedProcessors.filter((_, i) => i !== index)})

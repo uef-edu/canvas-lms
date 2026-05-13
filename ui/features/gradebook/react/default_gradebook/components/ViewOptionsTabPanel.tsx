@@ -29,6 +29,7 @@ import type {SortDirection} from '../gradebook.d'
 import type {StatusColors} from '../constants/colors'
 
 import {useScope as createI18nScope} from '@canvas/i18n'
+import {GradeStatusUnderscore} from '@canvas/grading/accountGradingStatus'
 
 const I18n = createI18nScope('gradebook')
 
@@ -128,6 +129,7 @@ interface ViewOptionsTabPanelProps {
   hideTotal: CheckboxSetting
   showNotes: CheckboxSetting
   showUnpublishedAssignments: CheckboxSetting
+  showSuppressedAssignments: CheckboxSetting & {allowed: boolean}
   showSeparateFirstLastNames: CheckboxSetting & {allowed: boolean}
   statusColors: {
     currentValues: StatusColors
@@ -135,6 +137,8 @@ interface ViewOptionsTabPanelProps {
   }
   viewUngradedAsZero: CheckboxSetting & {allowed: boolean}
   viewHiddenGradesIndicator: CheckboxSetting
+  viewStatusForColorblindness: CheckboxSetting
+  customGradeStatuses?: GradeStatusUnderscore[]
 }
 
 export default function ViewOptionsTabPanel({
@@ -144,10 +148,13 @@ export default function ViewOptionsTabPanel({
   hideTotal,
   showNotes,
   showUnpublishedAssignments,
+  showSuppressedAssignments,
   showSeparateFirstLastNames,
   statusColors,
   viewUngradedAsZero,
   viewHiddenGradesIndicator,
+  viewStatusForColorblindness,
+  customGradeStatuses,
 }: ViewOptionsTabPanelProps) {
   const sortOptions = buildAssignmentSortOptions(columnSort.modulesEnabled)
   const selectedSortKey =
@@ -188,6 +195,12 @@ export default function ViewOptionsTabPanel({
 
         <View as="div" margin="large 0 large">
           <FormFieldGroup description={I18n.t('Show')} layout="stacked" rowSpacing="small">
+            {showSuppressedAssignments.allowed &&
+              renderCheckbox(
+                showSuppressedAssignments,
+                I18n.t('All Hidden Assignments'),
+                'showSuppressedAssignments',
+              )}
             {renderCheckbox(showNotes, I18n.t('Notes'), 'showNotes')}
             {renderCheckbox(
               showUnpublishedAssignments,
@@ -223,6 +236,11 @@ export default function ViewOptionsTabPanel({
               I18n.t('View hidden grades indicator'),
               'viewHiddenGradesIndicator',
             )}
+            {renderCheckbox(
+              viewStatusForColorblindness,
+              I18n.t('Enable Gradebook Status Icons'),
+              'viewStatusForColorblindness',
+            )}
           </FormFieldGroup>
         </View>
 
@@ -230,6 +248,8 @@ export default function ViewOptionsTabPanel({
           <StatusColorPanel
             colors={statusColors.currentValues}
             onColorsUpdated={statusColors.onChange}
+            customGradeStatuses={customGradeStatuses}
+            viewStatusForColorblindness={viewStatusForColorblindness.checked}
           />
         </FormFieldGroup>
       </View>
@@ -263,6 +283,11 @@ ViewOptionsTabPanel.propTypes = {
     checked: bool.isRequired,
     onChange: func.isRequired,
   }).isRequired,
+  showSuppressedAssignments: shape({
+    allowed: bool.isRequired,
+    checked: bool.isRequired,
+    onChange: func.isRequired,
+  }).isRequired,
   showSeparateFirstLastNames: shape({
     allowed: bool.isRequired,
     checked: bool.isRequired,
@@ -278,6 +303,10 @@ ViewOptionsTabPanel.propTypes = {
     onChange: func.isRequired,
   }).isRequired,
   viewHiddenGradesIndicator: shape({
+    checked: bool.isRequired,
+    onChange: func.isRequired,
+  }).isRequired,
+  viewStatusForColorblindness: shape({
     checked: bool.isRequired,
     onChange: func.isRequired,
   }).isRequired,

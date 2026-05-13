@@ -19,12 +19,14 @@
 
 describe InstLLMHelper do
   describe ".client" do
-    model_id = "model123"
+    let(:model_id) { "model123" }
+
     before do
       InstLLMHelper.instance_variable_set(:@clients, nil)
 
       aws_credential_provider = double
-      allow(aws_credential_provider).to receive(:credentials).and_return(double(
+      allow(aws_credential_provider).to receive(:credentials).and_return(instance_double(
+                                                                           Aws::Credentials,
                                                                            access_key_id: "access_key_id",
                                                                            secret_access_key: "secret_access_key",
                                                                            session_token: "session_token"
@@ -53,11 +55,11 @@ describe InstLLMHelper do
   end
 
   describe ".with_rate_limit" do
-    let(:user) { double(uuid: "user123") }
-    let(:llm_config) { double(rate_limit: { limit: 10, period: "day" }, name: "test") }
+    let(:user) { instance_double(User, uuid: "user123") }
+    let(:llm_config) { instance_double(LLMConfig, rate_limit: { limit: 10, period: "day" }, name: "test") }
 
     it "yields if rate limit is not set" do
-      llm_config = double(rate_limit: nil)
+      llm_config = instance_double(LLMConfig, rate_limit: nil)
       expect { |b| InstLLMHelper.with_rate_limit(user:, llm_config:, &b) }.to yield_control
     end
 
@@ -71,7 +73,7 @@ describe InstLLMHelper do
     end
 
     it "raises an error if period is not 'day'" do
-      llm_config = double(rate_limit: { limit: 10, period: "hour" })
+      llm_config = instance_double(LLMConfig, rate_limit: { limit: 10, period: "hour" })
       expect do
         InstLLMHelper.with_rate_limit(user:, llm_config:) do
           true
@@ -123,6 +125,42 @@ describe InstLLMHelper do
           raise StandardError, "test error"
         end
       end.to raise_error(StandardError, "test error")
+    end
+  end
+
+  describe ".extract_json" do
+    it "extracts an object surrounded by prose" do
+      raw = "Here is the result: {\"response\": \"ok\"} -- done"
+      expect(InstLLMHelper.extract_json(raw)).to eq({ response: "ok" })
+    end
+
+    it "handles nested braces inside strings" do
+      raw = 'prefix {"msg": "look: {nested}", "n": 1} suffix'
+      expect(InstLLMHelper.extract_json(raw)).to eq({ msg: "look: {nested}", n: 1 })
+    end
+
+    it "returns nil for unbalanced input" do
+      expect(InstLLMHelper.extract_json("no braces here")).to be_nil
+    end
+  end
+
+  describe ".extract_json_array" do
+    it "extracts an array surrounded by prose" do
+      raw = "Here you go: [{\"question\": \"Q\", \"answer\": \"A\"}] hope that helps!"
+      expect(InstLLMHelper.extract_json_array(raw)).to eq([{ question: "Q", answer: "A" }])
+    end
+
+    it "handles nested brackets inside strings" do
+      raw = 'prefix [{"msg": "see [1]", "n": 1}] suffix'
+      expect(InstLLMHelper.extract_json_array(raw)).to eq([{ msg: "see [1]", n: 1 }])
+    end
+
+    it "returns nil for unbalanced input" do
+      expect(InstLLMHelper.extract_json_array("no brackets here")).to be_nil
+    end
+
+    it "returns nil for invalid JSON inside balanced brackets" do
+      expect(InstLLMHelper.extract_json_array("[not, valid, json}")).to be_nil
     end
   end
 end

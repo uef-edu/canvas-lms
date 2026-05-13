@@ -43,12 +43,12 @@ module Accessibility
 
         return nil unless small_text?(style_str)
 
-        foreground = extract_color(style_str, "color") || "000000"
+        foreground = extract_color(style_str, "color") || "#000000"
         background = extract_background_color(style_str)
 
         return nil if background.nil?
 
-        contrast_ratio = WCAGColorContrast.ratio(foreground, background)
+        contrast_ratio = calculate_contrast_ratio(foreground, background)
 
         if contrast_ratio < CONTRAST_THRESHOLD
           I18n.t("Contrast ratio for small text is smaller than threshold %{value}.", { value: CONTRAST_THRESHOLD })
@@ -59,10 +59,10 @@ module Accessibility
         style_str = elem.attribute("style")&.value.to_s
         background = extract_background_color(style_str)
 
-        foreground = if WCAGColorContrast.ratio("000000", background) >= CONTRAST_THRESHOLD
-                       "000000"
+        foreground = if calculate_contrast_ratio("000000", background) >= CONTRAST_THRESHOLD
+                       "#000000"
                      else
-                       "FFFFFF"
+                       "#FFFFFF"
                      end
 
         Accessibility::Forms::ColorPickerField.new(
@@ -72,9 +72,9 @@ module Accessibility
           action: I18n.t("Change text color"),
           undo_text: I18n.t("Color changed"),
           options: ["normal"],
-          background_color: "##{background}",
-          value: "##{foreground}",
-          contrast_ratio: WCAGColorContrast.ratio(foreground, background)
+          background_color: background,
+          value: foreground,
+          contrast_ratio: calculate_contrast_ratio(foreground, background)
         )
       end
 
@@ -88,14 +88,17 @@ module Accessibility
 
         elem.set_attribute("style", new_style)
 
-        foreground = extract_color(new_style, "color") || "000000"
+        foreground = extract_color(new_style, "color") || "#000000"
         background = extract_background_color(style_str)
 
-        contrast_ratio = WCAGColorContrast.ratio(foreground, background)
+        contrast_ratio = calculate_contrast_ratio(foreground, background)
+        if contrast_ratio < CONTRAST_THRESHOLD
+          error = StandardError.new("Insufficient contrast ratio (#{contrast_ratio.round(2)})")
+          error.instance_variable_set(:@metadata, { foreground:, background: })
+          raise error
+        end
 
-        raise StandardError, "Insufficient contrast ratio (#{contrast_ratio.round(2)})" if contrast_ratio < CONTRAST_THRESHOLD
-
-        elem
+        { changed: elem, foreground:, background: }
       end
 
       def display_name
@@ -107,7 +110,19 @@ module Accessibility
       end
 
       def why
-        I18n.t("Text is difficult to read without sufficient contrast between the text and the background, especially for those with low vision.")
+        [I18n.t("Text is difficult to read without sufficient contrast between the text and the background, especially for those with low vision."),
+         I18n.t(
+           "Note that we can only accurately detect color contrast issues in content created in Canvas using the Rich Content Editor (using in-line CSS and Hex code values for colors.) " \
+           "If colors in this content are defined by internal or external CSS, or color values other than Hex code, results may be inaccurate."
+         )]
+      end
+
+      def issue_metadata(elem)
+        style_str = elem.attribute("style")&.value.to_s
+        foreground = extract_color(style_str, "color") || "#000000"
+        background = extract_background_color(style_str)
+
+        { foreground:, background: }
       end
 
       # Helper methods
@@ -123,6 +138,15 @@ module Accessibility
                     else
                       SMALL_TEXT_MAX_SIZE_PX
                     end
+      end
+
+      def calculate_contrast_ratio(foreground, background)
+        WCAGColorContrast.ratio(foreground.delete_prefix("#"), background.delete_prefix("#"))
+      rescue WCAGColorContrast::InvalidColorError => e
+        message = e.message.blank? ? "color_missing" : "invalid_color_format"
+        error = StandardError.new(message)
+        error.instance_variable_set(:@metadata, { foreground:, background: })
+        raise error
       end
     end
   end

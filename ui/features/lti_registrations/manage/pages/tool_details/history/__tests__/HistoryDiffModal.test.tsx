@@ -16,7 +16,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-import {render, screen} from '@testing-library/react'
+import {cleanup, render, screen} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import {HistoryDiffModal} from '../HistoryDiffModal'
 import type {ConfigChangeHistoryEntry} from '../../../../model/LtiRegistrationHistoryEntry'
@@ -62,8 +62,9 @@ const mockConfigSnapshot = () => ({
     admin_nickname: 'Test Tool',
     name: 'Test Tool',
     vendor: null,
-    workflow_state: 'on' as const,
+    workflow_state: 'active' as const,
     description: null,
+    lock_deploying: false,
   },
   overlaid_internal_config: {
     custom_fields: {},
@@ -95,6 +96,7 @@ const mockConfigChangeEntryWithDiff = (
   comment: 'Test update',
   created_by: mockUser({overrides: {name: 'Test User'}}),
   internalConfig: {
+    workflowState: null,
     icons: {
       iconUrl: null,
       placementIcons: new Map(),
@@ -130,7 +132,8 @@ const mockConfigChangeEntryWithDiff = (
       ...(overrides.internalConfig?.placements || {}),
     },
     privacyLevel: null,
-    ...overrides.internalConfig,
+    locked: null,
+    ...(overrides.internalConfig ?? {}),
   },
   totalAdditions: 0,
   totalRemovals: 0,
@@ -138,7 +141,11 @@ const mockConfigChangeEntryWithDiff = (
 })
 
 describe('HistoryDiffModal', () => {
-  const onClose = jest.fn()
+  const onClose = vi.fn()
+
+  afterEach(() => {
+    cleanup()
+  })
 
   beforeEach(() => {
     onClose.mockClear()
@@ -157,6 +164,8 @@ describe('HistoryDiffModal', () => {
           },
         },
         internalConfig: {
+          workflowState: null,
+          locked: null,
           launchSettings: null,
           permissions: null,
           privacyLevel: null,
@@ -198,6 +207,8 @@ describe('HistoryDiffModal', () => {
           },
         },
         internalConfig: {
+          workflowState: null,
+          locked: null,
           launchSettings: null,
           permissions: null,
           privacyLevel: null,
@@ -241,6 +252,8 @@ describe('HistoryDiffModal', () => {
           },
         },
         internalConfig: {
+          workflowState: null,
+          locked: null,
           launchSettings: {
             redirectUris: {
               added: ['https://new.com/redirect', 'https://another.com/redirect'],
@@ -298,6 +311,8 @@ describe('HistoryDiffModal', () => {
           },
         },
         internalConfig: {
+          workflowState: null,
+          locked: null,
           launchSettings: {
             redirectUris: null,
             targetLinkUri: null,
@@ -347,6 +362,8 @@ describe('HistoryDiffModal', () => {
           },
         },
         internalConfig: {
+          workflowState: null,
+          locked: null,
           launchSettings: {
             redirectUris: null,
             targetLinkUri: null,
@@ -403,6 +420,8 @@ describe('HistoryDiffModal', () => {
           },
         },
         internalConfig: {
+          workflowState: null,
+          locked: null,
           launchSettings: null,
           permissions: {
             added: ['https://purl.imsglobal.org/spec/lti-ags/scope/result.readonly'],
@@ -454,6 +473,8 @@ describe('HistoryDiffModal', () => {
           },
         },
         internalConfig: {
+          workflowState: null,
+          locked: null,
           launchSettings: null,
           permissions: null,
           privacyLevel: null,
@@ -524,6 +545,8 @@ describe('HistoryDiffModal', () => {
           },
         },
         internalConfig: {
+          workflowState: null,
+          locked: null,
           launchSettings: null,
           permissions: null,
           privacyLevel: null,
@@ -618,6 +641,8 @@ describe('HistoryDiffModal', () => {
           },
         },
         internalConfig: {
+          workflowState: null,
+          locked: null,
           launchSettings: null,
           permissions: null,
           privacyLevel: null,
@@ -673,6 +698,8 @@ describe('HistoryDiffModal', () => {
           },
         },
         internalConfig: {
+          workflowState: null,
+          locked: null,
           launchSettings: null,
           permissions: null,
           privacyLevel: null,
@@ -720,6 +747,8 @@ describe('HistoryDiffModal', () => {
           },
         },
         internalConfig: {
+          workflowState: null,
+          locked: null,
           launchSettings: null,
           permissions: null,
           privacyLevel: {
@@ -736,9 +765,107 @@ describe('HistoryDiffModal', () => {
 
       render(<HistoryDiffModal entry={entry} isOpen={true} onClose={onClose} />)
 
-      expect(screen.getByText('Privacy Level')).toBeInTheDocument()
+      expect(screen.getByText('Data Sharing')).toBeInTheDocument()
       expect(screen.getByText('[-] All user data')).toBeInTheDocument()
       expect(screen.getByText('[+] None (Anonymized)')).toBeInTheDocument()
+    })
+  })
+
+  describe('state diff', () => {
+    it('displays state change from active to inactive', () => {
+      const mockSnapshot = mockConfigSnapshot()
+      const entry = mockConfigChangeEntryWithDiff({
+        old_configuration: {
+          ...mockSnapshot,
+          registration: {...mockSnapshot.registration, workflow_state: 'active' as const},
+        },
+        new_configuration: {
+          ...mockSnapshot,
+          registration: {...mockSnapshot.registration, workflow_state: 'inactive' as const},
+        },
+        internalConfig: {
+          workflowState: {oldValue: 'active', newValue: 'inactive'},
+          icons: null,
+          launchSettings: null,
+          locked: null,
+          naming: null,
+          permissions: null,
+          privacyLevel: null,
+          placements: null,
+        },
+        totalAdditions: 1,
+        totalRemovals: 1,
+      })
+
+      render(<HistoryDiffModal entry={entry} isOpen={true} onClose={onClose} />)
+
+      expect(screen.getByText('Activation State')).toBeInTheDocument()
+      expect(screen.getByText('[-] Active')).toBeInTheDocument()
+      expect(screen.getByText('[+] Inactive')).toBeInTheDocument()
+    })
+
+    it('displays state change from inactive to active', () => {
+      const mockSnapshot = mockConfigSnapshot()
+      const entry = mockConfigChangeEntryWithDiff({
+        old_configuration: {
+          ...mockSnapshot,
+          registration: {...mockSnapshot.registration, workflow_state: 'inactive' as const},
+        },
+        new_configuration: {
+          ...mockSnapshot,
+          registration: {...mockSnapshot.registration, workflow_state: 'active' as const},
+        },
+        internalConfig: {
+          workflowState: {oldValue: 'inactive', newValue: 'active'},
+          icons: null,
+          launchSettings: null,
+          locked: null,
+          naming: null,
+          permissions: null,
+          privacyLevel: null,
+          placements: null,
+        },
+        totalAdditions: 1,
+        totalRemovals: 1,
+      })
+
+      render(<HistoryDiffModal entry={entry} isOpen={true} onClose={onClose} />)
+
+      expect(screen.getByText('Activation State')).toBeInTheDocument()
+      expect(screen.getByText('[-] Inactive')).toBeInTheDocument()
+      expect(screen.getByText('[+] Active')).toBeInTheDocument()
+    })
+
+    it('displays state change involving deleted', () => {
+      const mockSnapshot = mockConfigSnapshot()
+      const entry = mockConfigChangeEntryWithDiff({
+        old_configuration: {
+          ...mockSnapshot,
+          registration: {...mockSnapshot.registration, workflow_state: 'active' as const},
+        },
+        new_configuration: {
+          ...mockSnapshot,
+          registration: {...mockSnapshot.registration, workflow_state: 'deleted' as const},
+        },
+        internalConfig: {
+          workflowState: {oldValue: 'active', newValue: 'deleted'},
+          icons: null,
+          launchSettings: null,
+          locked: null,
+          naming: null,
+          permissions: null,
+          privacyLevel: null,
+          placements: null,
+        },
+        totalAdditions: 1,
+        totalRemovals: 1,
+      })
+
+      render(<HistoryDiffModal entry={entry} isOpen={true} onClose={onClose} />)
+
+      expect(screen.getByText('Activation State')).toBeInTheDocument()
+      expect(screen.getByText('[-] Active')).toBeInTheDocument()
+      expect(screen.getByText('[+] Deleted')).toBeInTheDocument()
     })
   })
 
@@ -823,6 +950,8 @@ describe('HistoryDiffModal', () => {
           },
         },
         internalConfig: {
+          workflowState: null,
+          locked: null,
           launchSettings: {
             redirectUris: {
               added: ['https://new.com/redirect'],
@@ -913,7 +1042,7 @@ describe('HistoryDiffModal', () => {
 
       expect(screen.getByText('Launch Settings')).toBeInTheDocument()
       expect(screen.getByText('Permissions')).toBeInTheDocument()
-      expect(screen.getByText('Privacy Level')).toBeInTheDocument()
+      expect(screen.getByText('Data Sharing')).toBeInTheDocument()
       expect(screen.getByText('Placements')).toBeInTheDocument()
       expect(screen.getByText('Naming')).toBeInTheDocument()
       expect(screen.getByText('Icon Changes')).toBeInTheDocument()

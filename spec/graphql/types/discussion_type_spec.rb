@@ -244,19 +244,6 @@ RSpec.shared_examples "DiscussionType" do
     expect(discussion_type.resolve("discussionEntriesConnection(rootEntries: true) { nodes { _id } }")).to eq [de3.id, de2.id, de.id].map(&:to_s)
   end
 
-  it "loads discussion_entry_drafts" do
-    de = discussion.discussion_entries.create!(message: "root entry", user: @teacher, saving_user: @teacher)
-    dr = DiscussionEntryDraft.upsert_draft(user: @teacher, topic: discussion, message: "hey")
-    dr2 = DiscussionEntryDraft.upsert_draft(user: @teacher, topic: discussion, message: "hooo", parent: de)
-    dr3 = DiscussionEntryDraft.upsert_draft(user: @teacher, topic: discussion, message: "party now", entry: de)
-    # not going to be included cause other user
-    DiscussionEntryDraft.upsert_draft(user: user_model, topic: discussion, message: "party now", entry: de)
-    ids = discussion_type.resolve("discussionEntryDraftsConnection { nodes { _id } }")
-    expect(ids).to match_array([dr, dr2, dr3].flatten.map(&:to_s))
-    messages = discussion_type.resolve("discussionEntryDraftsConnection { nodes { message } }")
-    expect(messages).to match_array(["hey", "hooo", "party now"])
-  end
-
   it "allows querying root discussion entries" do
     de = discussion.discussion_entries.create!(message: "root entry", user: @teacher, saving_user: @teacher)
     discussion.discussion_entries.create!(message: "sub entry", user: @teacher, parent_id: de.id, saving_user: @teacher)
@@ -841,9 +828,9 @@ describe Types::DiscussionType do
       type_with_student = GraphQLTypeTester.new(@topic, current_user: @student, request: ActionDispatch::TestRequest.create)
       resolved_message = type_with_student.resolve("message")
 
-      canvaslms_url = resolved_message.match(/x-canvaslms-trusted-url='([^']+)'/)
+      canvaslms_url = resolved_message.match(/x-canvaslms-trusted-url="([^"]+)"/)
       expect(canvaslms_url[1]).to include("/courses/#{@course.id}/modules/#{@context_module.id}/prerequisites/discussion_topic_#{@topic.id}")
-      expect(resolved_message).to include("id='module_prerequisites_lookup_link'")
+      expect(resolved_message).to include('id="module_prerequisites_lookup_link"')
     end
 
     it "does not return locked module information when you are the teacher" do
@@ -1202,9 +1189,7 @@ describe Types::DiscussionType do
       expect(discussion_type.resolve("author { htmlUrl }")).to end_with("/groups/#{@group.id}/users/#{@group_teacher.id}")
       entries_url = discussion_type.resolve("discussionEntriesConnection { nodes { author { htmlUrl }}}")
 
-      entries_url.each do |entry|
-        expect(entry).to end_with("/groups/#{@group.id}/users/#{@group_student.id}")
-      end
+      expect(entries_url).to all(end_with("/groups/#{@group.id}/users/#{@group_student.id}"))
     end
   end
 

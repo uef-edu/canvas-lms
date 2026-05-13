@@ -42,22 +42,15 @@ module Accessibility
         Accessibility::Forms::TextInputWithCheckboxField.new(
           checkbox_label: I18n.t("This image is decorative"),
           checkbox_subtext: I18n.t("Screen readers should skip purely decorative images."),
-          undo_text: I18n.t("Alt text fixed"),
+          undo_text: I18n.t("Alt text updated"),
           input_label: I18n.t("Alt text"),
-          input_description: I18n.t("Describe what's in the picture."),
+          input_description: I18n.t("Describe what this image is meant to convey."),
           input_max_length: ImgAltRuleHelper::MAX_LENGTH,
           can_generate_fix: true,
+          is_canvas_image: Accessibility::AiGenerationService.extract_attachment_id_from_element(elem).present?,
           generate_button_label: I18n.t("Generate alt text"),
           value: elem.get_attribute("alt") || ""
         )
-      end
-
-      def generate_fix(elem)
-        return nil if elem.tag_name != "img"
-        return nil unless elem.attribute?("src")
-
-        src = elem.get_attribute("src")
-        ImgAltRuleHelper.generate_alt_text(src)
       end
 
       def fix!(elem, value)
@@ -69,8 +62,13 @@ module Accessibility
       end
 
       def message
-        I18n.t("The alt text is just the file name. Add a description for screen readers
-        so people who are blind or have low vision can understand what's in the image.")
+        I18n.t("Alt text is just the filename. Replace it with a description that tells users who can't see or load the image what it's meant to convey.")
+      end
+
+      def issue_preview(elem)
+        return nil unless elem.tag_name == "img"
+
+        ImgAltRuleHelper.adjust_img_style(elem)
       end
 
       def why

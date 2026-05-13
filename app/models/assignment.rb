@@ -33,6 +33,8 @@ class Assignment < AbstractAssignment
 
   validates :parent_assignment_id, :sub_assignment_tag, absence: true
   validate :unpublish_ok?, if: -> { will_save_change_to_workflow_state?(to: "unpublished") }
+  validate :peer_review_count_changes_ok?, if: :peer_review_count_changed?
+  validate :peer_reviews_changes_ok?, if: :will_save_change_to_peer_reviews?
 
   before_save :before_soft_delete, if: -> { will_save_change_to_workflow_state?(to: "deleted") }
 
@@ -167,6 +169,42 @@ class Assignment < AbstractAssignment
     assignments.each { |a| a.can_unpublish = !assmnt_ids_with_subs.include?(a.id) }
   end
 
+  # Preloads the peer_review_submissions flag for a collection of assignments.
+  # This is more efficient than calling peer_review_submissions? on each assignment individually.
+  def self.preload_peer_review_submissions(assignments)
+    return unless assignments.any?
+
+    peer_review_submission_assignment_ids = assignment_ids_with_peer_review_submissions(assignments.map(&:id))
+    assignments.each { |a| a.peer_review_submissions = peer_review_submission_assignment_ids.include?(a.id) }
+  end
+
+  # Returns the IDs of assignments that have completed peer review submissions.
+  def self.assignment_ids_with_peer_review_submissions(assignment_ids)
+    AssessmentRequest
+      .from(sanitize_sql(["unnest('{?}'::int8[]) as peer_review_assignments (assignment_id)", assignment_ids]))
+      .where(
+        AssessmentRequest
+          .where(workflow_state: "completed")
+          .joins(:submission)
+          .where("submissions.assignment_id = peer_review_assignments.assignment_id")
+          .arel.exists
+      )
+      .distinct.pluck("peer_review_assignments.assignment_id")
+  end
+
+  def peer_review_overrides_for_dates
+    return nil unless context.feature_enabled?(:peer_review_allocation_and_grading)
+    return nil unless peer_reviews?
+
+    peer_review_sub = peer_review_sub_assignment
+    return nil unless peer_review_sub
+
+    {
+      overrides: peer_review_sub.assignment_overrides.active.index_by(&:parent_override_id),
+      peer_review_sub:
+    }
+  end
+
   # Duplicates the course module content tags for the assignment to the new assignment.
   # @param new_assignment [Assignment] the assignment to duplicate the content tags for
   #
@@ -197,12 +235,76 @@ class Assignment < AbstractAssignment
     end
   end
 
+  # Returns true if there are completed peer review submissions for this assignment.
+  # Overrides the AbstractAssignment stub implementation.
+  def peer_review_submissions?
+    return @peer_review_submissions unless @peer_review_submissions.nil?
+
+    AssessmentRequest.completed_for_assignment(id).exists?
+  end
+
+  def ensure_post_policy(post_manually:)
+    super
+    return unless has_sub_assignments?
+
+    sub_assignments.each { |sa| sa.ensure_post_policy(post_manually:) }
+  end
+
+  def restore(from = nil)
+    transaction do
+      super
+
+      next unless context.feature_enabled?(:peer_review_allocation_and_grading)
+
+      deleted_peer_review_sub = PeerReviewSubAssignment
+                                .unscoped
+                                .where(parent_assignment_id: id, workflow_state: "deleted")
+                                .order(id: :desc)
+                                .first
+      next unless deleted_peer_review_sub
+
+      deleted_peer_review_sub.restore
+      association(:peer_review_sub_assignment).reset
+      PeerReview::PeerReviewUpdaterService.call(parent_assignment: self)
+    end
+  end
+
   private
 
   def before_soft_delete
     sub_assignments.destroy_all
     peer_review_sub_assignment&.destroy
   end
+
+  # These methods follow the Rails validation helper convention: they add errors
+  # and use early returns as guards, not to return a boolean predicate value.
+  # rubocop:disable Style/ReturnNilInPredicateMethodDefinition
+  def peer_review_count_changes_ok?
+    return unless peer_reviews?
+    return unless peer_review_sub_assignment.present?
+
+    if peer_review_submissions?
+      errors.add :peer_review_count,
+                 I18n.t("Students have already submitted peer reviews, so reviews required and points cannot be changed.")
+    end
+  end
+
+  def peer_reviews_changes_ok?
+    return unless peer_reviews_change_to_be_saved == [true, false]
+    return unless peer_review_sub_assignment.present?
+
+    if context.feature_enabled?(:peer_review_allocation_and_grading)
+      return unless peer_review_submissions?
+
+      errors.add :peer_reviews,
+                 I18n.t("cannot be disabled for assignments with graded peer reviews when students have already submitted reviews")
+    else
+      # For backward compatibility, prevent disabling peer reviews for assignments with graded peer reviews in legacy mode
+      errors.add :peer_reviews,
+                 I18n.t("cannot be disabled for assignments with graded peer reviews in legacy mode")
+    end
+  end
+  # rubocop:enable Style/ReturnNilInPredicateMethodDefinition
 
   def governs_submittable?
     true
@@ -282,5 +384,17 @@ class Assignment < AbstractAssignment
 
   def delete_allocation_rules
     allocation_rules.update_all(workflow_state: "deleted")
+  end
+
+  def a11y_scannable_attributes
+    # We need to run the scan on title and workflow_state change as well otherwise AccessibilityResourceScan will be out of date
+    # TODO: RCX-4463 remove title and workflow_state
+    %i[title description workflow_state]
+  end
+
+  def excluded_from_accessibility_scan?
+    # Check submission_types directly for online_quiz to catch assignments
+    # created by quizzes before the quiz association is set
+    submission_types == "online_quiz" || external_tool?
   end
 end

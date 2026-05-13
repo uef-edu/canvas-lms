@@ -24,12 +24,11 @@ import {MockedQueryClientProvider} from '@canvas/test-utils/query'
 import AllocationRuleCard from '../AllocationRuleCard'
 import {AllocationRuleType} from '../../graphql/teacher/AssignmentTeacherTypes'
 
-jest.mock('@canvas/graphql', () => ({
-  executeQuery: jest.fn(),
-}))
+import {executeQuery} from '@canvas/graphql'
 
-const {executeQuery} = require('@canvas/graphql')
-const mockExecuteQuery = executeQuery as jest.MockedFunction<typeof executeQuery>
+vi.mock('@canvas/graphql')
+
+const mockExecuteQuery = vi.mocked(executeQuery)
 
 describe('AllocationRuleCard', () => {
   const assessor = {
@@ -44,13 +43,13 @@ describe('AllocationRuleCard', () => {
     peerReviewStatus: {mustReviewCount: 1, completedReviewsCount: 0},
   }
 
-  const mockRefetchRules = jest.fn()
+  const mockRefetchRules = vi.fn()
 
   let user: ReturnType<typeof userEvent.setup>
 
   beforeEach(() => {
     user = userEvent.setup()
-    jest.clearAllMocks()
+    vi.clearAllMocks()
     mockExecuteQuery.mockResolvedValue({
       deleteAllocationRule: {
         allocationRuleId: '1',
@@ -92,7 +91,7 @@ describe('AllocationRuleCard', () => {
   }
 
   describe('Rule descriptions for assessor-focused rules', () => {
-    it('displays "Must review" when mustReview is true and reviewPermitted is true', () => {
+    it('displays "will review (strict)" when mustReview is true and reviewPermitted is true', () => {
       const rule: AllocationRuleType = {
         _id: '1',
         assessor,
@@ -105,10 +104,10 @@ describe('AllocationRuleCard', () => {
       renderWithProviders({rule})
 
       expect(screen.getByText('Pikachu')).toBeInTheDocument()
-      expect(screen.getByText('Must review Piplup')).toBeInTheDocument()
+      expect(screen.getByText('will review Piplup (strict)')).toBeInTheDocument()
     })
 
-    it('displays "Must not review" when mustReview is true and reviewPermitted is false', () => {
+    it('displays "will not review (strict)" when mustReview is true and reviewPermitted is false', () => {
       const rule: AllocationRuleType = {
         _id: '1',
         assessor,
@@ -121,10 +120,10 @@ describe('AllocationRuleCard', () => {
       renderWithProviders({rule})
 
       expect(screen.getByText('Pikachu')).toBeInTheDocument()
-      expect(screen.getByText('Must not review Piplup')).toBeInTheDocument()
+      expect(screen.getByText('will not review Piplup (strict)')).toBeInTheDocument()
     })
 
-    it('displays "Should review" when mustReview is false and reviewPermitted is true', () => {
+    it('displays "will review (flexible)" when mustReview is false and reviewPermitted is true', () => {
       const rule: AllocationRuleType = {
         _id: '1',
         assessor,
@@ -137,10 +136,10 @@ describe('AllocationRuleCard', () => {
       renderWithProviders({rule})
 
       expect(screen.getByText('Pikachu')).toBeInTheDocument()
-      expect(screen.getByText('Should review Piplup')).toBeInTheDocument()
+      expect(screen.getByText('will review Piplup (flexible)')).toBeInTheDocument()
     })
 
-    it('displays "Should not review" when mustReview is false and reviewPermitted is false', () => {
+    it('displays "will not review (flexible)" when mustReview is false and reviewPermitted is false', () => {
       const rule: AllocationRuleType = {
         _id: '1',
         assessor,
@@ -153,12 +152,12 @@ describe('AllocationRuleCard', () => {
       renderWithProviders({rule})
 
       expect(screen.getByText('Pikachu')).toBeInTheDocument()
-      expect(screen.getByText('Should not review Piplup')).toBeInTheDocument()
+      expect(screen.getByText('will not review Piplup (flexible)')).toBeInTheDocument()
     })
   })
 
   describe('Rule descriptions for assessee-focused rules', () => {
-    it('displays "Must be reviewed by" when mustReview is true and reviewPermitted is true', () => {
+    it('displays "will be reviewed by (strict)" when mustReview is true and reviewPermitted is true', () => {
       const rule: AllocationRuleType = {
         _id: '1',
         assessor,
@@ -171,10 +170,10 @@ describe('AllocationRuleCard', () => {
       renderWithProviders({rule})
 
       expect(screen.getByText('Piplup')).toBeInTheDocument()
-      expect(screen.getByText('Must be reviewed by Pikachu')).toBeInTheDocument()
+      expect(screen.getByText('will be reviewed by Pikachu (strict)')).toBeInTheDocument()
     })
 
-    it('displays "Must not be reviewed by" when mustReview is true and reviewPermitted is false', () => {
+    it('displays "will not be reviewed by (strict)" when mustReview is true and reviewPermitted is false', () => {
       const rule: AllocationRuleType = {
         _id: '1',
         assessor,
@@ -187,10 +186,10 @@ describe('AllocationRuleCard', () => {
       renderWithProviders({rule})
 
       expect(screen.getByText('Piplup')).toBeInTheDocument()
-      expect(screen.getByText('Must not be reviewed by Pikachu')).toBeInTheDocument()
+      expect(screen.getByText('will not be reviewed by Pikachu (strict)')).toBeInTheDocument()
     })
 
-    it('displays "Should be reviewed by" when mustReview is false and reviewPermitted is true', () => {
+    it('displays "will be reviewed by (flexible)" when mustReview is false and reviewPermitted is true', () => {
       const rule: AllocationRuleType = {
         _id: '1',
         assessor,
@@ -203,10 +202,10 @@ describe('AllocationRuleCard', () => {
       renderWithProviders({rule})
 
       expect(screen.getByText('Piplup')).toBeInTheDocument()
-      expect(screen.getByText('Should be reviewed by Pikachu')).toBeInTheDocument()
+      expect(screen.getByText('will be reviewed by Pikachu (flexible)')).toBeInTheDocument()
     })
 
-    it('displays "Should not be reviewed by" when mustReview is false and reviewPermitted is false', () => {
+    it('displays "will not be reviewed by (flexible)" when mustReview is false and reviewPermitted is false', () => {
       const rule: AllocationRuleType = {
         _id: '1',
         assessor,
@@ -219,7 +218,7 @@ describe('AllocationRuleCard', () => {
       renderWithProviders({rule})
 
       expect(screen.getByText('Piplup')).toBeInTheDocument()
-      expect(screen.getByText('Should not be reviewed by Pikachu')).toBeInTheDocument()
+      expect(screen.getByText('will not be reviewed by Pikachu (flexible)')).toBeInTheDocument()
     })
   })
 
@@ -270,7 +269,7 @@ describe('AllocationRuleCard', () => {
 
   describe('Delete functionality', () => {
     it('calls handleRuleDelete on successful delete', async () => {
-      const mockHandleRuleDelete = jest.fn()
+      const mockHandleRuleDelete = vi.fn()
 
       mockExecuteQuery.mockResolvedValueOnce({
         deleteAllocationRule: {
@@ -288,11 +287,11 @@ describe('AllocationRuleCard', () => {
       expect(mockExecuteQuery).toHaveBeenCalledWith(expect.any(Object), {
         input: {ruleId: '1'},
       })
-      expect(mockHandleRuleDelete).toHaveBeenCalledWith('1', 'Pikachu must review Piplup')
+      expect(mockHandleRuleDelete).toHaveBeenCalledWith('1', 'Pikachu will review Piplup (strict)')
     })
 
     it('calls handleRuleDelete with error on delete failure', async () => {
-      const mockHandleRuleDelete = jest.fn()
+      const mockHandleRuleDelete = vi.fn()
       const mockError = new Error('Allocation rule not found')
 
       mockExecuteQuery.mockRejectedValueOnce(mockError)
@@ -311,7 +310,7 @@ describe('AllocationRuleCard', () => {
     })
 
     it('calls handleRuleDelete with full rule description for screen reader announcement', async () => {
-      const mockHandleRuleDelete = jest.fn()
+      const mockHandleRuleDelete = vi.fn()
 
       mockExecuteQuery.mockResolvedValueOnce({
         deleteAllocationRule: {
@@ -327,7 +326,7 @@ describe('AllocationRuleCard', () => {
       await screen.findByText('Pikachu')
 
       // Verify handleRuleDelete is called with ruleId and full description
-      expect(mockHandleRuleDelete).toHaveBeenCalledWith('1', 'Pikachu must review Piplup')
+      expect(mockHandleRuleDelete).toHaveBeenCalledWith('1', 'Pikachu will review Piplup (strict)')
     })
   })
 })

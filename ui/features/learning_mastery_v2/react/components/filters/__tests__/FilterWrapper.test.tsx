@@ -19,7 +19,7 @@ import React from 'react'
 import {render, screen} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import {FilterWrapper} from '../FilterWrapper'
-import {Pagination} from '../../../types/rollup'
+import {Pagination} from '@canvas/outcomes/react/types/rollup'
 
 const mockPagination: Pagination = {
   currentPage: 1,
@@ -30,12 +30,12 @@ const mockPagination: Pagination = {
 
 const defaultProps = {
   pagination: mockPagination,
-  onPerPageChange: jest.fn(),
+  onPerPageChange: vi.fn(),
 }
 
 describe('FilterWrapper', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   it('renders FilterWrapper with all components when pagination is provided', () => {
@@ -65,7 +65,7 @@ describe('FilterWrapper', () => {
   })
 
   it('calls onPerPageChange when per page value changes', async () => {
-    const onPerPageChange = jest.fn()
+    const onPerPageChange = vi.fn()
     render(<FilterWrapper {...defaultProps} onPerPageChange={onPerPageChange} />)
 
     const selector = screen.getByTestId('per-page-selector')

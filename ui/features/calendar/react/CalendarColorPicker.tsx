@@ -25,11 +25,11 @@ import {Flex} from '@instructure/ui-flex'
 import {View} from '@instructure/ui-view'
 import {IconWarningSolid} from '@instructure/ui-icons'
 import {ScreenReaderContent} from '@instructure/ui-a11y-content'
-import {showFlashError, showFlashAlert} from '@canvas/alerts/react/FlashAlert'
+import {showFlashError, showFlashAlert} from '@instructure/platform-alerts'
 import {Button} from '@instructure/ui-buttons'
 import forceScreenreaderToReparse from 'force-screenreader-to-reparse'
 import doFetchApi from '@canvas/do-fetch-api-effect'
-import {set} from 'lodash'
+import {set} from 'es-toolkit/compat'
 
 const I18n = createI18nScope('calendar_sidebar')
 

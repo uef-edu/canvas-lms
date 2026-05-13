@@ -19,11 +19,8 @@
 #
 
 describe Quizzes::QuizQuestionsController do
-  def course_quiz(active = false)
-    @quiz = @course.quizzes.create
-    @quiz.workflow_state = "available" if active
-    @quiz.save!
-    @quiz
+  def course_quiz
+    @quiz = @course.quizzes.create!
   end
 
   def quiz_question
@@ -43,6 +40,25 @@ describe Quizzes::QuizQuestionsController do
   before :once do
     course_with_teacher(active_all: true)
     course_quiz
+  end
+
+  describe "GET 'index'" do
+    it "requires authorization" do
+      get "index", params: { course_id: @course.id, quiz_id: @quiz.id }
+      assert_unauthorized
+    end
+
+    it "returns quiz questions" do
+      quiz_question
+      user_session(@teacher)
+      get "index", params: { course_id: @course.id, quiz_id: @quiz.id }
+      expect(response).to be_successful
+      expect(assigns[:quiz]).to eq(@quiz)
+      json = json_parse(response.body)
+      expect(json).to be_an(Array)
+      expect(json.length).to eq(1)
+      expect(json.first["id"]).to eq(@question.id)
+    end
   end
 
   describe "POST 'create'" do

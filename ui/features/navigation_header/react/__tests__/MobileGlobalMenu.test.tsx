@@ -19,6 +19,7 @@ import {MockedQueryClientProvider} from '@canvas/test-utils/query'
 import {QueryClient} from '@tanstack/react-query'
 import {cleanup, render, screen, waitFor} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import {type MockedFunction} from 'vitest'
 import MobileGlobalMenu from '../MobileGlobalMenu'
 import {useSwitchExperience} from '../mutations/useSwitchExperience'
 import {
@@ -28,26 +29,24 @@ import {
   type ProcessedTool,
 } from '../utils'
 
-jest.mock('../utils', () => ({
-  getExternalApps: jest.fn(),
-  filterAndProcessTools: jest.fn(),
+vi.mock('../utils', () => ({
+  getExternalApps: vi.fn(),
+  filterAndProcessTools: vi.fn(),
 }))
 
-jest.mock('../mutations/useSwitchExperience', () => ({
-  useSwitchExperience: jest.fn(),
+vi.mock('../mutations/useSwitchExperience', () => ({
+  useSwitchExperience: vi.fn(),
 }))
 
-const mockedFilterAndProcessTools = filterAndProcessTools as jest.MockedFunction<
+const mockedFilterAndProcessTools = filterAndProcessTools as MockedFunction<
   typeof filterAndProcessTools
 >
-const mockedGetExternalApps = getExternalApps as jest.MockedFunction<typeof getExternalApps>
-const mockedUseSwitchExperience = useSwitchExperience as jest.MockedFunction<
-  typeof useSwitchExperience
->
+const mockedGetExternalApps = getExternalApps as MockedFunction<typeof getExternalApps>
+const mockedUseSwitchExperience = useSwitchExperience as MockedFunction<typeof useSwitchExperience>
 
 describe('MobileGlobalMenu', () => {
   beforeEach(() => {
-    mockedUseSwitchExperience.mockReturnValue({mutate: jest.fn()} as any)
+    mockedUseSwitchExperience.mockReturnValue({mutate: vi.fn()} as any)
   })
 
   afterEach(() => {
@@ -210,6 +209,7 @@ describe('MobileGlobalMenu', () => {
   it('should handle tools with null image correctly and use fallback icon', async () => {
     const externalTools: ExternalTool[] = [
       {
+        toolId: 'tool-with-null-image-1',
         label: 'Tool with Null Image',
         imgSrc: null,
         href: 'http://tool-null-image.com',
@@ -243,7 +243,7 @@ describe('MobileGlobalMenu', () => {
   })
 
   it('calls switchExperience mutate when Canvas Career link clicked', async () => {
-    const mutateMock = jest.fn()
+    const mutateMock = vi.fn()
     mockedUseSwitchExperience.mockReturnValue({mutate: mutateMock} as any)
     setup([], [], true)
     const link = await screen.findByText('Canvas Career')

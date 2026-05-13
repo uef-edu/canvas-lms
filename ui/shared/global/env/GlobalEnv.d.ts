@@ -19,14 +19,17 @@
 import {EnvContentMigrations} from './ContentMigrations'
 import {EnvAccessibilityChecker} from './EnvAccessibilityChecker'
 import {EnvAccounts} from './EnvAccounts'
+import {EnvAda} from './EnvAda'
 import {EnvAiExperiences} from './EnvAiExperiences'
 import {EnvAlerts} from './EnvAlerts'
 import {EnvAms} from './EnvAms'
 import {EnvAssignments} from './EnvAssignments'
+import {EnvAthena} from './EnvAthena'
 import {EnvChangePassword} from './EnvChangePassword'
 import {EnvCommon} from './EnvCommon'
 import {EnvContextModules} from './EnvContextModules'
 import {EnvCourse} from './EnvCourse'
+import {EnvCourseLinkValidator} from './EnvCourseLinkValidator'
 import {EnvCoursePaces} from './EnvCoursePaces'
 import {EnvDeepLinking} from './EnvDeepLinking'
 import {EnvDeveloperKeys} from './EnvDeveloperKeys'
@@ -42,11 +45,13 @@ import {EnvPortfolio} from './EnvPortfolio'
 import {EnvProfiles} from './EnvProfiles'
 import {EnvRce} from './EnvRce'
 import {EnvReleaseNotes} from './EnvReleaseNotes'
-import {EnvSmartSearch} from './EnvSmartSearch'
 import {EnvUserMerge} from './EnvUserMerge'
 import {EnvWikiPages} from './EnvWikiPages'
 import {EnvAuthentication} from './EnvAuthentication'
 import {EnvWidgetDashboard} from './EnvWidgetDashboard'
+import {EnvUsageMetrics} from './EnvUsageMetrics'
+import {EnvOak} from './EnvOak'
+import {EnvPageViews} from './EnvPageViews'
 
 /**
  * Top level ENV variable.
@@ -64,11 +69,14 @@ export type GlobalEnv =
     // Individual typescript files can narrow the type of ENV to include them
     Partial<
       EnvAccounts &
+        EnvAda &
         EnvAiExperiences &
         EnvAms &
         EnvAccessibilityChecker &
         EnvAssignments &
+        EnvAthena &
         EnvCourse &
+        EnvCourseLinkValidator &
         EnvCoursePaces &
         EnvDeepLinking &
         EnvGradebook &
@@ -87,10 +95,12 @@ export type GlobalEnv =
         EnvPortfolio &
         EnvUserMerge &
         EnvLtiRegistrations &
-        EnvSmartSearch &
         EnvHorizon &
         EnvAuthentication &
         EnvWidgetDashboard &
         EnvNewQuizzes &
-        EnvNotices
+        EnvNotices &
+        EnvUsageMetrics &
+        EnvOak &
+        EnvPageViews
     >

@@ -23,6 +23,9 @@ require "lib/lti/ims/advantage_access_token_shared_context"
 describe Lti::IMS::DynamicRegistrationController do
   include_context "advantage access token context"
 
+  let_once(:openapi_location) { File.join(File.dirname(__FILE__), "openapi", "dynamic_registration.yml").freeze }
+  let_once(:openapi_spec) { YAML.load_file(openapi_location).freeze }
+
   let(:controller_routes) do
     dynamic_registration_routes = []
     CanvasRails::Application.routes.routes.each do |route|
@@ -32,13 +35,8 @@ describe Lti::IMS::DynamicRegistrationController do
     dynamic_registration_routes
   end
 
-  openapi_location = File.join(File.dirname(__FILE__), "openapi", "dynamic_registration.yml")
-  openapi_spec = YAML.load_file(openapi_location)
-
-  verifier = OpenApiSpecHelper::SchemaVerifier.new(openapi_spec)
-
   after do
-    verifier.verify(request, response) if response.sent?
+    OpenApiSpecHelper::SchemaVerifier.new(openapi_spec).verify(request, response) if response.sent?
   end
 
   it "has openapi documentation for each of our controller routes" do
@@ -103,7 +101,7 @@ describe Lti::IMS::DynamicRegistrationController do
     context "with a valid token" do
       let(:token_hash) do
         {
-          user_id: User.create!.id,
+          user_id: User.create!.global_id,
           initiated_at: 1.minute.ago,
           root_account_global_id: Account.default.global_id,
           root_account_domain: Account.default.domain,
@@ -140,7 +138,7 @@ describe Lti::IMS::DynamicRegistrationController do
 
         it "rejects the registration" do
           subject
-          expect(response).to have_http_status(:unprocessable_entity)
+          expect(response).to have_http_status(:unprocessable_content)
           expect(response.body).to match(/invalid_scope/)
         end
       end
@@ -171,7 +169,7 @@ describe Lti::IMS::DynamicRegistrationController do
           created_registration = Lti::IMS::Registration.last
           expect(created_registration.privacy_level).to eq("email_only")
           expect(created_registration).not_to be_nil
-          expect(parsed_body["https://purl.imsglobal.org/spec/lti-tool-configuration"]["https://canvas.instructure.com/lti/registration_config_url"]).to eq "http://test.host/api/lti/registrations/#{created_registration.global_id}/view"
+          expect(parsed_body["https://purl.imsglobal.org/spec/lti-tool-configuration"]["https://canvas.instructure.com/lti/registration_config_url"]).to eq "http://test.host/api/lti/accounts/#{created_registration.lti_registration.account.global_id}/registrations/#{created_registration.global_id}/view"
           expect(created_registration.canvas_configuration["custom_fields"]).to eq({ "global_foo" => "global_bar" })
           expect(created_registration.unified_tool_id).to eq("asdf")
           expect(created_registration.registration_url).to eq("https://example.com/registration")
@@ -189,7 +187,7 @@ describe Lti::IMS::DynamicRegistrationController do
           expect(Schemas::Lti::IMS::OidcRegistration).to \
             receive(:to_model_attrs).and_return(to_model_attrs_result)
           subject
-          expect(response).to have_http_status(:unprocessable_entity)
+          expect(response).to have_http_status(:unprocessable_content)
           expect(response.body).to match(/oopsy/)
         end
 
@@ -263,7 +261,7 @@ describe Lti::IMS::DynamicRegistrationController do
             # Mimic the token being created on the user's shard, like would happen typically.
             @shard2.activate do
               {
-                user_id: user.id,
+                user_id: user.global_id,
                 initiated_at: 1.minute.ago,
                 root_account_global_id: account.global_id,
                 root_account_domain: account.domain,
@@ -302,7 +300,7 @@ describe Lti::IMS::DynamicRegistrationController do
               created_registration = Lti::IMS::Registration.last
               expect(created_registration.privacy_level).to eq("email_only")
               expect(created_registration).not_to be_nil
-              expect(parsed_body["https://purl.imsglobal.org/spec/lti-tool-configuration"]["https://canvas.instructure.com/lti/registration_config_url"]).to eq "http://test.host/api/lti/registrations/#{created_registration.global_id}/view"
+              expect(parsed_body["https://purl.imsglobal.org/spec/lti-tool-configuration"]["https://canvas.instructure.com/lti/registration_config_url"]).to eq "http://test.host/api/lti/accounts/#{created_registration.lti_registration.account.global_id}/registrations/#{created_registration.global_id}/view"
               expect(created_registration.canvas_configuration["custom_fields"]).to eq({ "global_foo" => "global_bar" })
               expect(created_registration.unified_tool_id).to eq("asdf")
               expect(created_registration.registration_url).to eq("https://example.com/registration")
@@ -328,7 +326,7 @@ describe Lti::IMS::DynamicRegistrationController do
 
           it "returns a 422 with validation errors" do
             subject
-            expect(response).to have_http_status(:unprocessable_entity)
+            expect(response).to have_http_status(:unprocessable_content)
             expect(response.body).to match(/target_link_uri/)
           end
         end
@@ -342,7 +340,7 @@ describe Lti::IMS::DynamicRegistrationController do
 
           it "returns a 422 with validation errors" do
             subject
-            expect(response).to have_http_status(:unprocessable_entity)
+            expect(response).to have_http_status(:unprocessable_content)
             expect(response.body).to match(/target_link_uri/)
           end
         end
@@ -356,7 +354,7 @@ describe Lti::IMS::DynamicRegistrationController do
 
           it "returns a 422 with validation errors" do
             subject
-            expect(response).to have_http_status(:unprocessable_entity)
+            expect(response).to have_http_status(:unprocessable_content)
             expect(response.body).to match(/grant_types.*client_credentials/)
           end
 
@@ -374,7 +372,7 @@ describe Lti::IMS::DynamicRegistrationController do
 
           it "returns a 422 with validation errors" do
             subject
-            expect(response).to have_http_status(:unprocessable_entity)
+            expect(response).to have_http_status(:unprocessable_content)
             expect(response.body).to match(/response_types.*id_token/)
           end
 
@@ -392,7 +390,7 @@ describe Lti::IMS::DynamicRegistrationController do
 
           it "returns a 422 with validation errors" do
             subject
-            expect(response).to have_http_status(:unprocessable_entity)
+            expect(response).to have_http_status(:unprocessable_content)
             expect(response.body).to match(/token_endpoint_auth_method.*private_key_jwt/)
           end
 
@@ -416,7 +414,7 @@ describe Lti::IMS::DynamicRegistrationController do
         end
         let(:token_hash_with_existing) do
           {
-            user_id: User.create!.id,
+            user_id: User.create!.global_id,
             initiated_at: 1.minute.ago,
             root_account_global_id: account.global_id,
             root_account_domain: account.domain,
@@ -434,6 +432,17 @@ describe Lti::IMS::DynamicRegistrationController do
           existing_registration
           expect { subject }.to change { Lti::RegistrationUpdateRequest.count }.by(1)
                                                                                .and not_change { Lti::Registration.count }
+        end
+
+        context "when the RegistrationUpdateRequest has different attrs from the existing registration" do
+          it "does not automatically accept the RegistrationUpdateRequest" do
+            existing_registration
+            subject
+            expect(response).to be_successful
+            update_request = Lti::RegistrationUpdateRequest.last
+            expect(update_request.accepted_at).to be_nil
+            expect(update_request.rejected_at).to be_nil
+          end
         end
 
         it "creates RegistrationUpdateRequest with correct attributes" do
@@ -456,7 +465,7 @@ describe Lti::IMS::DynamicRegistrationController do
         context "when existing registration is not found" do
           let(:token_hash_with_existing) do
             {
-              user_id: User.create!.id,
+              user_id: User.create!.global_id,
               initiated_at: 1.minute.ago,
               root_account_global_id: account.global_id,
               root_account_domain: account.domain,
@@ -477,6 +486,78 @@ describe Lti::IMS::DynamicRegistrationController do
             expect(response).to have_http_status(:not_found)
           end
         end
+
+        context "when registration is on a different shard" do
+          specs_require_sharding
+
+          subject do
+            request.headers["Authorization"] = "Bearer #{valid_token_cross_shard}"
+            post :create, params: { **registration_params }
+          end
+
+          let(:shard2_account) { @shard2.activate { account_model } }
+          let(:shard2_user) do
+            @shard2.activate do
+              user = user_with_pseudonym(account: shard2_account)
+              user.save! if user.new_record?
+              user.reload
+              user
+            end
+          end
+          let(:shard2_registration) do
+            @shard2.activate do
+              reg = lti_ims_registration_model(account: shard2_account)
+              reg.lti_registration.new_external_tool(shard2_account)
+              reg
+            end
+          end
+          let(:token_hash_cross_shard) do
+            {
+              user_id: shard2_user.global_id,
+              initiated_at: 1.minute.ago,
+              root_account_global_id: shard2_account.global_id,
+              root_account_domain: shard2_account.domain,
+              uuid: SecureRandom.uuid,
+              unified_tool_id: "cross_shard_test",
+              registration_url: "https://example.com/registration",
+              existing_registration: shard2_registration.lti_registration.global_id
+            }
+          end
+          let(:valid_token_cross_shard) do
+            Canvas::Security.create_jwt(token_hash_cross_shard, 1.hour.from_now)
+          end
+
+          it "creates RegistrationUpdateRequest on the same shard as the registration" do
+            shard2_registration
+            subject
+
+            @shard2.activate do
+              update_request = Lti::RegistrationUpdateRequest.last
+              expect(update_request).not_to be_nil
+              expect(update_request.lti_registration).to eq(shard2_registration.lti_registration)
+              expect(update_request.root_account_id).to eq(shard2_account.id)
+              expect(update_request.root_account).to eq(shard2_account)
+              expect(update_request.shard).to eq(@shard2)
+            end
+          end
+
+          it "finds and uses the registration on its shard" do
+            shard2_registration
+            expect { subject }.to change { @shard2.activate { Lti::RegistrationUpdateRequest.count } }.by(1)
+          end
+
+          it "successfully creates the update request with user reference" do
+            shard2_registration
+            subject
+
+            expect(response).to be_successful
+            @shard2.activate do
+              update_request = Lti::RegistrationUpdateRequest.last
+              expect(update_request).not_to be_nil
+              expect(update_request.created_by_id).to be_present
+            end
+          end
+        end
       end
     end
 
@@ -490,7 +571,7 @@ describe Lti::IMS::DynamicRegistrationController do
         let(:invalid_token) do
           initiation_time = 1.minute.ago
           token_hash = {
-            user_id: User.create!.id,
+            user_id: User.create!.global_id,
             initiated_at: initiation_time,
             root_account_global_id: Account.first.root_account_id,
           }
@@ -507,7 +588,7 @@ describe Lti::IMS::DynamicRegistrationController do
         let(:invalid_token) do
           initiation_time = 62.minutes.ago # this should be too long ago to be accepted
           token_hash = {
-            user_id: User.create!.id,
+            user_id: User.create!.global_id,
             initiated_at: initiation_time,
             root_account_global_id: Account.first.root_account_id,
             uuid: SecureRandom.uuid,
@@ -592,7 +673,8 @@ describe Lti::IMS::DynamicRegistrationController do
           "target_link_uri" => "https://updated.example.com/launch",
           "https://canvas.instructure.com/lti/privacy_level" => "email_only",
           "https://canvas.instructure.com/lti/vendor" => "Vendor",
-        }
+        },
+        "contacts" => ["support@example.com"],
       }
     end
 
@@ -637,6 +719,72 @@ describe Lti::IMS::DynamicRegistrationController do
         expect(parsed_body["grant_types"]).to eq(["client_credentials", "implicit"])
       end
 
+      context "when the update params do not match the existing registration" do
+        it "does not automatically accept the registration update request" do
+          put :update, params: { registration_id: registration.id, **update_params }
+
+          expect(response).to have_http_status(:ok)
+          update_request = Lti::RegistrationUpdateRequest.last
+          expect(update_request.accepted_at).to be_nil
+          expect(update_request.rejected_at).to be_nil
+        end
+
+        context "when other params match but the tool configuration is different" do
+          let(:registration) do
+            lti_ims_registration_model(
+              account:,
+              client_name: update_params["client_name"],
+              redirect_uris: update_params["redirect_uris"],
+              initiate_login_uri: update_params["initiate_login_uri"],
+              jwks_uri: update_params["jwks_uri"],
+              logo_uri: update_params["logo_uri"],
+              lti_tool_configuration: update_params["https://purl.imsglobal.org/spec/lti-tool-configuration"]
+            )
+          end
+
+          it "does not accept the registration update request" do
+            update_params["https://purl.imsglobal.org/spec/lti-tool-configuration"]["custom_parameters"] = { new_global_foo: "bar" }
+
+            put :update, params: { registration_id: registration.id, **update_params }
+
+            expect(response).to have_http_status(:ok)
+            update_request = Lti::RegistrationUpdateRequest.last
+            expect(update_request.accepted_at).to be_nil
+            expect(update_request.rejected_at).to be_nil
+          end
+        end
+      end
+
+      context "when the update params match an existing registration" do
+        let(:registration) do
+          lti_ims_registration_model(
+            account:,
+            client_name: update_params["client_name"],
+            redirect_uris: update_params["redirect_uris"],
+            initiate_login_uri: update_params["initiate_login_uri"],
+            jwks_uri: update_params["jwks_uri"],
+            logo_uri: update_params["logo_uri"],
+            scopes: [TokenScopes::LTI_REGISTRATION_SCOPE],
+            lti_tool_configuration: update_params["https://purl.imsglobal.org/spec/lti-tool-configuration"]
+          )
+        end
+
+        let(:update_params_with_scopes) do
+          update_params.merge({
+                                "scope" => registration.scopes.join(" ")
+                              })
+        end
+
+        it "automatically accepts the registration update request" do
+          put :update, params: { registration_id: registration.id, **update_params_with_scopes }
+
+          expect(response).to have_http_status(:ok)
+          update_request = Lti::RegistrationUpdateRequest.last
+          expect(update_request.accepted_at).not_to be_nil
+          expect(update_request.rejected_at).to be_nil
+        end
+      end
+
       context "with invalid registration params" do
         let(:invalid_params) do
           update_params.merge("grant_types" => ["invalid_grant_type"])
@@ -645,7 +793,7 @@ describe Lti::IMS::DynamicRegistrationController do
         it "returns validation errors" do
           put :update, params: { registration_id: registration.id, **invalid_params }
 
-          expect(response).to have_http_status(:unprocessable_entity)
+          expect(response).to have_http_status(:unprocessable_content)
           expect(response.parsed_body["errors"]).to be_present
         end
 
@@ -661,7 +809,7 @@ describe Lti::IMS::DynamicRegistrationController do
             receive(:to_model_attrs).and_return(to_model_attrs_result)
 
           put :update, params: { registration_id: registration.id, **update_params }
-          expect(response).to have_http_status(:unprocessable_entity)
+          expect(response).to have_http_status(:unprocessable_content)
           expect(response.body).to match(/update validation failed/)
         end
       end
@@ -674,7 +822,7 @@ describe Lti::IMS::DynamicRegistrationController do
         it "returns validation errors" do
           put :update, params: { registration_id: registration.id, **invalid_params }
 
-          expect(response).to have_http_status(:unprocessable_entity)
+          expect(response).to have_http_status(:unprocessable_content)
           expect(response.parsed_body["errors"]).to be_present
         end
       end
@@ -687,7 +835,7 @@ describe Lti::IMS::DynamicRegistrationController do
         it "returns validation errors" do
           put :update, params: { registration_id: registration.id, **invalid_params }
 
-          expect(response).to have_http_status(:unprocessable_entity)
+          expect(response).to have_http_status(:unprocessable_content)
           expect(response.parsed_body["errors"]).to be_present
         end
       end
@@ -783,6 +931,104 @@ describe Lti::IMS::DynamicRegistrationController do
         end
       end
     end
+
+    context "when trying to update a different tool's registration" do
+      let(:other_registration) { lti_ims_registration_model(account:) }
+      let(:other_developer_key) do
+        other_registration.developer_key.tap do |dk|
+          dk.update!(scopes: [TokenScopes::LTI_REGISTRATION_SCOPE])
+        end
+      end
+
+      before do
+        developer_key.update!(scopes: [TokenScopes::LTI_REGISTRATION_SCOPE])
+        request.headers["Authorization"] = "Bearer #{access_token}"
+      end
+
+      it "returns forbidden when trying to update another tool's registration" do
+        put :update, params: { registration_id: other_registration.id, **update_params }
+
+        expect(response).to have_http_status(:forbidden)
+        expect(response.parsed_body["errorMessage"]).to match(/not authorized/i)
+      end
+
+      it "does not create a registration update request" do
+        expect do
+          put :update, params: { registration_id: other_registration.id, **update_params }
+        end.not_to change { Lti::RegistrationUpdateRequest.count }
+      end
+    end
+
+    context "with cross-shard registration" do
+      specs_require_sharding
+
+      subject do
+        request.headers["Authorization"] = "Bearer #{cross_shard_access_token}"
+        put :update, params: { registration_id: shard2_registration.global_id, **update_params }
+      end
+
+      let(:shard2_account) { @shard2.activate { account_model } }
+      let(:shard2_registration) do
+        @shard2.activate do
+          lti_ims_registration_model(account: shard2_account)
+        end
+      end
+      let(:shard2_developer_key) do
+        shard2_registration.developer_key.tap do |dk|
+          dk.update!(scopes: [TokenScopes::LTI_REGISTRATION_SCOPE])
+        end
+      end
+      let(:cross_shard_access_token_jwt_hash) do
+        timestamp = Time.zone.now.to_i
+        {
+          iss: "https://canvas.instructure.com",
+          sub: shard2_developer_key.global_id,
+          aud: access_token_aud,
+          iat: timestamp,
+          exp: access_token_exp,
+          nbf: (Time.zone.now.to_i - 30),
+          jti: SecureRandom.uuid,
+          scopes: access_token_scopes.join(" "),
+        }
+      end
+      let(:cross_shard_access_token) do
+        JSON::JWT.new(cross_shard_access_token_jwt_hash).sign(access_token_signing_key, :HS256).to_s
+      end
+
+      it "creates a RegistrationUpdateRequest on the same shard as the registration" do
+        shard2_registration
+        expect { subject }.to change { @shard2.activate { Lti::RegistrationUpdateRequest.count } }.by(1)
+        expect(response).to be_successful
+      end
+
+      it "does not violate foreign key constraints" do
+        shard2_registration
+        expect { subject }.not_to raise_error
+        expect(response).to be_successful
+      end
+
+      it "creates update request with correct shard association" do
+        shard2_registration
+        subject
+
+        @shard2.activate do
+          update_request = Lti::RegistrationUpdateRequest.last
+          expect(update_request).not_to be_nil
+          expect(update_request.shard).to eq(@shard2)
+          expect(update_request.lti_registration).to eq(shard2_registration.lti_registration)
+          expect(update_request.root_account).to eq(shard2_account)
+          expect(update_request.root_account_id).to eq(shard2_account.id)
+        end
+      end
+
+      it "returns successful response with registration data" do
+        shard2_registration
+        subject
+        expect(response).to be_successful
+        parsed_body = response.parsed_body
+        expect(parsed_body["client_id"]).to eq(shard2_developer_key.global_id.to_s)
+      end
+    end
   end
 
   describe "#show" do
@@ -809,7 +1055,6 @@ describe Lti::IMS::DynamicRegistrationController do
           id
           lti_registration_id
           developer_key_id
-          overlay
           lti_tool_configuration
           application_type
           grant_types
@@ -860,7 +1105,7 @@ describe Lti::IMS::DynamicRegistrationController do
 
     it "includes expected fields in token" do
       subject
-      expect(token[:user_id]).to eq(@admin.id)
+      expect(token[:user_id]).to eq(@admin.global_id)
       expect(token[:root_account_global_id]).to eq(Account.default.global_id)
       expect(token[:root_account_domain]).to eq(Account.default.domain)
       expect(token[:uuid]).not_to be_nil
@@ -976,8 +1221,8 @@ describe Lti::IMS::DynamicRegistrationController do
 
     it "returns unauthorized if jwt is expired" do
       expired_jwt = Canvas::Security.create_jwt({
-                                                  user_id: @admin.id,
-                                                  root_account_global_id: Account.default.id
+                                                  user_id: @admin.global_id,
+                                                  root_account_global_id: Account.default.global_id
                                                 },
                                                 5.minutes.ago)
       get :dr_iframe, params: { account_id: Account.default.id, url: "http://testexample.com?registration_token=#{expired_jwt}" }
@@ -986,7 +1231,7 @@ describe Lti::IMS::DynamicRegistrationController do
 
     it "returns unauthorized if jwt is issued for other account" do
       expired_jwt = Canvas::Security.create_jwt({
-                                                  user_id: @admin.id,
+                                                  user_id: @admin.global_id,
                                                   root_account_global_id: 123
                                                 },
                                                 5.minutes.from_now)
@@ -997,8 +1242,8 @@ describe Lti::IMS::DynamicRegistrationController do
 
     it "returns unauthorized if jwt is issued for other user" do
       expired_jwt = Canvas::Security.create_jwt({
-                                                  user_id: 123,
-                                                  root_account_global_id: Account.default.id
+                                                  user_id: @admin.global_id + 1,
+                                                  root_account_global_id: Account.default.global_id
                                                 },
                                                 5.minutes.from_now)
       get :dr_iframe, params: { account_id: Account.default.id, url: "http://testexample.com?registration_token=#{expired_jwt}" }
@@ -1008,7 +1253,7 @@ describe Lti::IMS::DynamicRegistrationController do
 
     it "adds url to CSP whitelist if registration_token is valid" do
       valid_jwt = Canvas::Security.create_jwt({
-                                                user_id: @admin.id,
+                                                user_id: @admin.global_id,
                                                 root_account_global_id: Account.default.global_id
                                               },
                                               5.minutes.from_now)
@@ -1047,13 +1292,13 @@ describe Lti::IMS::DynamicRegistrationController do
       expect(response).to have_http_status(:not_found)
     end
 
-    it "returns an Lti::IMS::Registration with it's configuration and overlay" do
+    it "returns an Lti::IMS::Registration with it's configuration" do
       user_session(admin)
-      registration = lti_ims_registration_model(account: Account.default, registration_overlay: { "description" => "test" })
+      registration = lti_ims_registration_model(account: Account.default)
       get :ims_registration_by_uuid, params: { account_id: Account.default.id, registration_uuid: registration.guid }
       expect(response).to be_successful
       expect(response.parsed_body["lti_tool_configuration"].with_indifferent_access).to eq(registration.lti_tool_configuration.with_indifferent_access)
-      expect(response.parsed_body["overlay"].with_indifferent_access).to eq(registration.registration_overlay.with_indifferent_access)
+      expect(response.parsed_body["overlay"]).to be_nil
     end
   end
 
@@ -1099,14 +1344,16 @@ describe Lti::IMS::DynamicRegistrationController do
     let(:registration) { lti_ims_registration_model(account:) }
     let(:user) { account_admin_user(account:) }
 
-    it "updates the registration_overlay on the registration" do
+    it "updates the Lti::Overlay for the registration" do
       user_session(user)
       put :update_registration_overlay,
           params: { account_id: Account.default.id,
                     registration_id: registration.id },
           body: overlay.to_json
       expect(response).to be_successful
-      expect(registration.reload.registration_overlay).to eq(overlay.deep_stringify_keys)
+      overlay_data = registration.lti_registration.overlay_for(account).data
+      expect(overlay_data["disabled_placements"]).to eq(overlay[:disabledPlacements])
+      expect(overlay_data["disabled_scopes"]).to eq(overlay[:disabledScopes])
     end
 
     it "removes disabled scopes from the associated developer key" do
@@ -1127,7 +1374,9 @@ describe Lti::IMS::DynamicRegistrationController do
           body: overlay.except(:disabledScopes).to_json
       expect(response).to be_successful
 
-      expect(registration.reload.registration_overlay).to eq(overlay.except(:disabledScopes).deep_stringify_keys)
+      overlay_data = registration.lti_registration.overlay_for(account).data
+      expect(overlay_data["disabled_placements"]).to eq(overlay[:disabledPlacements])
+      expect(overlay_data["disabled_scopes"]).to be_nil
     end
 
     it "returns a 422 if the request body does not meet the schema" do
@@ -1138,7 +1387,7 @@ describe Lti::IMS::DynamicRegistrationController do
             registration_id: registration.id
           },
           body: overlay.merge({ invalid: "data" }).to_json
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
     end
 
     it "returns a 404 if the registration cannot be found" do
@@ -1189,12 +1438,11 @@ describe Lti::IMS::DynamicRegistrationController do
         lti_overlay
       end
 
-      it "updates the registration and Lti::Overlay model" do
+      it "updates the Lti::Overlay model" do
         user_session(user)
         put :update_registration_overlay, params: { account_id: Account.default.id, registration_id: registration.id }, body: overlay.to_json
 
         expect(response).to be_successful
-        expect(registration.reload.registration_overlay).to eq(overlay.deep_stringify_keys)
         expect(lti_overlay.reload.updated_by).to eq(user)
         expect(lti_overlay.data).to eq({
                                          "disabled_placements" => ["course_navigation"],
@@ -1214,12 +1462,11 @@ describe Lti::IMS::DynamicRegistrationController do
           lti_overlay.update_column(:updated_by_id, nil)
         end
 
-        it "updates the registration and Lti::Overlay model" do
+        it "updates the Lti::Overlay model" do
           user_session(user)
           put :update_registration_overlay, params: { account_id: Account.default.id, registration_id: registration.id }, body: overlay.to_json
 
           expect(response).to be_successful
-          expect(registration.reload.registration_overlay).to eq(overlay.deep_stringify_keys)
           expect(lti_overlay.reload.updated_by).to eq(user)
           expect(lti_overlay.data).to eq({
                                            "disabled_placements" => ["course_navigation"],
@@ -1401,6 +1648,126 @@ describe Lti::IMS::DynamicRegistrationController do
       it "returns a 404" do
         get :show_configuration, params: { registration_id: Lti::IMS::Registration.last.id + 1 }
         expect(response).to have_http_status(:not_found)
+      end
+    end
+
+    context "when trying to access a different tool's configuration" do
+      let(:other_registration) { lti_ims_registration_model(account:) }
+      let(:other_developer_key) do
+        other_registration.developer_key.tap do |dk|
+          dk.update!(scopes: [TokenScopes::LTI_REGISTRATION_SCOPE])
+        end
+      end
+
+      before do
+        developer_key.update!(scopes: [TokenScopes::LTI_REGISTRATION_SCOPE])
+        request.headers["Authorization"] = "Bearer #{access_token}"
+      end
+
+      it "returns forbidden when accessing another tool's configuration" do
+        get :show_configuration, params: { registration_id: other_registration.id }
+
+        expect(response).to have_http_status(:forbidden)
+        expect(response.parsed_body["errorMessage"]).to match(/not authorized/i)
+      end
+    end
+  end
+
+  describe "modify_site_admin_developer_keys permission" do
+    let(:site_admin) { Account.site_admin }
+    let(:site_admin_admin) { account_admin_user(account: site_admin) }
+    let(:site_admin_without_permission) do
+      user = user_model
+      role = custom_account_role("limited_admin", account: site_admin)
+      # Grant manage_developer_keys but not modify_site_admin_developer_keys
+      site_admin.role_overrides.create!(
+        permission: :manage_developer_keys,
+        role:,
+        enabled: true
+      )
+      site_admin.account_users.create!(user:, role:)
+      user
+    end
+
+    before do
+      site_admin.enable_feature!(:modify_site_admin_developer_keys_permission)
+    end
+
+    describe "GET #registration_token" do
+      context "when user has modify_site_admin_developer_keys permission" do
+        before { user_session(site_admin_admin) }
+
+        it "allows generating registration token for site admin" do
+          get :registration_token, params: { account_id: site_admin.id }, format: :json
+          expect(response).to have_http_status(:ok)
+          expect(response.parsed_body["token"]).to be_present
+        end
+      end
+
+      context "when user lacks modify_site_admin_developer_keys permission" do
+        before { user_session(site_admin_without_permission) }
+
+        it "returns forbidden for site admin registration token generation" do
+          get :registration_token, params: { account_id: site_admin.id }, format: :json
+          expect(response).to have_http_status(:forbidden)
+        end
+      end
+    end
+
+    describe "PATCH #update_registration_overlay" do
+      let(:registration) { lti_ims_registration_model(account: site_admin) }
+      let(:overlay) { { title: "Updated Title" } }
+
+      context "when user has modify_site_admin_developer_keys permission" do
+        before { user_session(site_admin_admin) }
+
+        it "allows updating registration overlay for site admin registrations" do
+          patch :update_registration_overlay, params: { account_id: site_admin.id, registration_id: registration.id }, body: overlay.to_json, format: :json
+          expect(response).to have_http_status(:ok)
+        end
+      end
+
+      context "when user lacks modify_site_admin_developer_keys permission" do
+        before { user_session(site_admin_without_permission) }
+
+        it "returns forbidden for site admin registration overlay updates" do
+          patch :update_registration_overlay, params: { account_id: site_admin.id, registration_id: registration.id }, body: overlay.to_json, format: :json
+          expect(response).to have_http_status(:forbidden)
+        end
+      end
+    end
+
+    context "for regular account operations" do
+      let(:regular_account) { Account.default }
+      let(:regular_admin) do
+        user = user_model
+        role = custom_account_role("limited_admin", account: regular_account)
+        regular_account.role_overrides.create!(
+          permission: :manage_developer_keys,
+          role:,
+          enabled: true
+        )
+        regular_account.account_users.create!(user:, role:)
+        user
+      end
+
+      before { user_session(regular_admin) }
+
+      it "does not require modify_site_admin_developer_keys for regular accounts" do
+        get :registration_token, params: { account_id: regular_account.id }, format: :json
+        expect(response).to have_http_status(:ok)
+      end
+    end
+
+    context "when feature flag is disabled" do
+      before do
+        site_admin.disable_feature!(:modify_site_admin_developer_keys_permission)
+        user_session(site_admin_without_permission)
+      end
+
+      it "allows access when feature flag is off" do
+        get :registration_token, params: { account_id: site_admin.id }, format: :json
+        expect(response).to have_http_status(:ok)
       end
     end
   end

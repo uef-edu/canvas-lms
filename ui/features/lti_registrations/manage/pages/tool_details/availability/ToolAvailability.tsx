@@ -16,9 +16,9 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-import {showFlashAlert} from '@canvas/alerts/react/FlashAlert'
+import {showFlashAlert} from '@instructure/platform-alerts'
 import {useScope as createI18nScope} from '@canvas/i18n'
-import {confirm} from '@canvas/instui-bindings/react/Confirm'
+import {confirm} from '@instructure/platform-instui-bindings'
 import {LinkInfo} from '@canvas/parse-link-header/parseLinkHeader'
 import {Alert} from '@instructure/ui-alerts'
 import {Button} from '@instructure/ui-buttons'
@@ -98,11 +98,12 @@ export const ToolAvailability = (props: ToolAvailabilityProps) => {
                 <Text
                   dangerouslySetInnerHTML={{
                     __html: I18n.t(
-                      "Control %{app_name}'s availability and exceptions in Canvas, including setting exceptions for specific sub-accounts or courses. You can *view all of your sub-accounts* or consult the documentation for more information.",
+                      "Control %{app_name}'s availability and exceptions in Canvas, including setting exceptions for specific sub-accounts or courses. You can *view all of your sub-accounts* or **consult the documentation** for more information.",
                       {
                         app_name: registration.name,
                         wrappers: [
                           `<a id='view-subaccount-link' href='/accounts/${registration.account_id}/sub_accounts' style='text-decoration: underline'>$1</a>`,
+                          `<a href='https://community.canvaslms.com/t5/Manage-Sub-Account-and-Course/Canvas-Apps-Sub-account-Management-Documentation/ta-p/654086' style='text-decoration: underline' target='_blank' data-pendo='availability-and-exceptions-doc-link'>$1</a>`,
                         ],
                       },
                     ),
@@ -129,43 +130,48 @@ export const ToolAvailability = (props: ToolAvailabilityProps) => {
               </List>
             ) : (
               <Alert variant="info" margin="0" renderCloseButtonLabel="">
-                <Text>
-                  {I18n.t(
-                    "This tool hasn't been deployed to any sub-accounts or courses. To add availability and exceptions, first create a root account–level deployment. By default, the root account level deployment won’t be available to users, but you can adjust this after creation if needed.",
-                  )}
-                </Text>
-                <Button
-                  color="primary"
-                  size="small"
-                  margin="small 0 0 0"
-                  interaction={creatingDeployment ? 'disabled' : 'enabled'}
-                  onClick={async () => {
-                    setCreatingDeployment(true)
-                    try {
-                      const result = await createDeployment({
-                        registrationId: registration.id,
-                        accountId: props.accountId,
-                        available: false,
-                      })
-                      if (result._type === 'Success') {
-                        controlsQuery.refetch()
-                        showFlashAlert({
-                          type: 'success',
-                          message: I18n.t('Root-level deployment created'),
-                        })
-                      } else {
-                        showFlashAlert({
-                          type: 'error',
-                          message: I18n.t('There was an error when creating the deployment'),
-                        })
-                      }
-                    } finally {
-                      setCreatingDeployment(false)
-                    }
-                  }}
-                >
-                  {I18n.t('Create Deployment')}
-                </Button>
+                <Flex as="div" margin="0 0 0 0" direction="column">
+                  <Text>
+                    {I18n.t(
+                      "This tool hasn't been deployed to any sub-accounts or courses. To add availability and exceptions, first create a root account–level deployment. By default, the root account level deployment won’t be available to users, but you can adjust this after creation if needed.",
+                    )}
+                  </Text>
+                  <Flex.Item>
+                    <Button
+                      color="primary"
+                      size="small"
+                      margin="small 0 0 0"
+                      display="inline-block"
+                      interaction={creatingDeployment ? 'disabled' : 'enabled'}
+                      onClick={async () => {
+                        setCreatingDeployment(true)
+                        try {
+                          const result = await createDeployment({
+                            registrationId: registration.id,
+                            accountId: props.accountId,
+                            available: false,
+                          })
+                          if (result._type === 'Success') {
+                            controlsQuery.refetch()
+                            showFlashAlert({
+                              type: 'success',
+                              message: I18n.t('Root-level deployment created'),
+                            })
+                          } else {
+                            showFlashAlert({
+                              type: 'error',
+                              message: I18n.t('There was an error when creating the deployment'),
+                            })
+                          }
+                        } finally {
+                          setCreatingDeployment(false)
+                        }
+                      }}
+                    >
+                      {I18n.t('Create Deployment')}
+                    </Button>
+                  </Flex.Item>
+                </Flex>
               </Alert>
             )}
             {hasNextPage && (

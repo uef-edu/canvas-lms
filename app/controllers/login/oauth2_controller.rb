@@ -20,6 +20,7 @@
 
 class Login::OAuth2Controller < Login::OAuthBaseController
   skip_before_action :verify_authenticity_token
+  skip_before_action :require_user, only: %i[new create]
 
   rescue_from Canvas::Security::TokenExpired, with: :handle_expired_token
 
@@ -50,7 +51,7 @@ class Login::OAuth2Controller < Login::OAuthBaseController
       @aac.instance_debugging = true
     end
     attempts = 0
-    timeout_options = { raise_on_timeout: true, fallback_timeout_length: 10.seconds, exception_class: Timeout::Error }
+    timeout_options = @aac.creation_timeout_options
     begin
       Canvas.timeout_protection("oauth:#{@aac.global_id}", timeout_options) do
         token = nil
@@ -152,7 +153,8 @@ class Login::OAuth2Controller < Login::OAuthBaseController
         redirect_to login_url
         return false
       end
-      if jwt["nonce"] != pop_nonce
+      unless pop_nonce(jwt["nonce"])
+        logger.error("Nonce mismatch - JWT nonce: '#{jwt["nonce"]}', Session nonce(s): #{session[:oauth2_nonce].inspect}")
         increment_statsd(:failure, reason: :invalid_nonce)
         raise ActionController::InvalidAuthenticityToken
       end
@@ -184,12 +186,15 @@ class Login::OAuth2Controller < Login::OAuthBaseController
     nonce
   end
 
-  def pop_nonce
+  def pop_nonce(expected_nonce)
     return unless (nonce_array = session[:oauth2_nonce])
-    return nonce_array if nonce_array.is_a?(String)
 
-    nonce = nonce_array.pop
+    nonce_array = Array.wrap(nonce_array)
+
+    found = nonce_array.index(expected_nonce)
+
+    nonce_array.delete_at(found) if found
     session.delete(:oauth2_nonce) if nonce_array.empty?
-    nonce
+    found
   end
 end

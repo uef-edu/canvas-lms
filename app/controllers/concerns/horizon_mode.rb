@@ -18,6 +18,15 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
 module HorizonMode
+  extend ActiveSupport::Concern
+
+  class_methods do
+    def allow_public_horizon_access(*actions)
+      action_names = actions.map(&:to_s)
+      skip_before_action :require_user, if: -> { action_names.include?(action_name) && public_horizon_course? }
+    end
+  end
+
   def load_canvas_career
     return if force_academic? || api_request?
     return if params[:invitation].present?
@@ -64,8 +73,6 @@ module HorizonMode
 
     if @context.is_a?(Account)
       @context.horizon_account?
-    elsif @context.is_a?(Course)
-      @context.horizon_course?
     else
       false
     end
@@ -79,7 +86,7 @@ module HorizonMode
   end
 
   def horizon_params
-    { content_only: "true", instui_theme: "career", force_classic: "true" }.symbolize_keys
+    { content_only: "true", instui_theme: "career", force_classic: "true", hide_global_nav: "true" }.symbolize_keys
   end
 
   def entering_student_view?
@@ -91,6 +98,15 @@ module HorizonMode
     @current_user&.fake_student?
   end
 
+  def public_horizon_course?
+    get_context
+    return false unless @context.is_a?(Course)
+
+    @context.horizon_course? &&
+      @context.course_visibility == "public" &&
+      @context.available?
+  end
+
   def remove_horizon_params(url)
     return url unless url&.include?("instui_theme=career") && url.include?("force_classic=true")
 
@@ -99,6 +115,7 @@ module HorizonMode
     query_params.delete("instui_theme")
     query_params.delete("force_classic")
     query_params.delete("content_only")
+    query_params.delete("hide_global_nav")
     uri.query = query_params.empty? ? nil : query_params.to_query
     uri.to_s
   end

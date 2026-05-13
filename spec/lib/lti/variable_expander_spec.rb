@@ -37,12 +37,12 @@ module Lti
         url: "http://www.example.com"
       )
     end
-    let(:substitution_helper) { double.as_null_object }
+    let(:substitution_helper) { instance_double(Lti::SubstitutionsHelper).as_null_object }
     let(:right_now) { Time.current }
     let(:tool) do
-      shard_mock = double("shard")
+      shard_mock = instance_double(Shard)
       allow(shard_mock).to receive(:settings).and_return({ encription_key: "abc" })
-      m = double("tool")
+      m = instance_double(ContextExternalTool)
       allow(m).to receive_messages(id: 1,
                                    context: root_account,
                                    include_email?: true,
@@ -64,7 +64,7 @@ module Lti
     end
 
     let(:controller) do
-      request_mock = double("request")
+      request_mock = instance_double(ActionDispatch::Request)
       allow(request_mock).to receive_messages(url: "https://localhost", host_with_port: "https://localhost", host: "/my/url", scheme: "https", parameters: {
         com_instructure_course_accept_canvas_resource_types: ["page", "module"],
         com_instructure_course_canvas_resource_type: "page",
@@ -72,15 +72,18 @@ module Lti
         com_instructure_course_allow_canvas_resource_selection: "true",
         com_instructure_course_available_canvas_resources: available_canvas_resources
       }.with_indifferent_access)
-      view_context_mock = double("view_context")
-      m = double("controller")
+      view_context_mock = instance_double(ActionView::Base)
+      # Trigger lazy definition of route helper methods on ApplicationController
+      # so that instance_double can verify against them
+      ApplicationController.new.respond_to?(:api_v1_collaboration_members_url)
+      m = instance_double(ApplicationController)
       allow(m).to receive(:css_url_for).with(:common).and_return("/path/to/common.scss")
       allow(view_context_mock).to receive(:stylesheet_path)
         .and_return(URI.parse(request_mock.url).merge(m.css_url_for(:common)).to_s)
       allow(m).to receive_messages(request: request_mock,
                                    logged_in_user: user,
                                    named_context_url: "url",
-                                   active_brand_config: double(to_json: '{"ic-brand-primary-darkened-5":"#0087D7"}'),
+                                   active_brand_config: instance_double(BrandConfig, to_json: '{"ic-brand-primary-darkened-5":"#0087D7"}'),
                                    polymorphic_url: "url",
                                    view_context: view_context_mock)
       allow(m).to receive(:active_brand_config_url).with("json").and_return("http://example.com/brand_config.json")
@@ -398,7 +401,7 @@ module Lti
       end
 
       it "includes Person.sourcedId when in enabled capability" do
-        allow(SisPseudonym).to receive(:for).with(user, anything, anything).and_return(double(sis_user_id: 12))
+        allow(SisPseudonym).to receive(:for).with(user, anything, anything).and_return(instance_double(Pseudonym, sis_user_id: 12))
         expanded = variable_expander.enabled_capability_params(["Person.sourcedId"])
         expect(expanded.keys).to include "lis_person_sourcedid"
       end
@@ -955,7 +958,6 @@ module Lti
       context "when the new_quizzes_separators feature flag is enabled for decimal separators" do
         before do
           allow(Account.site_admin).to receive(:feature_enabled?).with(:new_quizzes_separators).and_return(true)
-          allow(Account.site_admin).to receive(:feature_enabled?).with(:disallow_null_custom_variables).and_return(true)
         end
 
         it "has substitution for $Canvas.account.decimal_separator when sub account has setting" do
@@ -980,7 +982,6 @@ module Lti
       context "when the new_quizzes_separators feature flag is disabled for decimal separators" do
         before do
           allow(Account.site_admin).to receive(:feature_enabled?).with(:new_quizzes_separators).and_return(false)
-          allow(Account.site_admin).to receive(:feature_enabled?).with(:disallow_null_custom_variables).and_return(true)
         end
 
         it "does not expand $Canvas.account.decimal_separator" do
@@ -996,7 +997,6 @@ module Lti
       context "when the new_quizzes_separators feature flag is enabled for thousand separators" do
         before do
           allow(Account.site_admin).to receive(:feature_enabled?).with(:new_quizzes_separators).and_return(true)
-          allow(Account.site_admin).to receive(:feature_enabled?).with(:disallow_null_custom_variables).and_return(true)
         end
 
         it "has substitution for $Canvas.account.thousand_separator when sub account has setting" do
@@ -1021,7 +1021,6 @@ module Lti
       context "when the new_quizzes_separators feature flag is disabled for thousand separators" do
         before do
           allow(Account.site_admin).to receive(:feature_enabled?).with(:new_quizzes_separators).and_return(false)
-          allow(Account.site_admin).to receive(:feature_enabled?).with(:disallow_null_custom_variables).and_return(true)
         end
 
         it "does not expand $Canvas.account.thousand_separator" do
@@ -1062,170 +1061,82 @@ module Lti
         )
       end
 
-      # tests for only the variables that were being returned as a raw boolean
-      context "custom_variables_booleans_as_strings feature flag" do
-        context "when the ff is disabled and the output is a boolean it should be returned as a boolean" do
-          before do
-            Account.site_admin.enable_feature! :disallow_null_custom_variables
-            Account.site_admin.disable_feature! :custom_variables_booleans_as_strings
-          end
-
-          let(:tool) do
-            course.context_external_tools.create!(domain: "example.com",
-                                                  consumer_key: "12345",
-                                                  shared_secret: "secret",
-                                                  privacy_level: "anonymous",
-                                                  name: "tool",
-                                                  use_1_3: true)
-          end
-
-          it "has a substitution for Canvas.user.isRootAccountAdmin" do
-            course.save!
-            expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
-            expect(expand!("$Canvas.user.isRootAccountAdmin", expander:)).to be false
-          end
-
-          it "has a substitution for com.instructure.Assignment.anonymous_grading" do
-            assignment.anonymous_grading = true
-            course.save!
-            expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
-            expect(expand!("$com.instructure.Assignment.anonymous_grading", expander:)).to be true
-          end
-
-          it "has a substitution for Canvas.assignment.lockdownEnabled" do
-            allow(assignment).to receive(:settings).and_return({
-                                                                 "lockdown_browser" => {
-                                                                   "require_lockdown_browser" => true
-                                                                 }
-                                                               })
-            course.save!
-            expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
-            expect(expand!("$Canvas.assignment.lockdownEnabled", expander:)).to be true
-          end
-
-          it "has a substitution for Canvas.assignment.hideInGradebook" do
-            allow(assignment).to receive(:hideInGradebook).and_return(false)
-            course.save!
-            expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
-            expect(expand!("$Canvas.assignment.hideInGradebook", expander:)).to be false
-          end
-
-          it "has a substitution for com.instructure.User.student_view" do
-            course.save!
-            expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
-            expect(expand!("$com.instructure.User.student_view", expander:)).to be false
-          end
-
-          it "has a substitution for Canvas.course.aiQuizGeneration" do
-            course.save!
-            course.enable_feature!(:new_quizzes_ai_quiz_generation)
-            expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
-            expect(expand!("$Canvas.course.aiQuizGeneration", expander:)).to be true
-          end
-
-          it "has a substitution for Canvas.course.sectionRestricted" do
-            allow(Lti::SubstitutionsHelper).to receive(:new).and_return(substitution_helper)
-            allow(substitution_helper).to receive(:section_restricted).and_return(true)
-            course.save!
-            course.enable_feature!(:new_quizzes_ai_quiz_generation)
-            expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
-            expect(expand!("$Canvas.course.sectionRestricted", expander:)).to be true
-          end
-
-          it "has a substitution for Canvas.assignment.published" do
-            allow(assignment).to receive(:workflow_state).and_return("published")
-            course.save!
-            expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
-            expect(expand!("$Canvas.assignment.published", expander:)).to be true
-          end
-
-          it "has a substitution for Canvas.assignment.omitFromFinalGrade" do
-            course.save!
-            expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
-            expect(expand!("$Canvas.assignment.omitFromFinalGrade", expander:)).to be false
-          end
+      context "when the output is a boolean it should be returned as a string for LTI 1.3 tools" do
+        let(:tool) do
+          course.context_external_tools.create!(domain: "example.com",
+                                                consumer_key: "12345",
+                                                shared_secret: "secret",
+                                                privacy_level: "anonymous",
+                                                name: "tool",
+                                                use_1_3: true)
         end
 
-        context "when the ff is enabled and the output is a boolean it should be returned as a string" do
-          before do
-            Account.site_admin.enable_feature! :disallow_null_custom_variables
-            Account.site_admin.enable_feature! :custom_variables_booleans_as_strings
-          end
+        it "has a substitution for Canvas.user.isRootAccountAdmin" do
+          course.save!
+          expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
+          expect(expand!("$Canvas.user.isRootAccountAdmin", expander:)).to eq "false"
+        end
 
-          let(:tool) do
-            course.context_external_tools.create!(domain: "example.com",
-                                                  consumer_key: "12345",
-                                                  shared_secret: "secret",
-                                                  privacy_level: "anonymous",
-                                                  name: "tool",
-                                                  use_1_3: true)
-          end
+        it "has a substitution for com.instructure.Assignment.anonymous_grading" do
+          assignment.anonymous_grading = true
+          course.save!
+          expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
+          expect(expand!("$com.instructure.Assignment.anonymous_grading", expander:)).to eq "true"
+        end
 
-          it "has a substitution for Canvas.user.isRootAccountAdmin" do
-            course.save!
-            expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
-            expect(expand!("$Canvas.user.isRootAccountAdmin", expander:)).to eq "false"
-          end
+        it "has a substitution for Canvas.assignment.lockdownEnabled" do
+          allow(assignment).to receive(:settings).and_return({
+                                                               "lockdown_browser" => {
+                                                                 "require_lockdown_browser" => true
+                                                               }
+                                                             })
+          course.save!
+          expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
+          expect(expand!("$Canvas.assignment.lockdownEnabled", expander:)).to eq "true"
+        end
 
-          it "has a substitution for com.instructure.Assignment.anonymous_grading" do
-            assignment.anonymous_grading = true
-            course.save!
-            expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
-            expect(expand!("$com.instructure.Assignment.anonymous_grading", expander:)).to eq "true"
-          end
+        it "has a substitution for Canvas.assignment.hideInGradebook" do
+          allow(assignment).to receive(:hideInGradebook).and_return(false)
+          course.save!
+          expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
+          expect(expand!("$Canvas.assignment.hideInGradebook", expander:)).to eq "false"
+        end
 
-          it "has a substitution for Canvas.assignment.lockdownEnabled" do
-            allow(assignment).to receive(:settings).and_return({
-                                                                 "lockdown_browser" => {
-                                                                   "require_lockdown_browser" => true
-                                                                 }
-                                                               })
-            course.save!
-            expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
-            expect(expand!("$Canvas.assignment.lockdownEnabled", expander:)).to eq "true"
-          end
+        it "has a substitution for com.instructure.User.student_view" do
+          course.save!
+          expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
+          expect(expand!("$com.instructure.User.student_view", expander:)).to eq "false"
+        end
 
-          it "has a substitution for Canvas.assignment.hideInGradebook" do
-            allow(assignment).to receive(:hideInGradebook).and_return(false)
-            course.save!
-            expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
-            expect(expand!("$Canvas.assignment.hideInGradebook", expander:)).to eq "false"
-          end
+        it "has a substitution for Canvas.course.aiQuizGeneration" do
+          course.account.settings[:root_account_tier] = "1"
+          course.account.save!
+          course.save!
+          course.enable_feature!(:new_quizzes_ai_quiz_generation)
+          expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
+          expect(expand!("$Canvas.course.aiQuizGeneration", expander:)).to eq "true"
+        end
 
-          it "has a substitution for com.instructure.User.student_view" do
-            course.save!
-            expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
-            expect(expand!("$com.instructure.User.student_view", expander:)).to eq "false"
-          end
+        it "has a substitution for Canvas.course.sectionRestricted" do
+          allow(Lti::SubstitutionsHelper).to receive(:new).and_return(substitution_helper)
+          allow(substitution_helper).to receive(:section_restricted).and_return(true)
+          course.save!
+          course.enable_feature!(:new_quizzes_ai_quiz_generation)
+          expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
+          expect(expand!("$Canvas.course.sectionRestricted", expander:)).to eq "true"
+        end
 
-          it "has a substitution for Canvas.course.aiQuizGeneration" do
-            course.save!
-            course.enable_feature!(:new_quizzes_ai_quiz_generation)
-            expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
-            expect(expand!("$Canvas.course.aiQuizGeneration", expander:)).to eq "true"
-          end
+        it "has a substitution for Canvas.assignment.published" do
+          allow(assignment).to receive(:workflow_state).and_return("published")
+          course.save!
+          expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
+          expect(expand!("$Canvas.assignment.published", expander:)).to eq "true"
+        end
 
-          it "has a substitution for Canvas.course.sectionRestricted" do
-            allow(Lti::SubstitutionsHelper).to receive(:new).and_return(substitution_helper)
-            allow(substitution_helper).to receive(:section_restricted).and_return(true)
-            course.save!
-            course.enable_feature!(:new_quizzes_ai_quiz_generation)
-            expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
-            expect(expand!("$Canvas.course.sectionRestricted", expander:)).to eq "true"
-          end
-
-          it "has a substitution for Canvas.assignment.published" do
-            allow(assignment).to receive(:workflow_state).and_return("published")
-            course.save!
-            expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
-            expect(expand!("$Canvas.assignment.published", expander:)).to eq "true"
-          end
-
-          it "has a substitution for Canvas.assignment.omitFromFinalGrade" do
-            course.save!
-            expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
-            expect(expand!("$Canvas.assignment.omitFromFinalGrade", expander:)).to eq "false"
-          end
+        it "has a substitution for Canvas.assignment.omitFromFinalGrade" do
+          course.save!
+          expander = VariableExpander.new(root_account, course, controller, current_user: user, tool:, assignment:)
+          expect(expand!("$Canvas.assignment.omitFromFinalGrade", expander:)).to eq "false"
         end
       end
 
@@ -1233,6 +1144,8 @@ module Lti
         let(:subst_name) { "$Canvas.course.aiQuizGeneration" }
 
         it "returns true when the feature flag is enabled for the course" do
+          course.account.settings[:root_account_tier] = "1"
+          course.account.save!
           course.save!
           course.enable_feature!(:new_quizzes_ai_quiz_generation)
 
@@ -2121,7 +2034,7 @@ module Lti
           end
 
           let(:content_tag) do
-            double("content_tag")
+            instance_double(ContentTag)
           end
 
           let(:variable_expander) do
@@ -2402,7 +2315,7 @@ module Lti
 
           it "has substitution when the user is a student and context is a course-based Group" do
             exp = VariableExpander.new(root_account, group, controller, current_user: user, tool:, assignment:)
-            expect(exp.lti_helper.course).to_not be_nil
+            expect(exp.lti_helper.course).not_to be_nil
             expect(exp.lti_helper.course).to receive(:user_is_student?).and_return(true)
             expect(expand!("$Canvas.assignment.submission.studentAttempts", expander: exp)).to eq 2
           end
@@ -2813,14 +2726,14 @@ module Lti
         end
 
         it "has substitution for Canvas.module.id" do
-          content_tag = double("content_tag")
+          content_tag = instance_double(ContentTag)
           allow(content_tag).to receive(:context_module_id).and_return("foo")
           variable_expander.instance_variable_set(:@content_tag, content_tag)
           expect(expand!("$Canvas.module.id")).to eq "foo"
         end
 
         it "has substitution for Canvas.moduleItem.id" do
-          content_tag = double("content_tag")
+          content_tag = instance_double(ContentTag)
           allow(content_tag).to receive(:id).and_return(7878)
           variable_expander.instance_variable_set(:@content_tag, content_tag)
           expect(expand!("$Canvas.moduleItem.id")).to eq 7878

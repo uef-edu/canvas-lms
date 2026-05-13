@@ -18,8 +18,6 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
-require_relative "../../../spec_helper"
-
 class ObserverAlertApiHarness
   include Api::V1::ObserverAlert
   include ApplicationHelper
@@ -42,7 +40,11 @@ describe "Api::V1::ObserverAlert" do
 
   describe "#observer_alert_json" do
     let(:user) { user_with_pseudonym }
-    let(:session) { user_session(user) }
+    let(:session) { {} }
+
+    before do
+      user_session(user)
+    end
 
     it "returns json" do
       alert = observer_alert_model(observer: user)

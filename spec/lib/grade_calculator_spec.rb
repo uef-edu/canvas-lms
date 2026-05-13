@@ -431,6 +431,38 @@ describe GradeCalculator do
       expect(@user.enrollments.first.computed_final_score).to equal(50.0)
     end
 
+    it "omits peer review sub-assignment from final grade when parent is omitted" do
+      @course.enable_feature!(:peer_review_allocation_and_grading)
+
+      @group = @course.assignment_groups.create!(name: "group", group_weight: 100)
+      counting_assignment = @course.assignments.create!(
+        title: "Counting Assignment",
+        points_possible: 10,
+        assignment_group: @group
+      )
+
+      parent = @course.assignments.create!(
+        title: "Parent",
+        points_possible: 10,
+        assignment_group: @group,
+        peer_reviews: true,
+        omit_from_final_grade: true
+      )
+
+      peer_review_sub = PeerReview::PeerReviewCreatorService.call(
+        parent_assignment: parent,
+        points_possible: 10,
+        grading_type: "points"
+      )
+
+      expect(peer_review_sub.omit_from_final_grade).to be true
+
+      counting_assignment.grade_student(@user, grade: "10", grader: @teacher)
+      peer_review_sub.grade_student(@user, grade: "5", grader: @teacher)
+
+      expect(@user.enrollments.first.computed_final_score).to equal(100.0)
+    end
+
     it "recomputes when an assignment changes assignment groups" do
       @course.update_attribute :group_weighting_scheme, "percent"
       ag1 = @course.assignment_groups.create! name: "Group 1", group_weight: 80
@@ -495,7 +527,7 @@ describe GradeCalculator do
       end
 
       it "does not emit a live event if the course grade does not change" do
-        expect(Canvas::LiveEvents).to_not receive(:course_grade_change)
+        expect(Canvas::LiveEvents).not_to receive(:course_grade_change)
         assignment.grade_student(@student, grade: "5", grader: @teacher)
         GradeCalculator.new([@user.id], @course.id).compute_scores
       end
@@ -945,55 +977,55 @@ describe GradeCalculator do
   describe "GradeCalculator.recompute_final_score" do
     it "accepts a course" do
       expect(GradeCalculator).to receive(:new).with([@student.id], @course, Hash)
-                                              .and_return(double("GradeCalculator", compute_and_save_scores: "hi"))
+                                              .and_return(instance_double(GradeCalculator, compute_and_save_scores: "hi"))
       GradeCalculator.recompute_final_score(@student.id, @course)
     end
 
     it "accepts a course id" do
       expect(GradeCalculator).to receive(:new).with([@student.id], Course, Hash)
-                                              .and_return(double("GradeCalculator", compute_and_save_scores: "hi"))
+                                              .and_return(instance_double(GradeCalculator, compute_and_save_scores: "hi"))
       GradeCalculator.recompute_final_score(@student.id, @course.id)
     end
 
     it "fetches assignments for GradeCalculator" do
       expect(@course).to receive_message_chain(:assignments, :published, :gradeable, to_a: [5, 6])
       expect(GradeCalculator).to receive(:new).with([@student.id], @course, hash_including(assignments: [5, 6]))
-                                              .and_return(double("GradeCalculator", compute_and_save_scores: "hi"))
+                                              .and_return(instance_double(GradeCalculator, compute_and_save_scores: "hi"))
       GradeCalculator.recompute_final_score(@student.id, @course)
     end
 
     it "does not fetch assignments if they are already passed" do
       expect(@course).not_to receive(:assignments)
       expect(GradeCalculator).to receive(:new).with([@student.id], @course, hash_including(assignments: [5, 6]))
-                                              .and_return(double("GradeCalculator", compute_and_save_scores: "hi"))
+                                              .and_return(instance_double(GradeCalculator, compute_and_save_scores: "hi"))
       GradeCalculator.recompute_final_score(@student.id, @course, assignments: [5, 6])
     end
 
     it "fetches groups for GradeCalculator" do
       expect(@course).to receive_message_chain(:assignment_groups, :active, to_a: [5, 6])
       expect(GradeCalculator).to receive(:new).with([@student.id], @course, hash_including(groups: [5, 6]))
-                                              .and_return(double("GradeCalculator", compute_and_save_scores: "hi"))
+                                              .and_return(instance_double(GradeCalculator, compute_and_save_scores: "hi"))
       GradeCalculator.recompute_final_score(@student.id, @course)
     end
 
     it "does not fetch groups if they are already passed" do
       expect(@course).not_to receive(:assignment_groups)
       expect(GradeCalculator).to receive(:new).with([@student.id], @course, hash_including(groups: [5, 6]))
-                                              .and_return(double("GradeCalculator", compute_and_save_scores: "hi"))
+                                              .and_return(instance_double(GradeCalculator, compute_and_save_scores: "hi"))
       GradeCalculator.recompute_final_score(@student.id, @course, groups: [5, 6])
     end
 
     it "fetches periods for GradeCalculator" do
       expect(GradingPeriod).to receive(:for).with(@course).and_return([5, 6])
       expect(GradeCalculator).to receive(:new).with([@student.id], @course, hash_including(periods: [5, 6]))
-                                              .and_return(double("GradeCalculator", compute_and_save_scores: "hi"))
+                                              .and_return(instance_double(GradeCalculator, compute_and_save_scores: "hi"))
       GradeCalculator.recompute_final_score(@student.id, @course)
     end
 
     it "does not fetch periods if they are already passed" do
       expect(GradingPeriod).not_to receive(:for)
       expect(GradeCalculator).to receive(:new).with([@student.id], @course, hash_including(periods: [5, 6]))
-                                              .and_return(double("GradeCalculator", compute_and_save_scores: "hi"))
+                                              .and_return(instance_double(GradeCalculator, compute_and_save_scores: "hi"))
       GradeCalculator.recompute_final_score(@student.id, @course, periods: [5, 6])
     end
   end
@@ -1936,93 +1968,75 @@ describe GradeCalculator do
   end
 
   describe "#save_scores_in_transaction" do
-    shared_examples "differentiated assignments" do
-      before do
-        grades = [[5, 20], [15, 20], [10, 20], [nil, 20], [20, 20], [10, 20], [nil, 20]]
+    before do
+      grades = [[5, 20], [15, 20], [10, 20], [nil, 20], [20, 20], [10, 20], [nil, 20]]
 
-        @group = @course.assignment_groups.create!(name: "DA group")
+      @group = @course.assignment_groups.create!(name: "DA group")
 
-        @assignments = grades.map do |score, possible|
-          a = @course.assignments.create! title: "homework",
-                                          points_possible: possible,
-                                          assignment_group: @group
+      @assignments = grades.map do |score, possible|
+        a = @course.assignments.create! title: "homework",
+                                        points_possible: possible,
+                                        assignment_group: @group
 
-          a.grade_student @user, grade: score, grader: @teacher unless score.nil?
+        a.grade_student @user, grade: score, grader: @teacher unless score.nil?
 
-          a.only_visible_to_overrides = true
-          a.save!
-          a
-        end
-
-        Submission.where(user: @user).update_all(posted_at: Time.zone.now)
-
-        @overridden_lowest = @assignments[0]
-        @overridden_highest = @assignments[1]
-        @overridden_middle = @assignments[2]
-
-        @user.enrollments.each(&:destroy)
-        @section = @course.course_sections.create!(name: "test section")
-        student_in_section(@section, user: @user)
-
-        create_section_override_for_assignment(@overridden_lowest, course_section: @section)
-        create_section_override_for_assignment(@overridden_highest, course_section: @section)
-        create_section_override_for_assignment(@overridden_middle, course_section: @section)
+        a.only_visible_to_overrides = true
+        a.save!
+        a
       end
 
-      def find_submission(assignment)
-        assignment.submissions.where(user_id: @user.id).first.id
-      end
+      Submission.where(user: @user).update_all(posted_at: Time.zone.now)
 
-      it "saves scores for all assignment group and enrollment combinations" do
-        # Fails if empty_drop_rows are not updated
-        @group.update_attribute(:rules, "drop_lowest:2\nnever_drop:#{@overridden_lowest.id}")
-        user_ids = @course.enrollments.map(&:user_id).uniq
-        group_ids = @assignments.map(&:assignment_group_id).uniq
-        GradeCalculator.new(user_ids, @course.id).compute_and_save_scores
-        expect(Score.where(assignment_group_id: group_ids).count).to eq @course.enrollments.count * group_ids.length
-        expect(ScoreMetadata.where(score_id: Score.where(assignment_group_id: group_ids)).count).to eq 2
-      end
+      @overridden_lowest = @assignments[0]
+      @overridden_highest = @assignments[1]
+      @overridden_middle = @assignments[2]
 
-      it "saves dropped submission to group score metadata" do
-        # Fails if non_empty_drop_rows are not updated
-        @group.update_attribute(:rules, "drop_lowest:2\nnever_drop:#{@overridden_lowest.id}")
-        GradeCalculator.new(@user.id, @course.id).compute_and_save_scores
-        enrollment = Enrollment.find_by(user_id: @user.id, course_id: @course.id)
-        score = enrollment.find_score(assignment_group: @group)
-        expect(score.score_metadata.calculation_details).to eq({
-                                                                 "current" => { "dropped" => [find_submission(@overridden_middle)] },
-                                                                 "final" => { "dropped" => [find_submission(@overridden_middle)] }
-                                                               })
-      end
+      @user.enrollments.each(&:destroy)
+      @section = @course.course_sections.create!(name: "test section")
+      student_in_section(@section, user: @user)
 
-      it "does not include muted assignments in the dropped submission list in group score metadata" do
-        # Fails if empty_drop_rows are not updated
-        @group.update_attribute(:rules, "drop_lowest:2\nnever_drop:#{@overridden_lowest.id}")
-        @overridden_middle.mute!
-        GradeCalculator.new(@user.id, @course.id).compute_and_save_scores
-        enrollment = Enrollment.where(user_id: @user.id, course_id: @course.id).first
-        score = enrollment.find_score(assignment_group: @group)
-        expect(score.score_metadata.calculation_details).to eq({
-                                                                 "current" => { "dropped" => [] },
-                                                                 "final" => { "dropped" => [] }
-                                                               })
-      end
+      create_section_override_for_assignment(@overridden_lowest, course_section: @section)
+      create_section_override_for_assignment(@overridden_highest, course_section: @section)
+      create_section_override_for_assignment(@overridden_middle, course_section: @section)
     end
 
-    context "with use_batches_score_metadata_updates ON" do
-      before do
-        Account.site_admin.enable_feature!(:use_batches_score_metadata_updates)
-      end
-
-      it_behaves_like "differentiated assignments"
+    def find_submission(assignment)
+      assignment.submissions.where(user_id: @user.id).first.id
     end
 
-    context "with use_batches_score_metadata_updates OFF" do
-      before do
-        Account.site_admin.disable_feature!(:use_batches_score_metadata_updates)
-      end
+    it "saves scores for all assignment group and enrollment combinations" do
+      # Fails if empty_drop_rows are not updated
+      @group.update_attribute(:rules, "drop_lowest:2\nnever_drop:#{@overridden_lowest.id}")
+      user_ids = @course.enrollments.map(&:user_id).uniq
+      group_ids = @assignments.map(&:assignment_group_id).uniq
+      GradeCalculator.new(user_ids, @course.id).compute_and_save_scores
+      expect(Score.where(assignment_group_id: group_ids).count).to eq @course.enrollments.count * group_ids.length
+      expect(ScoreMetadata.where(score_id: Score.where(assignment_group_id: group_ids)).count).to eq 2
+    end
 
-      it_behaves_like "differentiated assignments"
+    it "saves dropped submission to group score metadata" do
+      # Fails if non_empty_drop_rows are not updated
+      @group.update_attribute(:rules, "drop_lowest:2\nnever_drop:#{@overridden_lowest.id}")
+      GradeCalculator.new(@user.id, @course.id).compute_and_save_scores
+      enrollment = Enrollment.find_by(user_id: @user.id, course_id: @course.id)
+      score = enrollment.find_score(assignment_group: @group)
+      expect(score.score_metadata.calculation_details).to eq({
+                                                               "current" => { "dropped" => [find_submission(@overridden_middle)] },
+                                                               "final" => { "dropped" => [find_submission(@overridden_middle)] }
+                                                             })
+    end
+
+    it "does not include muted assignments in the dropped submission list in group score metadata" do
+      # Fails if empty_drop_rows are not updated
+      @group.update_attribute(:rules, "drop_lowest:2\nnever_drop:#{@overridden_lowest.id}")
+      @overridden_middle.mute!
+      GradeCalculator.new(@user.id, @course.id).compute_and_save_scores
+      enrollment = Enrollment.where(user_id: @user.id, course_id: @course.id).first
+      score = enrollment.find_score(assignment_group: @group)
+      expect(score.score_metadata.calculation_details).to eq({
+                                                               "current" => { "dropped" => [] },
+                                                               "final" => { "dropped" => [] }
+                                                             })
     end
   end
 
@@ -2131,8 +2145,8 @@ describe GradeCalculator do
 
     it "does not include discussion checkpoints when false" do
       calc = GradeCalculator.new([@student.id], @course, include_discussion_checkpoints: false)
-      expect(calc.submissions.pluck(:assignment_id)).to_not include(@reply_to_topic.id)
-      expect(calc.submissions.pluck(:assignment_id)).to_not include(@reply_to_entry.id)
+      expect(calc.submissions.pluck(:assignment_id)).not_to include(@reply_to_topic.id)
+      expect(calc.submissions.pluck(:assignment_id)).not_to include(@reply_to_entry.id)
     end
   end
 end

@@ -24,7 +24,7 @@ import {Button} from '@instructure/ui-buttons'
 import {Flex} from '@instructure/ui-flex'
 import {Link} from '@instructure/ui-link'
 import {useScope as createI18nScope} from '@canvas/i18n'
-import {showFlashAlert} from '@canvas/alerts/react/FlashAlert'
+import {showFlashAlert} from '@instructure/platform-alerts'
 import {executeQuery} from '@canvas/graphql'
 import {
   ACCEPT_ENROLLMENT_INVITATION,
@@ -135,12 +135,11 @@ const EnrollmentInvitation: React.FC<EnrollmentInvitationProps> = ({
           type: 'error',
         })
       }
-    } catch (error) {
+    } catch {
       showFlashAlert({
         message: I18n.t('An error occurred while accepting the invitation'),
         type: 'error',
       })
-      console.error('Error accepting invitation:', error)
     }
   }, [acceptMutation, invitation.uuid, invitation.id, onAccept])
 
@@ -163,12 +162,11 @@ const EnrollmentInvitation: React.FC<EnrollmentInvitationProps> = ({
           type: 'error',
         })
       }
-    } catch (error) {
+    } catch {
       showFlashAlert({
         message: I18n.t('An error occurred while declining the invitation'),
         type: 'error',
       })
-      console.error('Error rejecting invitation:', error)
     }
   }, [rejectMutation, invitation.uuid, invitation.id, onReject])
 

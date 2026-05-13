@@ -17,12 +17,12 @@
  */
 
 import {useScope as createI18nScope} from '@canvas/i18n'
-import {map, each, isEmpty, compact} from 'lodash'
+import {map, each, isEmpty, compact} from 'es-toolkit/compat'
 import $ from 'jquery'
 import React from 'react'
 import createReactClass from 'create-react-class'
 import PropTypes from 'prop-types'
-import Modal from '@canvas/instui-bindings/react/InstuiModal'
+import {InstUIModal as Modal} from '@instructure/platform-instui-bindings'
 import ConfigOptionField from './ConfigOptionField'
 import ExternalTool from '@canvas/external-tools/backbone/models/ExternalTool'
 import '@canvas/jquery/jquery.disableWhileLoading'

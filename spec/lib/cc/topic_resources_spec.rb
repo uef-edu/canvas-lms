@@ -70,6 +70,7 @@ describe CC::TopicResources do
     allow(mock_course.root_account).to receive(:feature_enabled?).with(:horizon_course_setting)
     allow(mock_course.root_account).to receive(:feature_enabled?).with(:file_association_access)
     allow(mock_course.root_account).to receive(:feature_enabled?).with(:allow_attachment_association_creation)
+    allow(mock_course.root_account).to receive(:feature_enabled?).with(:accessibility_automatic_scanning).and_return(false)
     allow(mock_course.root_account).to receive(:feature_enabled?).with(:lti_asset_processor).and_return(false)
   end
 
@@ -193,6 +194,26 @@ describe CC::TopicResources do
             it "should skip sub_assignments attribute from xml" do
               expect(subject.css("sub_assignments").count).to eq 0
               expect(subject.css("sub_assignment").count).to eq 0
+            end
+
+            it("should validate the xml output by xsd") { expect(ccc_schema.validate(subject)).to be_empty }
+          end
+
+          context "when sub_assignments are deleted" do
+            before do
+              # Soft-delete the checkpoints but keep has_sub_assignments=true
+              topic.assignment.sub_assignments.unscoped.update_all(workflow_state: "deleted")
+            end
+
+            it "should include deleted sub_assignments in export (uses unscoped)" do
+              sub_assignments = subject.css("sub_assignments")
+              expect(sub_assignments.count).to eq 1
+              expect(sub_assignments.css("sub_assignment").count).to eq 2
+            end
+
+            it "should include workflow_state=deleted in export" do
+              # The workflow_state should be exported as part of the assignment data
+              expect(subject.css("sub_assignment workflow_state").map(&:text)).to all(eq("deleted"))
             end
 
             it("should validate the xml output by xsd") { expect(ccc_schema.validate(subject)).to be_empty }

@@ -44,7 +44,6 @@ describe "CanvasStudioPlayer in Wiki Pages", :ignore_js_errors do
 
   context "teacher" do
     before(:once) do
-      Account.site_admin.enable_feature! :consolidated_media_player
       course_with_teacher(active_all: true)
 
       @root_folder = Folder.root_folders(@course).first
@@ -207,9 +206,9 @@ describe "CanvasStudioPlayer in Wiki Pages", :ignore_js_errors do
           expect(time_indicator_duration.attribute("data-type")).to eq("duration")
 
           # Verify right control buttons
-          expect(right_control_buttons[0].attribute("aria-label")).to eq("Enable Captions")
+          expect(right_control_buttons[0].attribute("aria-label")).to eq("Captions")
           expect(right_control_buttons[1].attribute("aria-label")).to eq("Settings")
-          expect(right_control_buttons[2].attribute("aria-label")).to eq("Enter Fullscreen")
+          expect(right_control_buttons[2].attribute("aria-label")).to eq("Fullscreen")
 
           settings_button.click
           wait_for_ajaximations

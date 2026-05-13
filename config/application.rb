@@ -217,7 +217,8 @@ module CanvasRails
 
             raise "Canvas requires PostgreSQL 14 or newer" unless postgresql_version >= 14_00_00 # rubocop:disable Style/NumericLiterals
 
-            break
+            # we're in a nested loop, and we want to break out of both loops on success
+            return
           rescue ActiveRecord::DatabaseConnectionError => e
             raise if password_index == passwords.length - 1 || e.message.exclude?("password")
             # else try next password
@@ -357,7 +358,7 @@ module CanvasRails
       def call(env)
         req = ActionDispatch::Request.new(env)
         res = ApplicationController.make_response!(req)
-        ApplicationController.dispatch("rescue_action_dispatch_exception", req, res)
+        ApplicationController.dispatch(:rescue_action_dispatch_exception, req, res)
       end
     end
 

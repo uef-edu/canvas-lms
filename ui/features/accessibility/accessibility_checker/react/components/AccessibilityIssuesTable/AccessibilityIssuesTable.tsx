@@ -24,6 +24,7 @@ import {Flex} from '@instructure/ui-flex'
 import {Pagination} from '@instructure/ui-pagination'
 import {Spinner} from '@instructure/ui-spinner'
 import {PresentationContent, ScreenReaderContent} from '@instructure/ui-a11y-content'
+import {Responsive} from '@instructure/ui-responsive'
 import {Table, TableColHeaderProps} from '@instructure/ui-table'
 import {Text} from '@instructure/ui-text'
 import {View} from '@instructure/ui-view'
@@ -37,6 +38,7 @@ import {
 } from '../../../../shared/react/stores/AccessibilityScansStore'
 import {useAccessibilityScansFetchUtils} from '../../../../shared/react/hooks/useAccessibilityScansFetchUtils'
 import {useAccessibilityScansPolling} from '../../../../shared/react/hooks/useAccessibilityScansPolling'
+import {responsiveQuerySizes} from '@canvas/breakpoints'
 
 const I18n = createI18nScope('accessibility_checker')
 
@@ -64,6 +66,8 @@ const getNewTableSortState = (
 }
 
 const renderTableData = (
+  isMobile: boolean,
+  selectedScanId?: number | null,
   scans?: AccessibilityResourceScan[] | null,
   error?: string | null,
   loading?: boolean,
@@ -74,13 +78,18 @@ const renderTableData = (
     <>
       {scans?.length === 0 || !scans ? (
         <Table.Row data-testid="no-issues-row">
-          <Table.Cell colSpan={5} textAlign="center">
+          <Table.Cell colSpan={6} textAlign="center">
             <Text color="secondary">{I18n.t('No accessibility issues found')}</Text>
           </Table.Cell>
         </Table.Row>
       ) : (
         scans.map(item => (
-          <AccessibilityIssuesTableRow key={`${item.resourceType}-${item.id}`} item={item} />
+          <AccessibilityIssuesTableRow
+            key={`${item.resourceType}-${item.id}`}
+            item={item}
+            isMobile={isMobile}
+            isSelected={item.id === selectedScanId}
+          />
         ))
       )}
     </>
@@ -104,11 +113,12 @@ const renderLoading = () => {
 const ReverseOrderingFirst = [IssuesTableColumns.Issues, IssuesTableColumns.LastEdited]
 
 export const AccessibilityIssuesTable = () => {
-  const {doFetchAccessibilityScanData} = useAccessibilityScansFetchUtils()
+  const {doFetchAccessibilityScanData, doFetchAccessibilityIssuesSummary} =
+    useAccessibilityScansFetchUtils()
 
   useAccessibilityScansPolling()
 
-  const [error, loading, page, pageCount, accessibilityScans, tableSortState] =
+  const [error, loading, page, pageCount, accessibilityScans, tableSortState, selectedScan] =
     useAccessibilityScansStore(
       useShallow(state => [
         state.error,
@@ -117,6 +127,7 @@ export const AccessibilityIssuesTable = () => {
         state.pageCount,
         state.accessibilityScans,
         state.tableSortState,
+        state.selectedScan,
       ]),
     )
 
@@ -147,74 +158,97 @@ export const AccessibilityIssuesTable = () => {
       doFetchAccessibilityScanData({
         page: nextPage,
       })
+      doFetchAccessibilityIssuesSummary({})
     },
-    [doFetchAccessibilityScanData],
+    [doFetchAccessibilityScanData, doFetchAccessibilityIssuesSummary],
   )
 
   return (
-    <View width="100%">
-      <View as="div" margin="medium 0 0 0" borderWidth="small" borderRadius="medium">
-        <Table
-          caption={
-            <ScreenReaderContent>{I18n.t('Content with accessibility issues')}</ScreenReaderContent>
-          }
-          hover
-          data-testid="accessibility-issues-table"
-        >
-          <Table.Head
-            renderSortLabel={<ScreenReaderContent>{I18n.t('Sort by')}</ScreenReaderContent>}
-          >
-            <Table.Row>
-              {IssuesTableColumnHeaders.map(header => {
-                return (
-                  <Table.ColHeader
-                    key={header.id}
-                    id={header.id}
-                    onRequestSort={handleSort}
-                    sortDirection={getCurrentSortDirection(header.id)}
-                    themeOverride={headerThemeOverride}
-                  >
-                    <Text weight="bold">{header.name}</Text>
-                  </Table.ColHeader>
-                )
-              })}
-            </Table.Row>
-          </Table.Head>
+    <Responsive
+      query={responsiveQuerySizes({mobile: true, tablet: true, desktop: true})}
+      props={{
+        mobile: {isMobile: true},
+        tablet: {isMobile: false},
+        desktop: {isMobile: false},
+      }}
+    >
+      {props => (
+        <View width="100%">
+          <View as="div" margin="medium 0 0 0" borderWidth="small" borderRadius="medium">
+            <Table
+              caption={
+                <ScreenReaderContent>
+                  {I18n.t('Resources with accessibility issues')}
+                </ScreenReaderContent>
+              }
+              hover
+              layout={props?.isMobile ? 'stacked' : 'auto'}
+              data-testid="accessibility-issues-table"
+            >
+              <Table.Head
+                renderSortLabel={<Flex padding="small small 0">{I18n.t('Sort by')}</Flex>}
+              >
+                <Table.Row>
+                  {IssuesTableColumnHeaders.map(header => {
+                    return (
+                      <Table.ColHeader
+                        key={header.id}
+                        id={header.id}
+                        onRequestSort={handleSort}
+                        sortDirection={getCurrentSortDirection(header.id)}
+                        themeOverride={headerThemeOverride}
+                        stackedSortByLabel={header.name}
+                      >
+                        <Text weight="bold">{header.name}</Text>
+                      </Table.ColHeader>
+                    )
+                  })}
+                </Table.Row>
+              </Table.Head>
 
-          <Table.Body>
-            {error && (
-              <Table.Row data-testid="error-row">
-                <Table.Cell colSpan={5} textAlign="center">
-                  <Alert variant="error">{error}</Alert>
-                </Table.Cell>
-              </Table.Row>
-            )}
-            {loading && (
-              <Table.Row data-testid="loading-row">
-                <Table.Cell colSpan={5} textAlign="center">
-                  {renderLoading()}
-                </Table.Cell>
-              </Table.Row>
-            )}
-            {renderTableData(accessibilityScans, error, loading)}
-          </Table.Body>
-        </Table>
-      </View>
-      {pageCount > 1 && (
-        <Flex.Item>
-          <Pagination
-            data-testid={`accessibility-issues-table-pagination`}
-            as="nav"
-            variant="compact"
-            labelNext={I18n.t('Next Page')}
-            labelPrev={I18n.t('Previous Page')}
-            margin="small"
-            currentPage={page}
-            onPageChange={handlePageChange}
-            totalPageNumber={pageCount}
-          />
-        </Flex.Item>
+              <Table.Body>
+                {error && (
+                  <Table.Row data-testid="error-row">
+                    <Table.Cell colSpan={6} textAlign="center">
+                      <Alert variant="error">{error}</Alert>
+                    </Table.Cell>
+                  </Table.Row>
+                )}
+                {loading && (
+                  <Table.Row data-testid="loading-row">
+                    <Table.Cell colSpan={6} textAlign="center">
+                      {renderLoading()}
+                    </Table.Cell>
+                  </Table.Row>
+                )}
+                {renderTableData(
+                  props?.isMobile ?? false,
+                  selectedScan?.id,
+                  accessibilityScans,
+                  error,
+                  loading,
+                )}
+              </Table.Body>
+            </Table>
+          </View>
+          {pageCount > 1 && (
+            <Flex.Item>
+              <Pagination
+                data-testid={`accessibility-issues-table-pagination`}
+                as="nav"
+                aria-label={I18n.t('Pagination')}
+                variant="compact"
+                labelNext={I18n.t('Next Page')}
+                labelPrev={I18n.t('Previous Page')}
+                margin="small"
+                currentPage={page}
+                onPageChange={handlePageChange}
+                totalPageNumber={pageCount}
+              />
+            </Flex.Item>
+          )}
+        </View>
       )}
-    </View>
+    </Responsive>
   )
 }

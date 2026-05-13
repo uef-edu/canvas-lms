@@ -27,13 +27,13 @@ import {
 import {createMockFileManagementContext} from '../../../__tests__/createMockContext'
 import {RowsProvider} from '../../../contexts/RowsContext'
 import {MockedQueryClientProvider} from '@canvas/test-utils/query'
-import {queryClient} from '@canvas/query'
+import {queryClient} from '@instructure/platform-query'
 import {mockRowsContext} from '../../FileFolderTable/__tests__/testUtils'
 
 const defaultProps = {
   isUserContext: false,
   size: 'small',
-  onCreateFolderButtonClick: jest.fn(),
+  onCreateFolderButtonClick: vi.fn(),
 }
 
 const renderComponent = (props?: any, context: Partial<FileManagementContextProps> = {}) => {

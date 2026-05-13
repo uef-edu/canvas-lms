@@ -22,9 +22,11 @@ import {View} from '@instructure/ui-view'
 import {Text} from '@instructure/ui-text'
 import {Link} from '@instructure/ui-link'
 import {useScope as createI18nScope} from '@canvas/i18n'
-import {getSubmissionStatus, getTypeIcon} from '../widgets/CourseWorkWidget/utils'
+import {getSubmissionStatus} from '../widgets/CourseWorkWidget/utils'
+import {getTypeIcon} from '../../utils/assignmentUtils'
 import type {CourseWorkItem as CourseWorkItemType} from '../../hooks/useCourseWork'
 import {useResponsiveContext} from '../../hooks/useResponsiveContext'
+import {useWidgetTheme} from '../../theme/WidgetThemeContext'
 
 const I18n = createI18nScope('widget_dashboard')
 
@@ -33,7 +35,14 @@ interface CourseWorkItemProps {
 }
 
 export function CourseWorkItem({item}: CourseWorkItemProps) {
-  const submissionStatus = getSubmissionStatus(item.late, item.missing, item.state, item.dueAt)
+  const {isDark} = useWidgetTheme()
+  const submissionStatus = getSubmissionStatus(
+    item.late,
+    item.missing,
+    item.state,
+    item.dueAt,
+    isDark,
+  )
   const {isMobile} = useResponsiveContext()
 
   return (
@@ -60,28 +69,31 @@ export function CourseWorkItem({item}: CourseWorkItemProps) {
                 margin="0 0 0 0"
                 themeOverride={{
                   backgroundSecondary: submissionStatus.color.background,
+                  color: submissionStatus.color.textColor,
                 }}
               >
-                {getTypeIcon(item.type, isMobile)}
+                <span style={{color: submissionStatus.color.textColor}}>
+                  {getTypeIcon(item.type, isMobile)}
+                </span>
               </View>
             </Flex.Item>
           )}
           <Flex.Item shouldGrow shouldShrink>
             <Flex direction="column" gap="0">
-              <Flex.Item>
+              <Flex.Item overflowY="visible">
                 <Link
                   href={item.htmlUrl}
                   isWithinText={false}
                   data-testid={`course-work-item-link-${item.id}`}
                 >
-                  <Text weight="bold" size="small">
+                  <Text weight="bold" size="small" wrap="break-word">
                     {item.title}
                   </Text>
                 </Link>
               </Flex.Item>
-              <Flex.Item>
+              <Flex.Item overflowY="visible">
                 <Flex direction="row" gap="x-small" alignItems="center">
-                  <Text size="x-small" color="secondary">
+                  <Text size="x-small" color="secondary" wrap="break-word">
                     {item.course.name}
                   </Text>
                   <Text size="x-small" color="secondary">

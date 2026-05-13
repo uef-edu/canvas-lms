@@ -42,7 +42,7 @@ module Importers
 
         begin
           if outcome[:type] == "learning_outcome_group"
-            Importers::LearningOutcomeGroupImporter.import_from_migration(outcome, migration, nil, selectable_outcomes && !import_item)
+            Importers::LearningOutcomeGroupImporter.import_from_migration(outcome, migration, skip_import: selectable_outcomes && !import_item)
           elsif !selectable_outcomes || import_item
             Importers::LearningOutcomeImporter.import_from_migration(outcome, migration)
           end
@@ -124,7 +124,6 @@ module Importers
         item.workflow_state = "active" if item.deleted?
         item.short_description = hash[:title]
         item.description = migration.convert_html(hash[:description], :learning_outcome, hash[:migration_id], :description) if hash[:description]
-        item.saving_user = migration.user
         item.copied_from_outcome_id = migration.for_course_copy? ? hash[:copied_from_outcome_id] : nil
         assessed = item.assessed?
         unless assessed
@@ -142,6 +141,7 @@ module Importers
           item.data[:rubric_criterion][:description] = item.short_description || item.description
         end
 
+        item.importing = true
         item.save!
 
         migration.add_imported_item(item)

@@ -34,7 +34,7 @@ import {
 } from '../handlers/moduleItemActionHandlers'
 import DirectShareUserModal from '@canvas/direct-sharing/react/components/DirectShareUserModal'
 import DirectShareCourseTray from '@canvas/direct-sharing/react/components/DirectShareCourseTray'
-import {queryClient} from '@canvas/query'
+import {queryClient} from '@instructure/platform-query'
 import {Pill} from '@instructure/ui-pill'
 import {Link} from '@instructure/ui-link'
 import {useScope as createI18nScope} from '@canvas/i18n'
@@ -340,20 +340,22 @@ const ModuleItemActionPanel: React.FC<ModuleItemActionPanelProps> = ({
         'module_item',
       ].includes(content?.type?.toLowerCase() || '') && (
         <>
-          <DirectShareUserModal
-            id={moduleId}
-            open={isDirectShareOpen}
-            sourceCourseId={courseId}
-            courseId={courseId}
-            contentShare={{
-              content_type: mapContentTypeForSharing(content?.type || ''),
-              content_id: content?._id,
-            }}
-            onDismiss={() => {
-              setIsDirectShareOpen(false)
-            }}
-          />
-          {content?._id && (
+          {isDirectShareOpen && (
+            <DirectShareUserModal
+              id={moduleId}
+              open={isDirectShareOpen}
+              sourceCourseId={courseId}
+              courseId={courseId}
+              contentShare={{
+                content_type: mapContentTypeForSharing(content?.type || ''),
+                content_id: content?._id,
+              }}
+              onDismiss={() => {
+                setIsDirectShareOpen(false)
+              }}
+            />
+          )}
+          {isDirectShareCourseOpen && content?._id && (
             <DirectShareCourseTray
               open={isDirectShareCourseOpen}
               sourceCourseId={courseId}

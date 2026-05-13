@@ -17,13 +17,6 @@
 # You should have received a copy of the GNU Affero General Public License along
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
-require "active_support/callbacks"
-
-require_relative "errors"
-require_relative "base_concerns/settings"
-require_relative "base_concerns/callbacks"
-require_relative "base_concerns/progress_tracking"
-
 module CanvasOperations
   # BaseOperation
   #
@@ -133,6 +126,8 @@ module CanvasOperations
 
       run_callbacks :run do
         unless Shard.current == switchman_shard
+          # We intentionally do not call fail_with_error! here because we are on the wrong shard and subclasses may be
+          # making assumptions about what shard the failure callbacks run on.
           raise Errors::WrongShard, "Operation is being run on the wrong shard. Expected #{switchman_shard.id}, got #{Shard.current.id}"
         end
 
@@ -143,6 +138,8 @@ module CanvasOperations
     rescue Errors::InvalidOperationTarget => e
       log_message("Operation failed due to invalid operation target: #{e.message}", level: :error)
       log_message("Note that the above error is being rescued; if this is a migration, other migrations can still continue.", level: :info)
+
+      results[:error] = e.message
 
       fail_with_error!
     end
@@ -188,7 +185,9 @@ module CanvasOperations
     end
 
     def job_options
-      { singleton:, on_conflict: :overwrite }
+      opts = { singleton:, on_conflict: :overwrite }
+      opts[:on_permanent_failure] = :fail_with_error! unless use_progress_tracking?
+      opts
     end
 
     def context
@@ -218,7 +217,12 @@ module CanvasOperations
     end
 
     def in_test_environment_migration?
-      Rails.env.test? && ActiveRecord::Base.in_migration
+      in_test = Rails.env.test?
+      in_migration = ActiveRecord::Base.in_migration
+      result = in_test && in_migration
+
+      log_message("in_test_environment_migration? => #{result} (Rails.env.test?=#{in_test}, ActiveRecord::Base.in_migration=#{in_migration})")
+      result
     end
 
     def report_message(title:, message:, alert_type: :success)
@@ -236,9 +240,16 @@ module CanvasOperations
     private
 
     def use_progress_tracking?
-      return false if in_test_environment_migration?
+      if in_test_environment_migration?
+        log_message("use_progress_tracking? => false (in test environment migration)", level: :debug)
+        return false
+      end
 
-      progress_tracking? && !context.nil?
+      tracking = progress_tracking?
+      has_context = !context.nil?
+      result = tracking && has_context
+      log_message("use_progress_tracking? => #{result} (progress_tracking?=#{tracking}, context_present=#{has_context})", level: :debug)
+      result
     end
 
     def settings_for(name, default:)
@@ -255,7 +266,11 @@ module CanvasOperations
         return
       end
 
-      progress.complete
+      completed = progress.complete
+
+      # If the operation is not running in the context of a delayed job, we need to manually set the workflow state to
+      # completed because the progress never transitioned from queued to running automatically.
+      progress.workflow_state = "completed" unless completed
       progress.update!(results:)
     end
 

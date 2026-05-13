@@ -17,8 +17,6 @@
 # You should have received a copy of the GNU Affero General Public License along
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
-require "spec_helper"
-
 describe Accessibility::IssuesController do
   let(:course) { Course.create!(name: "Test Course", id: 42) }
 
@@ -86,7 +84,7 @@ describe Accessibility::IssuesController do
             content_type: "Page",
             content_id: resource.id,
             path: ".//h1",
-            value: "Change it to Heading 2"
+            value: "Change heading level to Heading 2"
           }.to_json,
           as: :json
 

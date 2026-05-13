@@ -17,105 +17,96 @@
  */
 
 import React, {useState, useEffect, useRef} from 'react'
-import {createRoot} from 'react-dom/client'
+import {render} from '@canvas/react'
 import {captureException} from '@sentry/browser'
-import {getCurrentTheme} from '@instructure/theme-registry'
+import {canvas, canvasHighContrast} from '@instructure/ui-themes'
+import {getTypography} from '@instructure/platform-instui-bindings'
 import {Portal} from '@instructure/ui-portal'
 import ready from '@instructure/ready'
-import {AgentButton} from './AgentButton'
 import {FallbackChatOverlay} from './FallbackChatOverlay'
-import {IgniteAgentSessionStorage} from './IgniteAgentSessionStorage'
-
-// Define constants for DOM element IDs
-const AGENT_CONTAINER_ID = 'ignite-agent-root'
-const BUTTON_CONTAINER_ID = 'ignite-agent-button-container'
-const CHAT_OVERLAY_CONTAINER_ID = 'ignite-agent-chat-overlay-container'
 
 /**
- * Main IgniteAgent component that manages all states and rendering
+ * Main IgniteAgent component that auto-loads the agent
  */
-function IgniteAgent(props) {
-  const [isLoading, setIsLoading] = useState(false)
-  const [isOpen, setIsOpen] = useState(false)
+function IgniteAgent() {
   const [error, setError] = useState(null)
-
-  // Store mount points in useRef
-  const buttonMountPoint = useRef(props.buttonMountPoint)
-  const chatOverlayMountPoint = useRef(props.chatOverlayMountPoint)
+  const errorOverlayMountRef = useRef(null)
 
   useEffect(() => {
-    // Check session storage to see if agent should be opened
-    if (IgniteAgentSessionStorage.getState()?.isOpen) {
-      console.log('[Ignite Agent] Session state is "open", loading module directly.')
-      handleLoadAgent()
-    }
+    // Create an error overlay mount point
+    const overlayMount = document.createElement('div')
+    overlayMount.id = 'ignite-agent-error-overlay'
+    document.body.appendChild(overlayMount)
+    errorOverlayMountRef.current = overlayMount
 
-    // Cleanup function
+    loadAgent()
+
     return () => {
-      if (buttonMountPoint.current) {
-        buttonMountPoint.current.remove()
-      }
-      if (chatOverlayMountPoint.current) {
-        chatOverlayMountPoint.current.remove()
+      if (errorOverlayMountRef.current) {
+        errorOverlayMountRef.current.remove()
       }
     }
   }, [])
 
-  // Handle loading the remote agent module
-  const handleLoadAgent = async () => {
-    console.log('[Ignite Agent] Loading remote module...')
-    setIsLoading(true)
-    setError(null)
+  const renderToMountPoint = (module, mountPointId, props) => {
+    const mountPoint = document.getElementById(mountPointId)
+    if (mountPoint) {
+      module.render(mountPoint, props)
+      console.log(`[Ignite Agent] Rendered to #${mountPointId}`)
+    }
+  }
 
-    // Set session storage state to "open"
-    IgniteAgentSessionStorage.setAgentState(true)
-
+  const loadAgent = async () => {
     try {
-      console.log("[Ignite Agent] Importing remote 'igniteagent/appInjector'...")
+      console.log('[Ignite Agent] Loading remote module...')
       const module = await import('igniteagent/appInjector')
-      console.log('[Ignite Agent] Remote module loaded successfully:', module.default)
+      console.log('[Ignite Agent] Remote module loaded successfully')
 
-      if (typeof module.render === 'function') {
-        const props = {hostTheme: getCurrentTheme()}
-        module.render(chatOverlayMountPoint.current, props)
-        console.log('[Ignite Agent] Remote module rendered successfully')
-        setIsOpen(true)
-      } else {
+      if (typeof module.render !== 'function') {
         const renderError = new Error('Remote module does not have a render function')
+        captureException(renderError)
         setError(renderError)
+        return
       }
+
+      const isHighContrast = Boolean(window.ENV?.use_high_contrast)
+      const baseTheme = isHighContrast ? canvasHighContrast : canvas
+      // Do not spread brand vars in HC mode — brand colors would override HC colors (a11y regression)
+      const brandVars = isHighContrast ? {} : (window.CANVAS_ACTIVE_BRAND_VARIABLES ?? {})
+      const props = {
+        hostTheme: {
+          ...baseTheme,
+          ...brandVars,
+          typography: {
+            ...baseTheme.typography,
+            ...getTypography(
+              Boolean(ENV.K5_USER),
+              Boolean(ENV.USE_CLASSIC_FONT),
+              Boolean(ENV.use_dyslexic_font),
+            ),
+          },
+        },
+      }
+      renderToMountPoint(module, 'oak-mount-point', props)
+      renderToMountPoint(module, 'oak-mobile-mount-point', props)
     } catch (loadError) {
       console.error('Failed to load Ignite Agent remote module:', loadError)
       captureException(loadError)
       setError(loadError)
-      setIsOpen(false)
-      IgniteAgentSessionStorage.setAgentState(false)
-    } finally {
-      setIsLoading(false)
     }
   }
 
-  // Handle closing the error sidebar
   const handleCloseError = () => {
     setError(null)
-    // Clear the sidebar content
-    if (chatOverlayMountPoint.current) {
-      chatOverlayMountPoint.current.innerHTML = ''
+    if (errorOverlayMountRef.current) {
+      errorOverlayMountRef.current.innerHTML = ''
     }
   }
 
-  // Don't render button if agent is open and loaded successfully
-  const shouldShowButton = !isOpen && error === null
-
   return (
-    <>
-      <Portal mountNode={buttonMountPoint.current} open={shouldShowButton}>
-        <AgentButton isLoading={isLoading} onClick={handleLoadAgent} />
-      </Portal>
-      <Portal mountPoint={chatOverlayMountPoint.current} open={error !== null}>
-        <FallbackChatOverlay error={error} onClose={handleCloseError} />
-      </Portal>
-    </>
+    <Portal mountPoint={errorOverlayMountRef.current} open={error !== null}>
+      <FallbackChatOverlay error={error} onClose={handleCloseError} />
+    </Portal>
   )
 }
 
@@ -123,41 +114,13 @@ function IgniteAgent(props) {
  * Initialize the Ignite Agent
  */
 function initIgniteAgent() {
-  // Find or create mount point for the main component
-  let agentMountPoint = document.getElementById(AGENT_CONTAINER_ID)
-  if (!agentMountPoint) {
-    agentMountPoint = document.createElement('div')
-    agentMountPoint.id = AGENT_CONTAINER_ID
-    document.body.appendChild(agentMountPoint)
-  }
+  // Create a container for the controller component
+  const container = document.createElement('div')
+  container.id = 'ignite-agent-controller'
+  document.body.appendChild(container)
 
-  let buttonMountPoint = document.getElementById(BUTTON_CONTAINER_ID)
-  if (!buttonMountPoint) {
-    buttonMountPoint = document.createElement('div')
-    buttonMountPoint.id = BUTTON_CONTAINER_ID
-    Object.assign(buttonMountPoint.style, {
-      position: 'fixed',
-      bottom: '40px',
-      right: '20px',
-      zIndex: '9998',
-    })
-    document.body.appendChild(buttonMountPoint)
-  }
-  let chatOverlayMountPoint = document.getElementById(CHAT_OVERLAY_CONTAINER_ID)
-  if (!chatOverlayMountPoint) {
-    chatOverlayMountPoint = document.createElement('div')
-    chatOverlayMountPoint.id = CHAT_OVERLAY_CONTAINER_ID
-    document.body.appendChild(chatOverlayMountPoint)
-  }
-
-  const root = createRoot(agentMountPoint)
-  root.render(
-    <IgniteAgent
-      buttonMountPoint={buttonMountPoint}
-      chatOverlayMountPoint={chatOverlayMountPoint}
-    />,
-  )
-  console.log('[Ignite Agent] Main component initialized.')
+  render(<IgniteAgent />, container)
+  console.log('[Ignite Agent] Controller initialized')
 }
 
 // Start the initialization process

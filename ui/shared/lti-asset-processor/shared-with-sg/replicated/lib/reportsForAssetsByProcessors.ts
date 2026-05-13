@@ -16,7 +16,6 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-import _ from 'lodash'
 import {useScope as createI18nScope} from '@canvas/i18n'
 
 import type {LtiAssetProcessor} from '../types/LtiAssetProcessors'
@@ -47,6 +46,18 @@ export type GroupedLtiAssetReports = {
   reportGroups: LtiAssetReportGroup[]
 }[]
 
+function groupBy<T>(array: T[], keyFn: (item: T) => string): Record<string, T[]> {
+  const result: Record<string, T[]> = {}
+  for (const item of array) {
+    const key = keyFn(item)
+    if (!result[key]) {
+      result[key] = []
+    }
+    result[key].push(item)
+  }
+  return result
+}
+
 /**
  * Filter reports to those specified by the ReportsAssetSelector (usually
  * correspond to the assets related to one version of submission), and group as
@@ -59,7 +70,7 @@ export function reportsForAssetsByProcessors(
   reportsAssetSelector: ReportsAssetSelector,
   formatDateTime: DateTimeFormatter,
 ): GroupedLtiAssetReports {
-  const reportsByProc: Record<string, LtiAssetReport[]> = _.groupBy(reports, r => r.processorId)
+  const reportsByProc: Record<string, LtiAssetReport[]> = groupBy(reports, r => r.processorId)
   return processors.map(p => ({
     processor: p,
     reportGroups: reportsForAssets(
@@ -113,7 +124,7 @@ function discussionReports(
   formatDateTime: DateTimeFormatter,
 ): LtiAssetReportGroup[] {
   const discReports = reportsForProc.filter(isDiscussionReport)
-  const grouped = _.groupBy(discReports, r => r.asset.discussionEntryVersion._id)
+  const grouped = groupBy(discReports, r => r.asset.discussionEntryVersion._id)
 
   const result = []
   for (const [entryId, reports] of Object.entries(grouped)) {

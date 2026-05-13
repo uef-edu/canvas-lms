@@ -16,10 +16,10 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-import {useAllPages} from '@canvas/query'
+import {useAllPages} from '@instructure/platform-query'
 import {gql} from 'graphql-tag'
 import {executeQuery} from '@canvas/graphql'
-import {showFlashError} from '@canvas/alerts/react/FlashAlert'
+import {showFlashError} from '@instructure/platform-alerts'
 import {useScope as createI18nScope} from '@canvas/i18n'
 import {ModulesResponse, GraphQLResult} from '../../utils/types'
 import {InfiniteData} from '@tanstack/react-query'
@@ -31,7 +31,11 @@ async function getModules({
   queryKey,
   pageParam,
   view,
-}: {queryKey: any; pageParam?: unknown; view: string}): Promise<ModulesResponse> {
+}: {
+  queryKey: any
+  pageParam?: unknown
+  view: string
+}): Promise<ModulesResponse> {
   const [_key, courseId] = queryKey
   const cursor = pageParam ? String(pageParam) : null
 

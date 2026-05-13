@@ -16,7 +16,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 import {useScope as createI18nScope} from '@canvas/i18n'
-const I18n = createI18nScope('QRMobileLogin')
+const I18n = createI18nScope('IgniteAgent')
 
 import React from 'react'
 import {View} from '@instructure/ui-view'
@@ -44,13 +44,13 @@ export function FallbackChatOverlay({error, onClose}) {
       position="fixed"
       insetInlineEnd="20px"
       insetBlockEnd="20px"
-      style={{zIndex: 9999}}
+      stacking="topmost"
       padding="medium"
     >
       <Flex alignItems="center" justifyItems="space-between">
         <Flex.Item shouldGrow shouldShrink>
           <Text size="medium">
-            {I18n.t('An unexpected error happened while loading the Ignite Agent.')}
+            {I18n.t('An unexpected error happened while loading the IgniteAI Agent.')}
           </Text>
         </Flex.Item>
         <Flex.Item margin="0 0 0 medium">

@@ -121,14 +121,8 @@ module Lti
         case @context
         when Account
           @context
-        when Course
+        when Course, Group
           @context.account
-        when Group
-          if @root_account&.feature_enabled?(:lti_variable_expansions_use_group_course_as_course)
-            @context.account
-          else
-            @root_account
-          end
         else
           @root_account
         end
@@ -166,8 +160,7 @@ module Lti
     def course
       if @context.is_a?(Course)
         @context
-      elsif @context.is_a?(Group) && @context.context_type == "Course" &&
-            @root_account&.feature_enabled?(:lti_variable_expansions_use_group_course_as_course)
+      elsif @context.is_a?(Group) && @context.context_type == "Course"
         @context.context
       else
         nil
@@ -181,8 +174,7 @@ module Lti
         course
       elsif @context.is_a?(Account)
         @context
-      elsif @context.is_a?(Group) && @context.context_type == "Account" &&
-            @root_account&.feature_enabled?(:lti_variable_expansions_use_group_course_as_course)
+      elsif @context.is_a?(Group) && @context.context_type == "Account"
         @context.context
       else
         nil
@@ -223,7 +215,7 @@ module Lti
 
     def concluded_course_enrollments
       @concluded_course_enrollments ||=
-        (course && @user) ? @user.enrollments.completed_by_date.where(course_id: course.id).shard(course.shard) : []
+        (course && @user) ? @user.enrollments.concluded.where(course_id: course.id).shard(course.shard) : []
     end
 
     def concluded_lis_roles

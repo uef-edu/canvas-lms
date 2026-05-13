@@ -15,97 +15,106 @@
  * You should have received a copy of the GNU Affero General Public License along
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-import React, {
-  useState,
-  forwardRef,
-  useRef,
-  useImperativeHandle,
-  useCallback,
-  useEffect,
-} from 'react'
+import React, {useState, forwardRef, useRef, useImperativeHandle} from 'react'
 import {useScope as createI18nScope} from '@canvas/i18n'
 import {TextArea} from '@instructure/ui-text-area'
 import {Checkbox} from '@instructure/ui-checkbox'
 import {Text} from '@instructure/ui-text'
 import {View} from '@instructure/ui-view'
 import {Flex} from '@instructure/ui-flex'
-import {Button} from '@instructure/ui-buttons'
-import {IconAiSolid} from '@instructure/ui-icons'
 import doFetchApi from '@canvas/do-fetch-api-effect'
-import {Spinner} from '@instructure/ui-spinner'
 import {Alert} from '@instructure/ui-alerts'
-
-import {useAccessibilityCheckerContext} from '../../../hooks/useAccessibilityCheckerContext'
+import {FormMessage} from '@instructure/ui-form-field'
+import {getLiveRegion} from '@instructure/platform-instui-bindings'
 import {GenerateResponse} from '../../../types'
 import {getAsContentItemType} from '../../../utils/apiData'
 import {stripQueryString} from '../../../utils/query'
 import {FormComponentHandle, FormComponentProps} from './index'
 import {useAccessibilityScansStore} from '../../../stores/AccessibilityScansStore'
 import {useShallow} from 'zustand/react/shallow'
+import {GenerateButton, ButtonLabelByState} from '../GenerateButton'
+import {altTextGenerationErrorMessage} from '../../../utils/altTextErrors'
 
 const I18n = createI18nScope('accessibility_checker')
 
+export const ALT_TEXT_REQUIRED_MESSAGE = I18n.t('Alt text is required.')
+export const altTextMaxLengthMessage = (maxLength: number) =>
+  I18n.t('Keep alt text under %{count} characters.', {count: maxLength})
+
+const validateAltText = (
+  value: string | null,
+  checked: boolean,
+  inputMaxLength: number | undefined,
+): {isValid: boolean; errorMessage: string | undefined} => {
+  if (checked) return {isValid: true, errorMessage: undefined}
+
+  const trimmed = value?.trim()
+  if (!trimmed) return {isValid: false, errorMessage: ALT_TEXT_REQUIRED_MESSAGE}
+
+  if (inputMaxLength && trimmed.length > inputMaxLength) {
+    return {isValid: false, errorMessage: altTextMaxLengthMessage(inputMaxLength)}
+  }
+
+  return {isValid: true, errorMessage: undefined}
+}
+
+export const GENERATE_ALT_TEXT_INITIAL_LABEL = I18n.t('Generate alt text')
+export const GENERATE_ALT_TEXT_LOADING_LABEL = I18n.t('Generating alt text...')
+export const GENERATE_ALT_TEXT_LOADED_LABEL = I18n.t('Regenerate alt text')
+
+export const CheckboxTextButtonLabels: ButtonLabelByState = {
+  initial: GENERATE_ALT_TEXT_INITIAL_LABEL,
+  loading: GENERATE_ALT_TEXT_LOADING_LABEL,
+  loaded: GENERATE_ALT_TEXT_LOADED_LABEL,
+}
+
+const ALT_TEXT_HELPER_ID = 'alt-text-generation-helper-text'
+
 const CheckboxTextInput: React.FC<FormComponentProps & React.RefAttributes<FormComponentHandle>> =
   forwardRef<FormComponentHandle, FormComponentProps>(
-    ({issue, value, error, onChangeValue, onValidationChange}: FormComponentProps, ref) => {
+    (
+      {
+        issue,
+        value,
+        error,
+        onChangeValue,
+        onValidationChange,
+        isDisabled,
+        onGenerateLoadingChange,
+      }: FormComponentProps,
+      ref,
+    ) => {
       const checkboxRef = useRef<HTMLInputElement | null>(null)
       const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
       const [isChecked, setChecked] = useState(false)
       const [generateLoading, setGenerateLoading] = useState(false)
       const [generationError, setGenerationError] = useState<string | null>(null)
-      const {selectedItem} = useAccessibilityCheckerContext()
-      const isAiGenerationEnabled = useAccessibilityScansStore(
-        useShallow(state => state.aiGenerationEnabled),
+      const [srAnnouncement, setSrAnnouncement] = useState('')
+      const [isAiAltTextGenerationEnabled, selectedItem] = useAccessibilityScansStore(
+        useShallow(state => [state.isAiAltTextGenerationEnabled, state.selectedScan]),
       )
 
-      const validateValue = useCallback(
-        (currentValue: string | null, checked: boolean) => {
-          if (checked) {
-            return {isValid: true, errorMessage: undefined}
-          }
-          if (currentValue && currentValue.trim()) {
-            if (
-              !issue.form.inputMaxLength ||
-              currentValue.trim().length <= issue.form.inputMaxLength
-            ) {
-              return {isValid: true, errorMessage: undefined}
-            }
-            return {
-              isValid: false,
-              errorMessage: I18n.t('Keep alt text under %{maxLength} characters.', {
-                maxLength: issue.form.inputMaxLength,
-              }),
-            }
-          }
-          return {isValid: false, errorMessage: I18n.t('Alt text is required.')}
-        },
-        [issue.form.inputMaxLength],
-      )
-
-      // Trigger validation on value or checkbox changes
-      useEffect(() => {
-        const {isValid, errorMessage} = validateValue(value, isChecked)
+      const updateField = (value: string | null, checked: boolean) => {
+        const {isValid, errorMessage} = validateAltText(value, checked, issue.form.inputMaxLength)
+        onChangeValue(value)
         onValidationChange?.(isValid, errorMessage)
-      }, [value, isChecked, onValidationChange, validateValue])
+      }
 
-      const handleCheckboxValueChange = useCallback(
-        (e: React.ChangeEvent<HTMLInputElement>) => {
-          setChecked(e.target.checked)
-          if (e.target.checked) {
-            onChangeValue('')
-          }
-        },
-        [onChangeValue],
-      )
+      const handleCheckboxValueChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const checked = e.target.checked
+        setChecked(checked)
+        updateField('', checked)
+      }
 
-      const handleTextAreaChange = useCallback(
-        (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-          onChangeValue(e.target.value)
-        },
-        [onChangeValue],
-      )
+      const handleTextAreaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+        updateField(e.target.value, isChecked)
+      }
 
       const shouldShowError = error && !isChecked
+      const descriptionMessage: FormMessage = {text: issue.form.inputDescription, type: 'hint'}
+      const formMessages: FormMessage[] = shouldShowError
+        ? [descriptionMessage, {text: error, type: 'newError'}]
+        : [descriptionMessage]
 
       useImperativeHandle(
         ref,
@@ -130,8 +139,10 @@ const CheckboxTextInput: React.FC<FormComponentProps & React.RefAttributes<FormC
       const handleGenerateClick = () => {
         setGenerateLoading(true)
         setGenerationError(null)
+        onGenerateLoadingChange?.(true)
+
         doFetchApi<GenerateResponse>({
-          path: `${stripQueryString(window.location.href)}/generate`,
+          path: `${stripQueryString(window.location.href)}/generate/alt_text`,
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
@@ -142,117 +153,104 @@ const CheckboxTextInput: React.FC<FormComponentProps & React.RefAttributes<FormC
             content_type: getAsContentItemType(selectedItem?.resourceType),
           }),
         })
-          .then(result => {
-            return result.json
-          })
+          .then(result => result.json)
           .then(resultJson => {
-            onChangeValue(resultJson?.value)
+            const generatedAltText = resultJson?.value || ''
+            updateField(generatedAltText, isChecked)
+            if (generatedAltText) {
+              setSrAnnouncement(
+                I18n.t('Alt text generated: %{altText}', {altText: generatedAltText}),
+              )
+            }
           })
           .catch(error => {
             console.error('Error generating text input:', error)
             const statusCode = error?.response?.status || 0
 
-            if (statusCode == 429) {
-              setGenerationError(
-                I18n.t(
-                  'You have exceeded your daily limit for alt text generation. (You can generate alt text for 300 images per day.) Please try again after a day, or enter alt text manually.',
-                ),
-              )
-            } else {
-              setGenerationError(
-                I18n.t(
-                  'There was an error generating alt text. Please try again, or enter it manually.',
-                ),
-              )
-            }
+            const errorMessage = altTextGenerationErrorMessage(statusCode)
+
+            setGenerationError(errorMessage)
           })
-          .finally(() => setGenerateLoading(false))
+          .finally(() => {
+            setGenerateLoading(false)
+            onGenerateLoadingChange?.(false)
+          })
       }
 
       return (
-        <>
-          <View as="div">
-            <Checkbox
-              inputRef={el => (checkboxRef.current = el)}
-              label={issue.form.checkboxLabel}
-              checked={isChecked}
-              messages={[
-                {
-                  text: (
-                    <View as="div" margin="0 0 0 medium" themeOverride={{marginMedium: '1.8rem'}}>
-                      <Text size="small" color="secondary">
-                        {issue.form.checkboxSubtext}
-                      </Text>
-                    </View>
-                  ),
-                  type: 'hint',
-                },
-              ]}
-              onChange={handleCheckboxValueChange}
-            />
-          </View>
-          <View as="div" margin="small 0">
+        <Flex direction="column" gap="medium">
+          <Checkbox
+            data-testid="decorative-img-checkbox"
+            inputRef={el => (checkboxRef.current = el)}
+            label={issue.form.checkboxLabel}
+            checked={isChecked}
+            disabled={isDisabled || generateLoading}
+            messages={[
+              {
+                text: (
+                  <View as="div" margin="0 0 0 medium" themeOverride={{marginMedium: '1.8rem'}}>
+                    <Text size="small" color="secondary">
+                      {issue.form.checkboxSubtext}
+                    </Text>
+                  </View>
+                ),
+                type: 'hint',
+              },
+            ]}
+            onChange={handleCheckboxValueChange}
+          />
+
+          <Flex as="div" gap="mediumSmall" direction="column" alignItems="start">
             <TextArea
               data-testid="checkbox-text-input-form"
               textareaRef={el => (textAreaRef.current = el)}
               label={issue.form.label}
-              disabled={isChecked}
+              disabled={isChecked || isDisabled || generateLoading}
               value={isChecked ? '' : value || ''}
               onChange={handleTextAreaChange}
-              messages={shouldShowError ? [{text: error, type: 'newError'}] : []}
+              required
+              messages={formMessages}
             />
-          </View>
-          <Flex as="div" justifyItems="space-between" margin="small 0">
-            <Flex.Item>
-              <Text size="small" color="secondary">
-                {issue.form.inputDescription}
-              </Text>
-            </Flex.Item>
-            <Flex.Item>
-              <Text size="small" color="secondary">
-                {value?.length || 0}/{issue.form.inputMaxLength} {I18n.t('characters')}
-              </Text>
-            </Flex.Item>
-          </Flex>
-          {isAiGenerationEnabled && (
-            <>
-              <Flex as="div" margin="small 0">
-                <Flex.Item>
-                  <Button
-                    color="ai-primary"
-                    renderIcon={() => <IconAiSolid />}
-                    onClick={handleGenerateClick}
-                    disabled={generateLoading}
+
+            {isAiAltTextGenerationEnabled && srAnnouncement && (
+              <Alert liveRegion={getLiveRegion} isLiveRegionAtomic screenReaderOnly>
+                {srAnnouncement}
+              </Alert>
+            )}
+
+            {isAiAltTextGenerationEnabled && issue.form.canGenerateFix && !isDisabled && (
+              <Flex as="div" gap="x-small" direction="column" alignItems="start">
+                <GenerateButton
+                  handleGenerateClick={handleGenerateClick}
+                  isLoading={generateLoading}
+                  buttonLabels={CheckboxTextButtonLabels}
+                  isDisabled={isChecked || !issue.form.isCanvasImage}
+                  pendoId="AiAltTextButtonPushed"
+                  selectedItem={selectedItem}
+                  ruleId={issue.ruleId}
+                  helperTextId={!issue.form.isCanvasImage ? ALT_TEXT_HELPER_ID : undefined}
+                />
+                {!issue.form.isCanvasImage && (
+                  <Text
+                    id={ALT_TEXT_HELPER_ID}
+                    data-testid="alt-text-generation-not-available-message"
+                    size="small"
                   >
-                    {issue.form.generateButtonLabel}
-                  </Button>
-                </Flex.Item>
-                {generateLoading ? (
-                  <Flex.Item>
-                    <Spinner
-                      size="x-small"
-                      renderTitle={I18n.t('Generating...')}
-                      margin="0 small 0 0"
-                    />
-                  </Flex.Item>
-                ) : (
-                  <></>
+                    {I18n.t(
+                      'AI alt text generation is only available for images uploaded to Canvas.',
+                    )}
+                  </Text>
                 )}
               </Flex>
-              {generationError !== null ? (
-                <Flex>
-                  <Flex.Item>
-                    <Alert variant="error" renderCloseButtonLabel="Close" timeout={5000}>
-                      {generationError}
-                    </Alert>
-                  </Flex.Item>
-                </Flex>
-              ) : (
-                <></>
-              )}
-            </>
+            )}
+          </Flex>
+
+          {generationError && (
+            <Alert variant="error" renderCloseButtonLabel="Close" timeout={5000}>
+              {generationError}
+            </Alert>
           )}
-        </>
+        </Flex>
       )
     },
   )

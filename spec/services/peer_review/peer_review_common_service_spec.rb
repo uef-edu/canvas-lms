@@ -17,8 +17,6 @@
 # You should have received a copy of the GNU Affero General Public License along
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
-require "spec_helper"
-
 RSpec.describe PeerReview::PeerReviewCommonService do
   include PeerReviewHelpers
 
@@ -72,13 +70,13 @@ RSpec.describe PeerReview::PeerReviewCommonService do
       expect(service.instance_variable_get(:@lock_at)).to eq(custom_lock_at)
     end
 
-    it "allows nil values for optional parameters" do
+    it "allows NOT_PROVIDED values for optional parameters" do
       simple_service = described_class.new(parent_assignment:)
-      expect(simple_service.instance_variable_get(:@points_possible)).to be_nil
-      expect(simple_service.instance_variable_get(:@grading_type)).to be_nil
-      expect(simple_service.instance_variable_get(:@due_at)).to be_nil
-      expect(simple_service.instance_variable_get(:@unlock_at)).to be_nil
-      expect(simple_service.instance_variable_get(:@lock_at)).to be_nil
+      expect(simple_service.instance_variable_get(:@points_possible)).to eq(PeerReview::PeerReviewCommonService::NOT_PROVIDED)
+      expect(simple_service.instance_variable_get(:@grading_type)).to eq(PeerReview::PeerReviewCommonService::NOT_PROVIDED)
+      expect(simple_service.instance_variable_get(:@due_at)).to eq(PeerReview::PeerReviewCommonService::NOT_PROVIDED)
+      expect(simple_service.instance_variable_get(:@unlock_at)).to eq(PeerReview::PeerReviewCommonService::NOT_PROVIDED)
+      expect(simple_service.instance_variable_get(:@lock_at)).to eq(PeerReview::PeerReviewCommonService::NOT_PROVIDED)
     end
   end
 
@@ -100,7 +98,6 @@ RSpec.describe PeerReview::PeerReviewCommonService do
 
       expect(attributes[:has_sub_assignments]).to be(false)
       expect(attributes[:title]).to eq(expected_peer_review_title(parent_assignment.title, parent_assignment.peer_review_count))
-      expect(attributes[:submission_types]).to eq("online_text_entry")
       expect(attributes[:parent_assignment_id]).to eq(parent_assignment.id)
       expect(attributes[:points_possible]).to eq(peer_review_points_possible)
       expect(attributes[:grading_type]).to eq(peer_review_grading_type)
@@ -119,6 +116,7 @@ RSpec.describe PeerReview::PeerReviewCommonService do
         context_id
         context_type
         description
+        omit_from_final_grade
         peer_review_across_sections
         peer_review_count
         peer_review_submission_required
@@ -143,7 +141,6 @@ RSpec.describe PeerReview::PeerReviewCommonService do
 
         expect(specific[:has_sub_assignments]).to be(false)
         expect(specific[:title]).to eq(expected_peer_review_title(parent_assignment.title, parent_assignment.peer_review_count))
-        expect(specific[:submission_types]).to eq("online_text_entry")
         expect(specific[:parent_assignment_id]).to eq(parent_assignment.id)
         expect(specific[:points_possible]).to eq(peer_review_points_possible)
         expect(specific[:grading_type]).to eq(peer_review_grading_type)
@@ -161,7 +158,6 @@ RSpec.describe PeerReview::PeerReviewCommonService do
 
         expect(specific[:has_sub_assignments]).to be(false)
         expect(specific[:title]).to eq(expected_peer_review_title(parent_assignment.title, parent_assignment.peer_review_count))
-        expect(specific[:submission_types]).to eq("online_text_entry")
         expect(specific[:parent_assignment_id]).to eq(parent_assignment.id)
         expect(specific).not_to have_key(:points_possible)
         expect(specific).not_to have_key(:grading_type)
@@ -187,75 +183,6 @@ RSpec.describe PeerReview::PeerReviewCommonService do
       attributes = service.send(:specific_attributes)
       expect(attributes[:title]).to eq(expected_peer_review_title(parent_assignment.title, parent_assignment.peer_review_count))
     end
-
-    context "submission types based on grading type" do
-      it "sets submission_types to 'not_graded' when grading_type is 'not_graded'" do
-        service_not_graded = described_class.new(
-          parent_assignment:,
-          grading_type: "not_graded"
-        )
-        attributes = service_not_graded.send(:specific_attributes)
-
-        expect(attributes[:submission_types]).to eq("not_graded")
-      end
-
-      it "sets submission_types to 'online_text_entry' when grading_type is 'points'" do
-        service_points = described_class.new(
-          parent_assignment:,
-          grading_type: "points"
-        )
-        attributes = service_points.send(:specific_attributes)
-
-        expect(attributes[:submission_types]).to eq("online_text_entry")
-      end
-
-      it "sets submission_types to 'online_text_entry' when grading_type is 'pass_fail'" do
-        service_pass_fail = described_class.new(
-          parent_assignment:,
-          grading_type: "pass_fail"
-        )
-        attributes = service_pass_fail.send(:specific_attributes)
-
-        expect(attributes[:submission_types]).to eq("online_text_entry")
-      end
-
-      it "sets submission_types to 'online_text_entry' when grading_type is 'percent'" do
-        service_percent = described_class.new(
-          parent_assignment:,
-          grading_type: "percent"
-        )
-        attributes = service_percent.send(:specific_attributes)
-
-        expect(attributes[:submission_types]).to eq("online_text_entry")
-      end
-
-      it "sets submission_types to 'online_text_entry' when grading_type is 'letter_grade'" do
-        service_letter = described_class.new(
-          parent_assignment:,
-          grading_type: "letter_grade"
-        )
-        attributes = service_letter.send(:specific_attributes)
-
-        expect(attributes[:submission_types]).to eq("online_text_entry")
-      end
-
-      it "sets submission_types to 'online_text_entry' when grading_type is 'gpa_scale'" do
-        service_gpa = described_class.new(
-          parent_assignment:,
-          grading_type: "gpa_scale"
-        )
-        attributes = service_gpa.send(:specific_attributes)
-
-        expect(attributes[:submission_types]).to eq("online_text_entry")
-      end
-
-      it "defaults to 'online_text_entry' when no grading_type is specified" do
-        service_default = described_class.new(parent_assignment:)
-        attributes = service_default.send(:specific_attributes)
-
-        expect(attributes[:submission_types]).to eq("online_text_entry")
-      end
-    end
   end
 
   describe "#attributes_to_inherit_from_parent" do
@@ -269,6 +196,7 @@ RSpec.describe PeerReview::PeerReviewCommonService do
         description
         group_category_id
         intra_group_peer_reviews
+        omit_from_final_grade
         peer_review_across_sections
         peer_review_count
         peer_review_submission_required
@@ -450,84 +378,6 @@ RSpec.describe PeerReview::PeerReviewCommonService do
         end
       end
     end
-
-    context "handling of submission_types changes" do
-      context "when peer review sub assignment submission_types differs from expected value" do
-        before do
-          peer_review_sub_assignment.update!(submission_types: "none")
-        end
-
-        it "includes submission_types set to online_text_entry in the attributes to update" do
-          attributes = service.send(:peer_review_attributes_to_update)
-          expect(attributes[:submission_types]).to eq("online_text_entry")
-        end
-      end
-
-      context "when peer review sub assignment submission_types already matches expected value" do
-        before do
-          peer_review_sub_assignment.update!(submission_types: "online_text_entry")
-        end
-
-        it "does not include submission_types in the attributes to update" do
-          attributes = service.send(:peer_review_attributes_to_update)
-          expect(attributes).not_to have_key(:submission_types)
-        end
-      end
-
-      context "when grading_type changes to 'not_graded'" do
-        let(:service) do
-          described_class.new(
-            parent_assignment:,
-            grading_type: "not_graded"
-          )
-        end
-
-        before do
-          peer_review_sub_assignment.update!(submission_types: "online_text_entry")
-        end
-
-        it "includes submission_types set to 'not_graded' in the attributes to update" do
-          attributes = service.send(:peer_review_attributes_to_update)
-          expect(attributes[:submission_types]).to eq("not_graded")
-        end
-      end
-
-      context "when grading_type changes from 'not_graded' to graded type" do
-        let(:service) do
-          described_class.new(
-            parent_assignment:,
-            grading_type: "points"
-          )
-        end
-
-        before do
-          peer_review_sub_assignment.update!(submission_types: "not_graded")
-        end
-
-        it "includes submission_types set to 'online_text_entry' in the attributes to update" do
-          attributes = service.send(:peer_review_attributes_to_update)
-          expect(attributes[:submission_types]).to eq("online_text_entry")
-        end
-      end
-
-      context "when grading_type stays the same" do
-        let(:service) do
-          described_class.new(
-            parent_assignment:,
-            grading_type: "points"
-          )
-        end
-
-        before do
-          peer_review_sub_assignment.update!(submission_types: "online_text_entry")
-        end
-
-        it "does not include submission_types in the attributes to update" do
-          attributes = service.send(:peer_review_attributes_to_update)
-          expect(attributes).not_to have_key(:submission_types)
-        end
-      end
-    end
   end
 
   describe "#compute_due_dates_and_create_submissions" do
@@ -593,7 +443,7 @@ RSpec.describe PeerReview::PeerReviewCommonService do
         )
 
         expect(service).to receive(:validate_peer_review_dates_against_parent_assignment)
-          .with({ due_at: custom_due_at, unlock_at: nil, lock_at: nil }, parent_assignment)
+          .with({ due_at: custom_due_at }, parent_assignment)
 
         service.send(:validate_dates)
       end
@@ -607,7 +457,7 @@ RSpec.describe PeerReview::PeerReviewCommonService do
         )
 
         expect(service).to receive(:validate_peer_review_dates_against_parent_assignment)
-          .with({ due_at: nil, unlock_at: custom_unlock_at, lock_at: nil }, parent_assignment)
+          .with({ unlock_at: custom_unlock_at }, parent_assignment)
 
         service.send(:validate_dates)
       end
@@ -621,7 +471,7 @@ RSpec.describe PeerReview::PeerReviewCommonService do
         )
 
         expect(service).to receive(:validate_peer_review_dates_against_parent_assignment)
-          .with({ due_at: nil, unlock_at: nil, lock_at: custom_lock_at }, parent_assignment)
+          .with({ lock_at: custom_lock_at }, parent_assignment)
 
         service.send(:validate_dates)
       end
@@ -633,6 +483,65 @@ RSpec.describe PeerReview::PeerReviewCommonService do
 
         expect(service).not_to receive(:validate_peer_review_dates_against_parent_assignment)
 
+        service.send(:validate_dates)
+      end
+    end
+
+    context "when all dates are NOT_PROVIDED" do
+      it "does not call validation" do
+        service = described_class.new(
+          parent_assignment:,
+          due_at: described_class::NOT_PROVIDED,
+          unlock_at: described_class::NOT_PROVIDED,
+          lock_at: described_class::NOT_PROVIDED
+        )
+
+        expect(service).not_to receive(:validate_peer_review_dates_against_parent_assignment)
+        service.send(:validate_dates)
+      end
+    end
+
+    context "when some dates are NOT_PROVIDED and others are provided" do
+      it "only validates provided dates" do
+        service = described_class.new(
+          parent_assignment:,
+          due_at: custom_due_at,
+          unlock_at: described_class::NOT_PROVIDED,
+          lock_at: described_class::NOT_PROVIDED
+        )
+
+        expect(service).to receive(:validate_peer_review_dates_against_parent_assignment)
+          .with({ due_at: custom_due_at }, parent_assignment)
+        service.send(:validate_dates)
+      end
+    end
+
+    context "when dates include explicit nil for clearing" do
+      it "includes nil in validation hash" do
+        service = described_class.new(
+          parent_assignment:,
+          due_at: nil,
+          unlock_at: nil,
+          lock_at: nil
+        )
+
+        expect(service).to receive(:validate_peer_review_dates_against_parent_assignment)
+          .with({ due_at: nil, unlock_at: nil, lock_at: nil }, parent_assignment)
+        service.send(:validate_dates)
+      end
+    end
+
+    context "when mixing NOT_PROVIDED and explicit nil" do
+      it "only includes explicit nil values in validation hash" do
+        service = described_class.new(
+          parent_assignment:,
+          due_at: nil,
+          unlock_at: described_class::NOT_PROVIDED,
+          lock_at: custom_lock_at
+        )
+
+        expect(service).to receive(:validate_peer_review_dates_against_parent_assignment)
+          .with({ due_at: nil, lock_at: custom_lock_at }, parent_assignment)
         service.send(:validate_dates)
       end
     end

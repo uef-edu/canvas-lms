@@ -18,8 +18,6 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
-require "spec_helper"
-
 RSpec.describe PeerReviewSubAssignment do
   describe "associations" do
     it "belongs to a parent assignment" do
@@ -142,6 +140,160 @@ RSpec.describe PeerReviewSubAssignment do
         regular_assignment = assignment_model(course:, title: "Regular Assignment", submission_types: "online_text_entry")
         peer_review_sub_assignment = PeerReviewSubAssignment.new(parent_assignment: regular_assignment)
         expect(peer_review_sub_assignment).to be_valid
+      end
+
+      it "skips validation when workflow_state is changing to deleted" do
+        peer_review_sub_assignment = PeerReviewSubAssignment.create!(parent_assignment:)
+        parent_assignment.update!(submission_types: "external_tool")
+
+        expect { peer_review_sub_assignment.destroy }.not_to raise_error
+        expect(peer_review_sub_assignment.workflow_state).to eq("deleted")
+      end
+    end
+
+    describe "#points_possible_changes_ok?" do
+      let(:peer_review_sub_assignment) do
+        PeerReviewSubAssignment.create!(
+          parent_assignment:,
+          points_possible: 10
+        )
+      end
+      let(:student) { user_model }
+      let(:assessor) { user_model }
+      let(:student_submission) { submission_model(assignment: parent_assignment, user: student) }
+      let(:assessor_submission) { submission_model(assignment: parent_assignment, user: assessor) }
+
+      before do
+        parent_assignment.update!(peer_reviews: true)
+        course.enable_feature!(:peer_review_allocation_and_grading)
+      end
+
+      it "allows changes when peer_review_allocation_and_grading feature is disabled" do
+        course.disable_feature!(:peer_review_allocation_and_grading)
+        AssessmentRequest.create!(
+          user: student,
+          asset: student_submission,
+          assessor_asset: assessor_submission,
+          assessor:,
+          workflow_state: "completed"
+        )
+
+        peer_review_sub_assignment.points_possible = 20
+        expect(peer_review_sub_assignment).to be_valid
+      end
+
+      it "allows changes when peer_reviews is disabled" do
+        parent_assignment.update!(peer_reviews: false)
+        AssessmentRequest.create!(
+          user: student,
+          asset: student_submission,
+          assessor_asset: assessor_submission,
+          assessor:,
+          workflow_state: "completed"
+        )
+
+        peer_review_sub_assignment.points_possible = 20
+        expect(peer_review_sub_assignment).to be_valid
+      end
+
+      it "allows changes when no peer review submissions exist" do
+        peer_review_sub_assignment.points_possible = 20
+        expect(peer_review_sub_assignment).to be_valid
+      end
+
+      it "prevents changes when peer review submissions exist" do
+        AssessmentRequest.create!(
+          user: student,
+          asset: student_submission,
+          assessor_asset: assessor_submission,
+          assessor:,
+          workflow_state: "completed"
+        )
+
+        peer_review_sub_assignment.points_possible = 20
+        expect(peer_review_sub_assignment).not_to be_valid
+        expect(peer_review_sub_assignment.errors[:points_possible]).to include(
+          I18n.t("Students have already submitted peer reviews, so reviews required and points cannot be changed.")
+        )
+      end
+
+      it "allows creating a new record with points_possible set" do
+        AssessmentRequest.create!(
+          user: student,
+          asset: student_submission,
+          assessor_asset: assessor_submission,
+          assessor:,
+          workflow_state: "completed"
+        )
+
+        new_peer_review_sub = PeerReviewSubAssignment.new(
+          parent_assignment:,
+          points_possible: 100
+        )
+        expect(new_peer_review_sub).to be_valid
+      end
+
+      it "allows deletion even when peer review submissions exist" do
+        AssessmentRequest.create!(
+          user: student,
+          asset: student_submission,
+          assessor_asset: assessor_submission,
+          assessor:,
+          workflow_state: "completed"
+        )
+
+        peer_review_sub_assignment.destroy
+        expect(peer_review_sub_assignment.workflow_state).to eq("deleted")
+      end
+    end
+
+    describe "grading_type validation" do
+      it "rejects not_graded grading_type on creation" do
+        peer_review_sub_assignment = PeerReviewSubAssignment.new(
+          parent_assignment:,
+          grading_type: "not_graded"
+        )
+        expect(peer_review_sub_assignment).not_to be_valid
+        expect(peer_review_sub_assignment.errors[:grading_type]).to include("cannot be not_graded for peer review sub assignments")
+      end
+
+      it "rejects not_graded grading_type on update" do
+        peer_review_sub_assignment = PeerReviewSubAssignment.create!(
+          parent_assignment:,
+          grading_type: "points"
+        )
+        peer_review_sub_assignment.grading_type = "not_graded"
+        expect(peer_review_sub_assignment).not_to be_valid
+        expect(peer_review_sub_assignment.errors[:grading_type]).to include("cannot be not_graded for peer review sub assignments")
+      end
+    end
+
+    describe "#set_submission_types" do
+      it "always sets submission_types to peer_review regardless of grading_type" do
+        %w[points percent letter_grade gpa_scale pass_fail].each do |grading_type|
+          peer_review_sub_assignment = PeerReviewSubAssignment.new(
+            parent_assignment:,
+            grading_type:
+          )
+          peer_review_sub_assignment.valid?
+          expect(peer_review_sub_assignment.submission_types).to eq(PeerReviewSubAssignment::PEER_REVIEW_SUBMISSION_TYPE)
+        end
+      end
+
+      it "always overrides any manually set submission_types to 'peer_review'" do
+        peer_review_sub_assignment = PeerReviewSubAssignment.new(
+          parent_assignment:,
+          submission_types: "online_text_entry",
+          grading_type: "points"
+        )
+        peer_review_sub_assignment.valid?
+        expect(peer_review_sub_assignment.submission_types).to eq(PeerReviewSubAssignment::PEER_REVIEW_SUBMISSION_TYPE)
+      end
+
+      it "defaults to 'peer_review' when grading_type is not specified" do
+        peer_review_sub_assignment = PeerReviewSubAssignment.new(parent_assignment:)
+        peer_review_sub_assignment.valid?
+        expect(peer_review_sub_assignment.submission_types).to eq(PeerReviewSubAssignment::PEER_REVIEW_SUBMISSION_TYPE)
       end
     end
   end
@@ -371,6 +523,205 @@ RSpec.describe PeerReviewSubAssignment do
 
       assessment_request.reload
       expect(assessment_request.peer_review_sub_assignment_id).to be_nil
+    end
+  end
+
+  describe ".not_ignored_by" do
+    let(:course) { course_model }
+    let(:teacher) { user_model }
+    let(:parent_assignment) { assignment_model(course:) }
+    let!(:peer_review_sub_assignment1) { PeerReviewSubAssignment.create!(parent_assignment:) }
+    let!(:peer_review_sub_assignment2) do
+      other_parent = assignment_model(course:, title: "Other Assignment")
+      PeerReviewSubAssignment.create!(parent_assignment: other_parent)
+    end
+
+    it "includes peer review sub assignments that are not ignored" do
+      result = PeerReviewSubAssignment.not_ignored_by(teacher, "grading")
+      expect(result).to include(peer_review_sub_assignment1, peer_review_sub_assignment2)
+    end
+
+    it "excludes peer review sub assignments that are ignored" do
+      Ignore.create!(
+        user: teacher,
+        asset: peer_review_sub_assignment1,
+        purpose: "grading"
+      )
+
+      result = PeerReviewSubAssignment.not_ignored_by(teacher, "grading")
+      expect(result).to include(peer_review_sub_assignment2)
+      expect(result).not_to include(peer_review_sub_assignment1)
+    end
+
+    it "respects different purposes" do
+      Ignore.create!(
+        user: teacher,
+        asset: peer_review_sub_assignment1,
+        purpose: "viewing"
+      )
+
+      # Ignored for "viewing" but not for "grading"
+      result = PeerReviewSubAssignment.not_ignored_by(teacher, "grading")
+      expect(result).to include(peer_review_sub_assignment1, peer_review_sub_assignment2)
+
+      # Now check for "viewing" purpose
+      result = PeerReviewSubAssignment.not_ignored_by(teacher, "viewing")
+      expect(result).to include(peer_review_sub_assignment2)
+      expect(result).not_to include(peer_review_sub_assignment1)
+    end
+
+    it "respects different users" do
+      other_teacher = user_model
+      Ignore.create!(
+        user: teacher,
+        asset: peer_review_sub_assignment1,
+        purpose: "grading"
+      )
+
+      # teacher has ignored peer_review_sub_assignment1
+      result = PeerReviewSubAssignment.not_ignored_by(teacher, "grading")
+      expect(result).not_to include(peer_review_sub_assignment1)
+
+      # other_teacher has not ignored it
+      result = PeerReviewSubAssignment.not_ignored_by(other_teacher, "grading")
+      expect(result).to include(peer_review_sub_assignment1)
+    end
+  end
+
+  describe ".generate_title" do
+    let(:assignment) { instance_double(Assignment, title: "My Assignment") }
+
+    it "includes the peer review count in the title when count is greater than 0" do
+      allow(assignment).to receive(:peer_review_count).and_return(3)
+      expected = I18n.t("%{title} Peer Review (%{count})", title: "My Assignment", count: 3)
+      expect(PeerReviewSubAssignment.generate_title(assignment)).to eq(expected)
+    end
+
+    it "omits the count from the title when peer_review_count is nil" do
+      allow(assignment).to receive(:peer_review_count).and_return(nil)
+      expected = I18n.t("%{title} Peer Review", title: "My Assignment")
+      expect(PeerReviewSubAssignment.generate_title(assignment)).to eq(expected)
+    end
+
+    it "omits the count from the title when peer_review_count is 0" do
+      allow(assignment).to receive(:peer_review_count).and_return(0)
+      expected = I18n.t("%{title} Peer Review", title: "My Assignment")
+      expect(PeerReviewSubAssignment.generate_title(assignment)).to eq(expected)
+    end
+  end
+
+  context "broadcast policies" do
+    before :once do
+      course_with_teacher(active_all: true)
+      @course.update!(workflow_state: "available")
+      @student1 = student_in_course(active_all: true, user_name: "student 1", active_cc: true).user
+      @student2 = student_in_course(active_all: true, user_name: "student 2", active_cc: true).user
+      @course.enable_feature!(:peer_review_allocation_and_grading)
+    end
+
+    context "due date changed" do
+      before :once do
+        Notification.create(name: "Assignment Due Date Changed")
+        @peer_review_sub = peer_review_model(course: @course)
+      end
+
+      it "creates a message when a peer review sub assignment due date has changed" do
+        @peer_review_sub.unlock_at = 2.weeks.ago
+        @peer_review_sub.lock_at = 1.week.from_now
+        @peer_review_sub.due_at = 1.day.from_now
+        @peer_review_sub.save!
+
+        expect(@peer_review_sub.messages_sent.keys).to include("Assignment Due Date Changed")
+      end
+
+      it "does not create a message when peer review sub assignmnt attributes other than due date have changed" do
+        @peer_review_sub.points_possible = 30
+        @peer_review_sub.save!
+
+        expect(@peer_review_sub.messages_sent).not_to include("Assignment Due Date Changed")
+      end
+    end
+
+    context "assignment changed" do
+      before :once do
+        Notification.create(name: "Assignment Changed", category: "TestImmediately")
+        @peer_review_sub = peer_review_model(course: @course)
+        @peer_review_sub.unmute!
+      end
+
+      it "creates a message when a peer review sub assignment changes after it's been published" do
+        @peer_review_sub.points_possible = 15
+        @peer_review_sub.save
+
+        expect(@peer_review_sub.messages_sent).to include("Assignment Changed")
+        expect(@peer_review_sub.messages_sent["Assignment Changed"]).not_to be_empty
+        expect(@peer_review_sub.messages_sent["Assignment Changed"].first.from_name).to eq @course.name
+      end
+
+      it "does not create a message when a peer review sub assignment changes SHORTLY AFTER it's been created" do
+        @peer_review_sub.lock_at = 1.week.from_now
+        @peer_review_sub.save
+
+        expect(@peer_review_sub.messages_sent).not_to include("Assignment Changed")
+      end
+
+      it "does not create a message when a muted assignment changes" do
+        @peer_review_sub.mute!
+        @peer_review_sub.points_possible = 15
+        @peer_review_sub.save
+
+        expect(@peer_review_sub.messages_sent).to be_empty
+      end
+    end
+
+    context "assignment created" do
+      before :once do
+        Notification.create(name: "Assignment Created", category: "TestImmediately")
+      end
+
+      it "creates a message when a peer review sub assignment is created in an available course" do
+        peer_review_sub = peer_review_model(course: @course)
+
+        expect(peer_review_sub.messages_sent).to include("Assignment Created")
+        expect(peer_review_sub.messages_sent["Assignment Created"]).not_to be_empty
+      end
+
+      it "does not create a message when course is not available" do
+        @course.update!(workflow_state: "created")
+        peer_review_sub = peer_review_model(course: @course)
+
+        expect(peer_review_sub.messages_sent).not_to include("Assignment Created")
+      end
+    end
+
+    context "submissions posted" do
+      before :once do
+        Notification.create(name: "Submissions Posted", category: "TestImmediately")
+      end
+
+      it "creates a message when submissions are posted" do
+        peer_review_sub = peer_review_model(course: @course)
+        peer_review_sub.broadcast_submissions_posted({ graded_only: false })
+
+        expect(peer_review_sub.messages_sent).to include("Submissions Posted")
+        expect(peer_review_sub.messages_sent["Submissions Posted"]).not_to be_empty
+      end
+
+      it "does not create a message when course is not available" do
+        @course.update!(workflow_state: "created")
+        peer_review_sub = peer_review_model(course: @course)
+        peer_review_sub.broadcast_submissions_posted({ graded_only: false })
+
+        expect(peer_review_sub.messages_sent).not_to include("Submissions Posted")
+      end
+
+      it "does not create a message when course is concluded" do
+        @course.update!(workflow_state: "completed")
+        peer_review_sub = peer_review_model(course: @course)
+        peer_review_sub.broadcast_submissions_posted({ graded_only: false })
+
+        expect(peer_review_sub.messages_sent).not_to include("Submissions Posted")
+      end
     end
   end
 end

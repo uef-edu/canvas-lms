@@ -82,7 +82,7 @@ describe "Common Cartridge exporting" do
       CC::CCHelper.create_key(obj, global: true)
     end
 
-    def check_resource_node(obj, type, selected = true)
+    def check_resource_node(obj, type, selected: true)
       res = @manifest_doc.at_css("resource[identifier=#{mig_id(obj)}][type=\"#{type}\"]")
       if selected
         expect(res).not_to be_nil
@@ -168,20 +168,20 @@ describe "Common Cartridge exporting" do
 
       # make sure only the selected one is exported by looking at export data
       check_resource_node(@dt1, CC::CCHelper::DISCUSSION_TOPIC)
-      check_resource_node(@dt2, CC::CCHelper::DISCUSSION_TOPIC, false)
+      check_resource_node(@dt2, CC::CCHelper::DISCUSSION_TOPIC, selected: false)
       check_resource_node(@dt3, CC::CCHelper::DISCUSSION_TOPIC)
       check_resource_node(@et, CC::CCHelper::BASIC_LTI)
-      check_resource_node(@et2, CC::CCHelper::BASIC_LTI, false)
+      check_resource_node(@et2, CC::CCHelper::BASIC_LTI, selected: false)
       check_resource_node(@q1, CC::CCHelper::ASSESSMENT_TYPE)
-      check_resource_node(@q2, CC::CCHelper::ASSESSMENT_TYPE, false)
+      check_resource_node(@q2, CC::CCHelper::ASSESSMENT_TYPE, selected: false)
       check_resource_node(@asmnt, CC::CCHelper::LOR)
-      check_resource_node(@asmnt2, CC::CCHelper::LOR, false)
-      check_resource_node(@att, CC::CCHelper::WEBCONTENT, false)
-      check_resource_node(@att2, CC::CCHelper::WEBCONTENT, false)
-      check_resource_node(@wiki, CC::CCHelper::WEBCONTENT, true)
-      check_resource_node(@wiki2, CC::CCHelper::WEBCONTENT, false)
+      check_resource_node(@asmnt2, CC::CCHelper::LOR, selected: false)
+      check_resource_node(@att, CC::CCHelper::WEBCONTENT, selected: false)
+      check_resource_node(@att2, CC::CCHelper::WEBCONTENT, selected: false)
+      check_resource_node(@wiki, CC::CCHelper::WEBCONTENT)
+      check_resource_node(@wiki2, CC::CCHelper::WEBCONTENT, selected: false)
       check_resource_node(@bank, CC::CCHelper::LOR)
-      check_resource_node(@bank2, CC::CCHelper::LOR, false)
+      check_resource_node(@bank2, CC::CCHelper::LOR, selected: false)
 
       doc = Nokogiri::XML.parse(@zip_file.read("course_settings/learning_outcomes.xml"))
       expect(doc.at_css("learningOutcomeGroup[identifier=#{mig_id(@log)}]")).to be_nil
@@ -221,6 +221,103 @@ describe "Common Cartridge exporting" do
       expect(doc.at_css("blueprint_settings restricted_items item[identifierref=#{mig_id(@asmnt)}]")).not_to be_nil
       expect(doc.at_css("blueprint_settings restricted_items item[identifierref=#{mig_id(@asmnt2)}]")).to be_nil
       expect(ccc_schema.validate(doc)).to be_empty
+    end
+
+    context "selective content tag export" do
+      before :once do
+        @course.account.enable_feature!(:horizon_course_setting)
+        @course.update!(horizon_course: true)
+
+        @cm = @course.context_modules.create!(name: "Test Module")
+        @assignment1 = @course.assignments.create!(title: "Assignment 1")
+        @assignment2 = @course.assignments.create!(title: "Assignment 2")
+        @ct1 = @cm.add_item(type: "assignment", id: @assignment1.id)
+        @ct2 = @cm.add_item(type: "assignment", id: @assignment2.id)
+        @ct3 = @cm.add_item(type: "external_url", title: "External", url: "https://example.com")
+
+        @cm.completion_requirements = [
+          { id: @ct1.id, type: "must_submit" },
+          { id: @ct2.id, type: "must_view" },
+          { id: @ct3.id, type: "must_view" }
+        ]
+        @cm.save!
+      end
+
+      it "exports all module items when selective_content_tag_export is not enabled" do
+        @ce.selected_content = {
+          context_modules: { mig_id(@cm) => "1" },
+          content_tags: { mig_id(@ct1) => "1" }
+        }
+
+        run_export
+
+        doc = Nokogiri::XML.parse(@zip_file.read("course_settings/module_meta.xml"))
+        module_node = doc.at_css("module[identifier='#{mig_id(@cm)}']")
+
+        expect(module_node.css("item").count).to eq 3
+        expect(module_node.css("completionRequirement").count).to eq 3
+      end
+
+      it "exports only selected content tags when selective_content_tag_export is enabled" do
+        Account.site_admin.enable_feature!(:selective_content_tag_export)
+
+        @ce.settings[:selective_content_tag_export] = true
+        @ce.selected_content = {
+          context_modules: { mig_id(@cm) => "1" },
+          content_tags: { mig_id(@ct1) => "1" }
+        }
+
+        run_export
+
+        doc = Nokogiri::XML.parse(@zip_file.read("course_settings/module_meta.xml"))
+        module_node = doc.at_css("module[identifier='#{mig_id(@cm)}']")
+
+        # Only ct1 should be exported
+        expect(module_node.css("item").count).to eq 1
+        expect(module_node.css("item").first["identifier"]).to eq mig_id(@ct1)
+
+        # Only ct1's completion requirement should be exported
+        expect(module_node.css("completionRequirement").count).to eq 1
+        expect(module_node.at_css("completionRequirement identifierref").text).to eq mig_id(@ct1)
+      end
+
+      it "exports multiple selected content tags" do
+        Account.site_admin.enable_feature!(:selective_content_tag_export)
+
+        @ce.settings[:selective_content_tag_export] = true
+        @ce.selected_content = {
+          context_modules: { mig_id(@cm) => "1" },
+          content_tags: {
+            mig_id(@ct1) => "1",
+            mig_id(@ct3) => "1"
+          }
+        }
+
+        run_export
+
+        doc = Nokogiri::XML.parse(@zip_file.read("course_settings/module_meta.xml"))
+        module_node = doc.at_css("module[identifier='#{mig_id(@cm)}']")
+
+        expect(module_node.css("item").count).to eq 2
+        expect(module_node.css("completionRequirement").count).to eq 2
+      end
+
+      it "still exports referenced content objects" do
+        Account.site_admin.enable_feature!(:selective_content_tag_export)
+
+        @ce.settings[:selective_content_tag_export] = true
+        @ce.selected_content = {
+          context_modules: { mig_id(@cm) => "1" },
+          content_tags: { mig_id(@ct1) => "1" }
+        }
+
+        run_export
+
+        # Assignment 1 should still be exported as a resource
+        check_resource_node(@assignment1, CC::CCHelper::LOR, selected: true)
+        # Assignment 2 should NOT be exported (its content tag wasn't selected)
+        check_resource_node(@assignment2, CC::CCHelper::LOR, selected: false)
+      end
     end
 
     it "uses instfs to host export files if it is enabled" do
@@ -272,7 +369,7 @@ describe "Common Cartridge exporting" do
       run_export
 
       check_resource_node(@q1, CC::CCHelper::QTI_ASSESSMENT_TYPE)
-      check_resource_node(@q2, CC::CCHelper::QTI_ASSESSMENT_TYPE, false)
+      check_resource_node(@q2, CC::CCHelper::QTI_ASSESSMENT_TYPE, selected: false)
     end
 
     it "exports quizzes with groups that point to external banks" do
@@ -389,7 +486,7 @@ describe "Common Cartridge exporting" do
       expect(doc.at_css("presentation material mattext").text).to eq exported_text
 
       check_resource_node(att, CC::CCHelper::WEBCONTENT)
-      check_resource_node(att2, CC::CCHelper::WEBCONTENT, false)
+      check_resource_node(att2, CC::CCHelper::WEBCONTENT, selected: false)
       check_resource_node(user_att, CC::CCHelper::WEBCONTENT)
 
       path = @manifest_doc.at_css("resource[identifier=#{mig_id(att)}]")["href"]
@@ -522,7 +619,7 @@ describe "Common Cartridge exporting" do
       expect(@zip_file.read("wiki_content/some-page.html")).to include export_html
       path = "web_resources/Uploaded Media/cn_image.jpg"
       expect(@zip_file.find_entry(path)).not_to be_nil
-      expect(@manifest_doc.at_css("resource[identifier=#{mig_id(att)}]")).to_not be_nil
+      expect(@manifest_doc.at_css("resource[identifier=#{mig_id(att)}]")).not_to be_nil
       expect(@zip_file.read("course_settings/files_meta.xml")).to include "<folder path=\"Uploaded Media\">\n      <hidden>true</hidden>\n    </folder>"
     end
 
@@ -569,18 +666,13 @@ describe "Common Cartridge exporting" do
       @ce.selected_content = { all_quizzes: "1" }
       @ce.save!
 
-      kaltura_session = double("kaltura_session")
+      kaltura_session = instance_double(CanvasKaltura::ClientV3)
       allow(CC::CCHelper).to receive(:kaltura_admin_session).and_return(kaltura_session)
       allow(kaltura_session).to receive_messages(
         flavorAssetGetPlaylistUrl: "http://www.example.com/blah.mp4",
         flavorAssetGetOriginalAsset: { id: 1, status: "2", fileExt: "mp4" }
       )
-      mock_http_response = Struct.new(:code) do
-        def read_body(stream)
-          stream.puts("lalala")
-        end
-      end
-      allow(CanvasHttp).to receive(:get).and_yield(mock_http_response.new(200))
+      allow(CanvasHttp).to receive(:get).and_yield(FakeHttpResponse.new("200", "lalala"))
 
       run_export
 
@@ -595,7 +687,7 @@ describe "Common Cartridge exporting" do
       expect(doc.at_css("presentation material mattext").text).to match_ignoring_whitespace export_html
 
       resource_node = @manifest_doc.at_css("resource[identifier=#{mig_id(att)}]")
-      expect(resource_node).to_not be_nil
+      expect(resource_node).not_to be_nil
       path = resource_node["href"]
       expect(@zip_file.find_entry(path)).not_to be_nil
     end
@@ -620,18 +712,22 @@ describe "Common Cartridge exporting" do
       @ce.update(export_type: ContentExport::COMMON_CARTRIDGE)
       @ce.save!
 
-      client = double("kaltura_client")
+      client = instance_double(CanvasKaltura::ClientV3)
       allow(CC::CCHelper).to receive(:kaltura_admin_session).and_return(client)
-      allow(client).to receive(:flavorAssetGetOriginalAsset)
       allow(CanvasKaltura::ClientV3).to receive_messages(new: client, config: {})
       mp3_path = "http://canvas.example/mp3_path"
-      allow(client).to receive(:media_sources).and_return([{
-                                                            isOriginal: "0",
-                                                            fileExt: "mp3",
-                                                            url: mp3_path,
-                                                            content_type: "audio/mpeg"
-                                                          }])
-      expect(CanvasHttp).to receive(:get).with(mp3_path).and_yield(FakeHttpResponse.new("200", File.read(fixture_file_upload("292.mp3", "audio/mpeg", true))))
+      allow(client).to receive_messages(
+        flavorAssetGetOriginalAsset: nil,
+        media_download_url: mp3_path,
+        media_sources: [{
+          isOriginal: "0",
+          fileExt: "mp3",
+          url: mp3_path,
+          content_type: "audio/mpeg"
+        }]
+      )
+      allow(CanvasHttp).to receive(:get).with(mp3_path).and_yield(FakeHttpResponse.new("200", File.read(fixture_file_upload("292.mp3", "audio/mpeg", binary: true))))
+      allow(CanvasHttp).to receive(:get).with("#{mp3_path}?filename=292.mp3").and_yield(FakeHttpResponse.new("200", File.read(fixture_file_upload("292.mp3", "audio/mpeg", binary: true))))
 
       run_export
 
@@ -670,18 +766,22 @@ describe "Common Cartridge exporting" do
       @ce.update(export_type: ContentExport::COMMON_CARTRIDGE)
       @ce.save!
 
-      client = double("kaltura_client")
+      client = instance_double(CanvasKaltura::ClientV3)
       allow(CC::CCHelper).to receive(:kaltura_admin_session).and_return(client)
-      allow(client).to receive(:flavorAssetGetOriginalAsset)
       allow(CanvasKaltura::ClientV3).to receive_messages(new: client, config: {})
       media_path = "http://www.example.com/blah.mp3"
-      allow(client).to receive(:media_sources).and_return([{
-                                                            isOriginal: "0",
-                                                            fileExt: "mp3",
-                                                            url: media_path,
-                                                            content_type: "audio/mpeg"
-                                                          }])
-      expect(CanvasHttp).to receive(:get).with(media_path).and_yield(FakeHttpResponse.new("200", File.read(fixture_file_upload("292.mp3", "audio/mpeg", true))))
+      allow(client).to receive_messages(
+        flavorAssetGetOriginalAsset: nil,
+        media_download_url: media_path,
+        media_sources: [{
+          isOriginal: "0",
+          fileExt: "mp3",
+          url: media_path,
+          content_type: "audio/mpeg"
+        }]
+      )
+      allow(CanvasHttp).to receive(:get).with(media_path).and_yield(FakeHttpResponse.new("200", File.read(fixture_file_upload("292.mp3", "audio/mpeg", binary: true))))
+      allow(CanvasHttp).to receive(:get).with("#{media_path}?filename=test.mp4").and_yield(FakeHttpResponse.new("200", File.read(fixture_file_upload("292.mp3", "audio/mpeg", binary: true))))
 
       run_export
 
@@ -720,17 +820,22 @@ describe "Common Cartridge exporting" do
       @ce.update(export_type: ContentExport::COMMON_CARTRIDGE)
       @ce.save!
 
-      client = double("kaltura_client")
+      client = instance_double(CanvasKaltura::ClientV3)
       allow(CC::CCHelper).to receive(:kaltura_admin_session).and_return(client)
-      allow(client).to receive(:flavorAssetGetOriginalAsset)
       allow(CanvasKaltura::ClientV3).to receive_messages(new: client, config: {})
       media_path = "http://www.example.com/blah.mp3"
-      allow(client).to receive(:media_sources).and_return([{
-                                                            isOriginal: "0",
-                                                            fileExt: "mp3",
-                                                            url: media_path,
-                                                            content_type: "audio/mpeg"
-                                                          }])
+      allow(client).to receive_messages(
+        flavorAssetGetOriginalAsset: nil,
+        media_download_url: media_path,
+        media_sources: [{
+          isOriginal: "0",
+          fileExt: "mp3",
+          url: media_path,
+          content_type: "audio/mpeg"
+        }]
+      )
+      allow(CanvasHttp).to receive(:get).with(media_path).and_yield(FakeHttpResponse.new("200", File.read(fixture_file_upload("292.mp3", "audio/mpeg", true))))
+      allow(CanvasHttp).to receive(:get).with("#{media_path}?filename=test.mp4").and_yield(FakeHttpResponse.new("200", File.read(fixture_file_upload("292.mp3", "audio/mpeg", true))))
       run_export
 
       check_resource_node(@page, CC::CCHelper::WEBCONTENT)
@@ -913,6 +1018,97 @@ describe "Common Cartridge exporting" do
       expect(ccc_schema.validate(doc)).to be_empty
     end
 
+    it "exports course nav menu links (course- or account-level) in tab_configuration with migration ids" do
+      @course.root_account.enable_feature!(:nav_menu_links)
+      link = NavMenuLink.create!(context: @course, course_nav: true, label: "Link", url: "https://example.com")
+      account_link = NavMenuLink.create!(context: @course.root_account, course_nav: true, label: "Link2", url: "https://example2.com")
+      @course.tab_configuration = [
+        { "id" => Course::TAB_HOME },
+        { "id" => "nav_menu_link_#{link.id}" },
+        { "id" => "nav_menu_link_#{account_link.id}" },
+      ]
+      @course.save!
+
+      run_export
+
+      doc = Nokogiri::XML.parse(@zip_file.read("course_settings/course_settings.xml"))
+      tab_config = JSON.parse(doc.at_css("tab_configuration").text)
+
+      expect(tab_config.pluck("id")).to eq([
+                                             Course::TAB_HOME,
+                                             "nav_menu_link_#{mig_id(link)}",
+                                             "nav_menu_link_#{mig_id(account_link)}",
+                                           ])
+    end
+
+    it "exports nav_menu_links.xml when nav_menu_links feature is enabled" do
+      link = NavMenuLink.create!(context: @course, course_nav: true, label: "My Link", url: "https://example.com/nav")
+
+      run_export
+
+      nav_links_xml = @zip_file.read("course_settings/nav_menu_links.xml")
+      doc = Nokogiri::XML.parse(nav_links_xml)
+      link_node = doc.at_css("navMenuLink")
+      expect(link_node).not_to be_nil
+      expect(link_node["identifier"]).to eq(mig_id(link))
+      expect(link_node.at_css("label").text).to eq("My Link")
+      expect(link_node.at_css("url").text).to eq("https://example.com/nav")
+    end
+
+    it "translates internal nav_menu_link URLs to migration placeholders" do
+      assignment = @course.assignments.create!(title: "Test Assignment")
+
+      link = NavMenuLink.create!(
+        context: @course,
+        course_nav: true,
+        label: "My Assignment Link",
+        url: "/courses/#{@course.id}/assignments/#{assignment.id}"
+      )
+
+      run_export
+
+      # Refresh assignment to get the migration_id that was set during export
+      assignment.reload
+
+      # Verify the exported XML has placeholder, not actual URL
+      nav_links_xml = @zip_file.read("course_settings/nav_menu_links.xml")
+      doc = Nokogiri::XML.parse(nav_links_xml)
+      link_node = doc.at_css("navMenuLink[identifier='#{mig_id(link)}']")
+
+      expect(link_node).not_to be_nil
+      url_text = link_node.at_css("url").text
+      expect(url_text).to include("$CANVAS_OBJECT_REFERENCE$")
+      expect(url_text).to include("assignments/#{assignment.migration_id}")
+      expect(url_text).not_to include(@course.id.to_s)
+    end
+
+    it "does not translate external nav_menu_link URLs" do
+      external_url = "https://example.com/external/path"
+      link = NavMenuLink.create!(
+        context: @course,
+        course_nav: true,
+        label: "External Link",
+        url: external_url
+      )
+
+      run_export
+
+      nav_links_xml = @zip_file.read("course_settings/nav_menu_links.xml")
+      doc = Nokogiri::XML.parse(nav_links_xml)
+      link_node = doc.at_css("navMenuLink[identifier='#{mig_id(link)}']")
+
+      expect(link_node.at_css("url").text).to eq(external_url)
+    end
+
+    it "does not export nav_menu_links.xml when feature is disabled" do
+      @course.root_account.disable_feature!(:nav_menu_links)
+      NavMenuLink.create!(context: @course, course_nav: true, label: "My Link", url: "https://example.com/nav")
+
+      run_export
+
+      expect(@zip_file.find_entry("course_settings/nav_menu_links.xml")).to be_nil
+    end
+
     it "does not export syllabus if not selected" do
       @course.syllabus_body = "<p>Bodylicious</p>"
 
@@ -984,14 +1180,17 @@ describe "Common Cartridge exporting" do
 
     context "media track export" do
       before do
-        client = double("kaltura_client")
+        client = instance_double(CanvasKaltura::ClientV3)
         allow(CanvasKaltura::ClientV3).to receive_messages(new: client)
-        allow(client).to receive_messages(media_sources: {})
+        allow(client).to receive_messages(
+          media_download_url: nil,
+          media_sources: {}
+        )
       end
 
       it "exports media tracks" do
         stub_kaltura
-        kaltura_session = double("kaltura_session")
+        kaltura_session = instance_double(CanvasKaltura::ClientV3)
         allow(CC::CCHelper).to receive(:kaltura_admin_session).and_return(kaltura_session)
         allow(kaltura_session).to receive(:flavorAssetGetOriginalAsset).and_return({ id: 1, status: "2", fileExt: "flv" })
         obj = @course.media_objects.create! media_id: "0_deadbeef", user_entered_title: "blah.flv"
@@ -1013,7 +1212,7 @@ describe "Common Cartridge exporting" do
 
       it "exports media tracks when there's no attachment associated with the media object (and also get tracks from the original media object if there isn't one for that locale on the attachment)" do
         stub_kaltura
-        kaltura_session = double("kaltura_session")
+        kaltura_session = instance_double(CanvasKaltura::ClientV3)
         allow(CC::CCHelper).to receive(:kaltura_admin_session).and_return(kaltura_session)
         allow(kaltura_session).to receive_messages(
           flavorAssetGetPlaylistUrl: "http://www.example.com/blah.flv",
@@ -1234,16 +1433,10 @@ describe "Common Cartridge exporting" do
           )
         end
 
-        it "only exports the control for the account-level tool" do
+        it "does not export any context controls when no tools are being exported" do
+          course_control
           subject
-          doc = Nokogiri::XML(@zip_file.read("course_settings/lti_context_controls.xml"))
-          expect(doc).to be_present
-
-          expect(doc.at_css("lti_context_control[identifier=#{mig_id(tool.primary_context_control)}]")).to be_nil
-          expect(doc.at_css("lti_context_control[identifier=#{mig_id(tool2.primary_context_control)}]")).to be_nil
-          tool_node = doc.at_css("lti_context_control[identifier=#{mig_id(account_level_tool.context_controls.find_by(course:))}]")
-          expect(tool_node).to be_present
-          expect(tool_node.at_css("deployment_migration_id")).to be_nil
+          expect(@zip_file.find_entry("course_settings/lti_context_controls.xml")).to be_nil
         end
       end
     end
@@ -1350,16 +1543,16 @@ describe "Common Cartridge exporting" do
 
       describe "custom values" do
         it "exports the custom hash" do
-          exported_hash = assignment_xml_doc.css("tool_setting custom property").each_with_object({}) do |el, hash|
-            hash[el.attr("name")] = el.text
+          exported_hash = assignment_xml_doc.css("tool_setting custom property").to_h do |el|
+            [el.attr("name"), el.text]
           end
 
           expect(exported_hash).to eq(custom)
         end
 
         it "exports the custom parameters hash" do
-          exported_hash = assignment_xml_doc.css("tool_setting custom_parameters property").each_with_object({}) do |el, hash|
-            hash[el.attr("name")] = el.text
+          exported_hash = assignment_xml_doc.css("tool_setting custom_parameters property").to_h do |el|
+            [el.attr("name"), el.text]
           end
 
           expect(exported_hash).to eq(custom_parameters)
@@ -1454,7 +1647,7 @@ describe "Common Cartridge exporting" do
         run_export
 
         check_resource_node(@published, CC::CCHelper::LOR)
-        check_resource_node(@unpublished, CC::CCHelper::LOR, false)
+        check_resource_node(@unpublished, CC::CCHelper::LOR, selected: false)
       end
 
       it "always uses relevant migration ids in anchor tags when exporting for ePub" do
@@ -1505,10 +1698,10 @@ describe "Common Cartridge exporting" do
         @ce.save!
         run_export
 
-        check_resource_node(assignment, CC::CCHelper::LOR, false)
-        check_resource_node(quiz, CC::CCHelper::ASSESSMENT_TYPE, false)
-        check_resource_node(topic, CC::CCHelper::DISCUSSION_TOPIC, false)
-        check_resource_node(page, CC::CCHelper::WEBCONTENT, false)
+        check_resource_node(assignment, CC::CCHelper::LOR, selected: false)
+        check_resource_node(quiz, CC::CCHelper::ASSESSMENT_TYPE, selected: false)
+        check_resource_node(topic, CC::CCHelper::DISCUSSION_TOPIC, selected: false)
+        check_resource_node(page, CC::CCHelper::WEBCONTENT, selected: false)
       end
 
       it "includes wiki page with future availability for teacher" do
@@ -1528,7 +1721,7 @@ describe "Common Cartridge exporting" do
         it "still exports topics that are closed for comments" do
           topic = @course.discussion_topics.create! locked: true
           run_export
-          check_resource_node(topic, CC::CCHelper::DISCUSSION_TOPIC, true)
+          check_resource_node(topic, CC::CCHelper::DISCUSSION_TOPIC)
         end
       end
     end
@@ -1576,8 +1769,8 @@ describe "Common Cartridge exporting" do
         run_export
 
         check_resource_node(@visible, CC::CCHelper::WEBCONTENT)
-        check_resource_node(@hidden, CC::CCHelper::WEBCONTENT, false)
-        check_resource_node(@locked, CC::CCHelper::WEBCONTENT, false)
+        check_resource_node(@hidden, CC::CCHelper::WEBCONTENT, selected: false)
+        check_resource_node(@locked, CC::CCHelper::WEBCONTENT, selected: false)
       end
     end
 
@@ -1612,7 +1805,7 @@ describe "Common Cartridge exporting" do
           assignment_id = @manifest_doc.at_css("resource[href*='newquizzes.html']").attr("href").chomp("/newquizzes.html")
 
           doc = Nokogiri::XML.parse(@zip_file.read("#{assignment_id}/assignment_settings.xml"))
-          expect(doc).to_not be_nil
+          expect(doc).not_to be_nil
         end
       end
 
@@ -1658,7 +1851,7 @@ describe "Common Cartridge exporting" do
             assignment_id = @manifest_doc.at_css("resource[href*='newquizzes.html']").attr("href").chomp("/newquizzes.html")
 
             doc = Nokogiri::XML.parse(@zip_file.read("#{assignment_id}/assignment_settings.xml"))
-            expect(doc).to_not be_nil
+            expect(doc).not_to be_nil
           end
         end
       end

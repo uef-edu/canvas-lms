@@ -17,16 +17,17 @@
  */
 
 import FilePreview from '../FilePreview'
-import {fireEvent, render, screen, act} from '@testing-library/react'
+import {fireEvent, render, screen, act, within} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import React from 'react'
 import {mockSubmission} from '@canvas/assignments/graphql/studentMocks'
-import {queryClient} from '@canvas/query'
+import {queryClient} from '@instructure/platform-query'
 import {MockedQueryProvider} from '@canvas/test-utils/query'
 import {
   defaultGetLtiAssetProcessorsAndReportsForStudentResult,
   defaultLtiAssetReportsForStudent,
 } from '@canvas/lti-asset-processor/queries/__fixtures__/LtiAssetProcessorsAndReportsForStudent'
+import fakeENV from '@canvas/test-utils/fakeENV'
 
 const files = [
   {
@@ -87,17 +88,22 @@ const resolvers = () => ({
 })
 
 const mockSubmissionWithResolvers = overrides => mockSubmission(overrides, resolvers)
-let originalEnv
 
 describe('FilePreview', () => {
   beforeEach(() => {
-    originalEnv = global.ENV
-    global.ENV = {...originalEnv, FEATURES: {lti_asset_processor: true}}
-    jest.clearAllMocks()
+    fakeENV.setup({FEATURES: {lti_asset_processor: true}})
+    vi.useFakeTimers({shouldAdvanceTime: true})
   })
 
-  afterEach(() => {
-    global.ENV = originalEnv
+  afterEach(async () => {
+    // Flush all pending timers from InstUI transitions before cleanup
+    // Use runAllTimers to ensure nested timers are also flushed
+    await act(async () => {
+      vi.runAllTimers()
+    })
+    vi.useRealTimers()
+    queryClient.clear()
+    fakeENV.teardown()
   })
 
   it('renders a message if there are no files to display', async () => {
@@ -140,7 +146,7 @@ describe('FilePreview', () => {
     )
   })
 
-  it('does not render the file icons if there is only one file', async () => {
+  it('renders the file table even with only one file', async () => {
     const props = {
       submission: await mockSubmissionWithResolvers({
         Submission: {attachments: [files[0]]},
@@ -152,7 +158,7 @@ describe('FilePreview', () => {
       </MockedQueryProvider>,
     )
 
-    expect(screen.queryByTestId('assignments_2_file_icons')).not.toBeInTheDocument()
+    expect(screen.getByTestId('uploaded_files_table')).toBeInTheDocument()
   })
 
   it('renders orignality reports for each file if turnitin data exists and there is more than one attachment', async () => {
@@ -175,7 +181,7 @@ describe('FilePreview', () => {
     expect(reports[1].textContent).toBe('10%')
   })
 
-  it('does not render orignality reports if only one attachment exists', async () => {
+  it('renders file table with originality report for single attachment', async () => {
     const props = {
       submission: await mockSubmissionWithResolvers({
         Submission: {attachments: [files[0]], originalityData, submissionType: 'online_upload'},
@@ -188,7 +194,8 @@ describe('FilePreview', () => {
       </MockedQueryProvider>,
     )
 
-    expect(screen.queryByTestId('originality_report')).not.toBeInTheDocument()
+    expect(screen.getByTestId('originality_report')).toBeInTheDocument()
+    expect(screen.getByTestId('originality_report').textContent).toBe('75%')
   })
 
   it('does not render orignality reports if the reports are not visible to the student', async () => {
@@ -212,7 +219,7 @@ describe('FilePreview', () => {
   })
 
   it('renders the Document Processors column header and LtiAssetReportStatus when asset processors and reports are available', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({advanceTimers: vi.advanceTimersByTime})
 
     // Mock the GraphQL query to return fixture data with reports for each file
     const mockData = defaultGetLtiAssetProcessorsAndReportsForStudentResult()
@@ -315,22 +322,24 @@ describe('FilePreview', () => {
     expect(screen.getByText('Preview Unavailable')).toBeInTheDocument()
   })
 
-  it('renders a download button for files without canvadoc preview', async () => {
+  it('renders a download button in the table for all files', async () => {
     const props = {
       submission: await mockSubmissionWithResolvers({Submission: {attachments: [files[1]]}}),
     }
-    const {container} = render(
+    render(
       <MockedQueryProvider>
         <FilePreview {...props} />
       </MockedQueryProvider>,
     )
 
     expect(screen.getByText('Preview Unavailable')).toBeInTheDocument()
-    expect(container.querySelector('a[href="/url"]')).toBeInTheDocument()
+    const downloadCell = screen.getByTestId('download-file')
+    expect(downloadCell).toBeInTheDocument()
+    const downloadButton = within(downloadCell).getByText('Download').closest('a')
+    expect(downloadButton).toHaveAttribute('href', '/url')
   })
 
   it('changes the preview when a different file icon is clicked', async () => {
-    const user = userEvent.setup()
     const props = {
       submission: await mockSubmissionWithResolvers({
         Submission: {attachments: files},
@@ -352,7 +361,6 @@ describe('FilePreview', () => {
   })
 
   it('displays the first file upload in the preview when switching between attempts', async () => {
-    const user = userEvent.setup()
     // file[0] = image, file[1] = zip, file[2] = zip
     const propsAttempt1 = {
       submission: await mockSubmissionWithResolvers({
@@ -383,5 +391,76 @@ describe('FilePreview', () => {
 
     const iframe = container.querySelector('iframe')
     expect(iframe).toHaveAttribute('src', '/preview_url')
+  })
+
+  it('renders filename as plain text (not clickable) when only one file', async () => {
+    const props = {
+      submission: await mockSubmissionWithResolvers({
+        Submission: {attachments: [files[0]]},
+      }),
+    }
+    const {container} = render(
+      <MockedQueryProvider>
+        <FilePreview {...props} />
+      </MockedQueryProvider>,
+    )
+
+    const table = screen.getByTestId('uploaded_files_table')
+    expect(table).toBeInTheDocument()
+
+    // Filename should not be wrapped in a Link - check that there's no link with the filename
+    const fileNameLinks = container.querySelectorAll('a')
+    const fileNameTextInLinks = Array.from(fileNameLinks).filter(link =>
+      link.textContent.includes('file_1.png'),
+    )
+    // Should only find the download link, not a filename link
+    expect(fileNameTextInLinks).toHaveLength(0)
+  })
+
+  it('renders filenames as clickable links when multiple files', async () => {
+    const props = {
+      submission: await mockSubmissionWithResolvers({
+        Submission: {attachments: files},
+      }),
+    }
+    const {container} = render(
+      <MockedQueryProvider>
+        <FilePreview {...props} />
+      </MockedQueryProvider>,
+    )
+
+    // Find all elements with file_1.png text - should include icon button and filename link
+    const fileNameElements = screen.getAllByText(/file_1.png/i)
+    expect(fileNameElements.length).toBeGreaterThan(1) // Icon button + filename link
+
+    // Find the clickable link by looking for the element that's in a Link component (has onClick)
+    const fileNameLink =
+      fileNameElements.find(el => el.closest('a')) || fileNameElements[0].closest('a')
+
+    // Clicking the filename link should work (just verify no error)
+    if (fileNameLink) {
+      fireEvent.click(fileNameLink)
+    }
+    expect(screen.getByTestId('assignments_2_submission_preview')).toBeInTheDocument()
+  })
+
+  it('renders download buttons for all files in the table', async () => {
+    const props = {
+      submission: await mockSubmissionWithResolvers({
+        Submission: {attachments: files},
+      }),
+    }
+    render(
+      <MockedQueryProvider>
+        <FilePreview {...props} />
+      </MockedQueryProvider>,
+    )
+
+    const downloadTexts = screen.getAllByText('Download')
+    expect(downloadTexts).toHaveLength(3) // One for each file
+    downloadTexts.forEach(text => {
+      const downloadButton = text.closest('a')
+      expect(downloadButton).toHaveAttribute('href', '/url')
+    })
   })
 })

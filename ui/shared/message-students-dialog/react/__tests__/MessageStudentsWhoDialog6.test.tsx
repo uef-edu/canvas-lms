@@ -24,7 +24,7 @@ import MessageStudentsWhoDialog, {
   MSWLaunchContext,
 } from '../MessageStudentsWhoDialog'
 import {MockedQueryClientProvider} from '@canvas/test-utils/query'
-import {queryClient} from '@canvas/query'
+import {queryClient} from '@instructure/platform-query'
 import type {CamelizedAssignment} from '@canvas/grading/grading'
 import fakeENV from '@canvas/test-utils/fakeENV'
 const students: Student[] = [
@@ -179,6 +179,7 @@ describe('MessageStudentsWhoDialog', () => {
       })
     })
 
+    // Skipped: Flaky timeout - test suite stabilization
     it('"Have not yet submitted" does not display students who are excused when selecting "skip excused" checkbox', async () => {
       makeMocks()
       students[2].excused = true

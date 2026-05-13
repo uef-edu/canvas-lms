@@ -18,7 +18,7 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
-class Folder < ActiveRecord::Base
+class Folder < ApplicationRecord
   def self.name_order_by_clause(table = nil)
     col = table ? "#{table}.name" : "name"
     best_unicode_collation_key(col)
@@ -163,7 +163,7 @@ class Folder < ActiveRecord::Base
     name
   end
 
-  def full_name(reload = false)
+  def full_name(reload: false)
     return super() if !reload && super()
 
     folder = self
@@ -190,7 +190,7 @@ class Folder < ActiveRecord::Base
     self.parent_folder_id = nil if !parent_folder || parent_folder.context != context || parent_folder_id == id
     self.context = parent_folder.context if parent_folder
     prevent_duplicate_name
-    self.full_name = full_name(true)
+    self.full_name = full_name(reload: true)
     if parent_folder_id_changed? || !parent_folder_id || full_name_changed? || name_changed?
       @update_sub_folders = true
     end
@@ -233,7 +233,7 @@ class Folder < ActiveRecord::Base
 
     sub_folders.each do |f|
       f.reload
-      f.full_name = f.full_name(true)
+      f.full_name = f.full_name(reload: true)
       f.save
     end
   end
@@ -289,7 +289,12 @@ class Folder < ActiveRecord::Base
   def clone_for(context, dup = nil, options = {})
     if !cloned_item && !new_record?
       self.cloned_item ||= ClonedItem.create(original_item: self)
-      save!
+      if Account.site_admin.feature_enabled?(:fix_bp_folder_unsynced_issue)
+        # This will follow the Attachment's clone_for method pattern to avoid touching the updated_at field.
+        Folder.where(id: self).update_all(cloned_item_id: cloned_item.id)
+      else
+        save!
+      end
     end
     existing = context.folders.active.where(id: self).first
     existing ||= context.folders.active.where(cloned_item_id: cloned_item_id || 0).first
@@ -548,7 +553,7 @@ class Folder < ActiveRecord::Base
     nil
   end
 
-  def self.resolve_path(context, path, include_hidden_and_locked = true)
+  def self.resolve_path(context, path, include_hidden_and_locked: true)
     path_components = case path
                       when Array
                         path

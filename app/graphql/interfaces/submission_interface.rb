@@ -153,9 +153,7 @@ module Interfaces::SubmissionInterface
 
   field :has_unread_rubric_assessment, Boolean, null: false
   def has_unread_rubric_assessment
-    load_association(:content_participations).then do
-      submission.content_participations.where(workflow_state: "unread", content_item: "rubric").exists?
-    end
+    Loaders::SubmissionLoaders::HasUnreadRubricAssessmentLoader.load(submission.id)
   end
 
   field :user, Types::UserType, null: true
@@ -175,6 +173,12 @@ module Interfaces::SubmissionInterface
              required: false,
              default_value: nil
     argument :include_draft_comments, Boolean, required: false, default_value: false
+    argument :include_drafts_from_others, Boolean, <<~MD, required: false, default_value: false
+      When true and include_draft_comments is true, draft comments from other teachers will be included.
+      Only applies to users with grading permissions (teachers, TAs, etc).
+      When false, only the current user's draft comments are included.
+      Students never see draft comments from others regardless of this setting.
+    MD
     argument :include_provisional_comments, Boolean, <<~MD, required: false, default_value: false
       When true, provisional comments that the current user has permission to see will be returned.
       The Moderator has permission to see all provisional comments.
@@ -183,12 +187,14 @@ module Interfaces::SubmissionInterface
       Students cannot see provisional comments.
     MD
   end
-  def comments_connection(filter:, sort_order:, include_draft_comments:, include_provisional_comments:)
+  def comments_connection(filter:, sort_order:, include_draft_comments:, include_drafts_from_others:, include_provisional_comments:)
     filter = filter.to_h
-    filter => all_comments:, for_attempt:, peer_review:
+    filter => all_comments:, for_attempt:, peer_review:, status:
+    use_visible_comments = status&.include?("ALL") || (include_draft_comments && include_drafts_from_others)
 
-    # Preload provisional comments if needed
-    provisional_comments_promise = if include_provisional_comments
+    # Preload provisional comments only when needed (not using visible_submission_comments_for
+    # which already includes provisional comments via all_submission_comments)
+    provisional_comments_promise = if include_provisional_comments && !use_visible_comments
                                      Loaders::AssociationLoader
                                        .for(Submission, :provisional_grades)
                                        .load(submission)
@@ -211,10 +217,16 @@ module Interfaces::SubmissionInterface
     load_association(:assignment).then do
       load_association(:submission_comments).then do
         provisional_comments_promise.then do |provisional_comments|
-          comments = include_draft_comments ? submission.comments_including_drafts_for(current_user) : submission.comments_excluding_drafts_for(current_user)
+          comments = if use_visible_comments
+                       submission.visible_submission_comments_for(current_user)
+                     elsif include_draft_comments
+                       submission.comments_including_drafts_for(current_user)
+                     else
+                       submission.comments_excluding_drafts_for(current_user)
+                     end
           comments = comments.to_a
 
-          if include_provisional_comments
+          if include_provisional_comments && !use_visible_comments
             comments.concat(submission.visible_provisional_comments(current_user, provisional_comments:))
           end
 
@@ -223,7 +235,12 @@ module Interfaces::SubmissionInterface
           comments = comments.sort_by { |comment| [comment.created_at.to_i, comment.id] } if sort_order.present?
           comments.reverse! if sort_order.to_s.casecmp("desc").zero?
 
-          comments.select { |comment| comment.grants_right?(current_user, :read) }
+          if use_visible_comments
+            # Permissions checks are already applied in visible_submission_comments_for
+            comments
+          else
+            comments.select { |comment| comment.grants_right?(current_user, :read) }
+          end
         end
       end
     end
@@ -312,6 +329,17 @@ module Interfaces::SubmissionInterface
   field :auto_grade_result_present, Boolean, null: false, description: "Indicates whether an auto-grading result exists for the submission."
   def auto_grade_result_present
     Loaders::HasAutoGradeResultsLoader.load(submission)
+  end
+
+  field :ai_grade_result, Types::AiGradeResultType, null: true, description: "The AI grading result for the current submission attempt, if any."
+  def ai_grade_result
+    load_association(:course).then do |course|
+      next nil unless course.grants_any_right?(current_user, session, :manage_grades, :view_all_grades)
+
+      load_association(:auto_grade_results).then do |results|
+        results.find { |r| r.attempt == (object.attempt || 1) }
+      end
+    end
   end
 
   field :has_sub_assignment_submissions, Boolean, null: true
@@ -451,12 +479,12 @@ module Interfaces::SubmissionInterface
 
   field :vericite_data, [Types::VericiteDataType], null: true
   def vericite_data
-    return nil unless object.vericite_data(false).present? &&
+    load_association(:assignment).then do
+      next nil unless object.vericite_data(lookup_data: false).present? &&
                       object.grants_right?(current_user, :view_vericite_report) &&
                       object.assignment.vericite_enabled
 
-    promises =
-      object.vericite_data
+      object.vericite_data(lookup_data: false)
             .except(
               :provider,
               :last_processed_attempt,
@@ -467,45 +495,54 @@ module Interfaces::SubmissionInterface
               :status
             )
             .map do |asset_string, data|
-        Loaders::AssetStringLoader
-          .load(asset_string.to_s)
-          .then do |target|
-            next if target.nil?
+        # For submission asset strings, use current submission object instead of loading
+        # OriginalityReport#asset_key appends ISO8601 timestamp to submission asset strings
+        target_promise = if asset_string.to_s.start_with?("submission_")
+                           Promise.resolve(object)
+                         else
+                           Loaders::AssetStringLoader.load(asset_string.to_s)
+                         end
 
-            {
-              target:,
-              asset_string:,
-              report_url: data[:report_url],
-              score: data[:similarity_score],
-              status: data[:status],
-              state: data[:state],
-            }
-          end
+        target_promise.then do |target|
+          next if target.nil?
+
+          {
+            target:,
+            asset_string:,
+            report_url: data[:report_url],
+            score: data[:similarity_score],
+            status: data[:status],
+            state: data[:state],
+          }
+        end
       end
-    Promise.all(promises).then(&:compact)
+    end
   end
 
   field :turnitin_data, [Types::TurnitinDataType], null: true
   def turnitin_data
-    return nil unless object.grants_right?(current_user, :view_turnitin_report)
-    return nil if object.turnitin_data.empty?
+    load_association(:assignment).then do
+      next nil unless object.grants_right?(current_user, :view_turnitin_report)
 
-    promises =
-      object
-      .turnitin_data
-      .except(
-        :last_processed_attempt,
-        :webhook_info,
-        :eula_agreement_timestamp,
-        :assignment_error,
-        :provider,
-        :student_error,
-        :status
-      )
-      .map do |asset_string, data|
-        Loaders::AssetStringLoader
-          .load(asset_string.to_s)
-          .then do |target|
+      Promise.all(
+        [
+          load_association(:originality_reports),
+          Loaders::AssociationLoader.for(Assignment, :assignment_configuration_tool_lookups).load(object.assignment)
+        ]
+      ).then do
+        next nil unless object.originality_data.present?
+
+        # matching Api:V1:Submission#submission_attempt_json
+        promises = object.originality_data.map do |asset_string, data|
+          # For submission asset strings, use current submission object instead of loading
+          # OriginalityReport#asset_key appends ISO8601 timestamp to submission asset strings
+          target_promise = if asset_string.to_s.start_with?("submission_")
+                             Promise.resolve(object)
+                           else
+                             Loaders::AssetStringLoader.load(asset_string.to_s)
+                           end
+
+          target_promise.then do |target|
             next if target.nil?
 
             {
@@ -517,8 +554,10 @@ module Interfaces::SubmissionInterface
               state: data[:state]
             }
           end
+        end
+        Promise.all(promises).then(&:compact)
       end
-    Promise.all(promises).then(&:compact)
+    end
   end
 
   field :originality_data, GraphQL::Types::JSON, null: true
@@ -658,24 +697,29 @@ module Interfaces::SubmissionInterface
 
   field :preview_url, String, "This field is currently under development and its return value is subject to change.", null: true
   def preview_url
-    if submission.not_submitted? && !submission.partially_submitted?
-      nil
-    elsif submission.submission_type == "basic_lti_launch"
-      GraphQLHelpers::UrlHelpers.retrieve_course_external_tools_url(
-        submission.course_id,
-        assignment_id: submission.assignment_id,
-        url: submission.external_tool_url(query_params: submission.tool_default_query_params(current_user)),
-        display: "borderless",
-        host: context[:request].host_with_port,
-        resource_link_lookup_uuid: submission.resource_link_lookup_uuid
-      )
-    else
-      Loaders::AssociationLoader.for(Submission, :assignment).load(submission).then do |assignment|
+    return nil if submission.not_submitted? && !submission.partially_submitted?
+
+    Loaders::AssociationLoader.for(Submission, :assignment).load(submission).then do |assignment|
+      # Legacy submission versions serialized before course_id was added to the
+      # submissions table will have course_id: nil. Fall back to the assignment's
+      # context_id, which is always the course for standard assignments.
+      course_id = submission.course_id || assignment.context_id
+      if submission.submission_type == "basic_lti_launch"
+        GraphQLHelpers::UrlHelpers.retrieve_course_external_tools_url(
+          course_id,
+          assignment_id: submission.assignment_id,
+          url: submission.external_tool_url(query_params: submission.tool_default_query_params(current_user)),
+          display: "borderless",
+          new_quizzes_native_experience_sessionless: false,
+          host: context[:request].host_with_port,
+          resource_link_lookup_uuid: submission.resource_link_lookup_uuid
+        )
+      else
         is_discussion_topic = submission.submission_type == "discussion_topic" || submission.partially_submitted?
         show_full_discussion = is_discussion_topic ? { show_full_discussion_immediately: true } : {}
         if assignment.anonymize_students?
           GraphQLHelpers::UrlHelpers.course_assignment_anonymous_submission_url(
-            submission.course_id,
+            course_id,
             submission.assignment_id,
             submission.anonymous_id,
             host: context[:request].host_with_port,
@@ -685,7 +729,7 @@ module Interfaces::SubmissionInterface
           )
         else
           GraphQLHelpers::UrlHelpers.course_assignment_submission_url(
-            submission.course_id,
+            course_id,
             submission.assignment_id,
             submission.user_id,
             host: context[:request].host_with_port,

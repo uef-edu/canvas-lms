@@ -17,30 +17,33 @@
  */
 
 import axios from '@canvas/axios'
+import {loadRollups} from '@canvas/outcomes/react/apiClient'
 import {
-  loadRollups,
   exportCSV,
   saveLearningMasteryGradebookSettings,
   loadCourseUsers,
+  saveOutcomeOrder,
 } from '../apiClient'
+import {DEFAULT_STUDENTS_PER_PAGE, SortBy} from '@canvas/outcomes/react/utils/constants'
 import {
-  DEFAULT_STUDENTS_PER_PAGE,
+  NameDisplayFormat,
   SortOrder,
-  SortBy,
   DisplayFilter,
   SecondaryInfoDisplay,
-  NameDisplayFormat,
   ScoreDisplayFormat,
-} from '../utils/constants'
+  OutcomeArrangement,
+} from '@instructure/outcomes-ui/lib/util/gradebook/constants'
+import {type Mocked} from 'vitest'
 
-jest.mock('@canvas/axios')
-const mockedAxios = axios as jest.Mocked<typeof axios>
+vi.mock('@canvas/axios')
+const mockedAxios = axios as Mocked<typeof axios>
 
 describe('apiClient', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
     mockedAxios.get.mockResolvedValue({data: {}, status: 200})
     mockedAxios.put.mockResolvedValue({data: {}, status: 200})
+    mockedAxios.post.mockResolvedValue({data: {}, status: 200})
   })
 
   describe('loadRollups', () => {
@@ -49,10 +52,9 @@ describe('apiClient', () => {
 
       expect(mockedAxios.get).toHaveBeenCalledWith('/api/v1/courses/123/outcome_rollups', {
         params: {
-          rating_percents: true,
           per_page: DEFAULT_STUDENTS_PER_PAGE,
           exclude: [],
-          include: ['outcomes', 'users', 'outcome_paths', 'alignments'],
+          include: ['outcomes', 'users'],
           sort_by: SortBy.SortableName,
           sort_order: SortOrder.ASC,
           page: 1,
@@ -65,10 +67,9 @@ describe('apiClient', () => {
 
       expect(mockedAxios.get).toHaveBeenCalledWith('/api/v1/courses/456/outcome_rollups', {
         params: {
-          rating_percents: true,
           per_page: 50,
           exclude: ['filter1', 'filter2'],
-          include: ['outcomes', 'users', 'outcome_paths', 'alignments'],
+          include: ['outcomes', 'users'],
           sort_by: 'custom_sort',
           sort_order: SortOrder.DESC,
           page: 2,
@@ -108,10 +109,9 @@ describe('apiClient', () => {
 
       expect(mockedAxios.get).toHaveBeenCalledWith('/api/v1/courses/123/outcome_rollups', {
         params: {
-          rating_percents: true,
           per_page: DEFAULT_STUDENTS_PER_PAGE,
           exclude: [],
-          include: ['outcomes', 'users', 'outcome_paths', 'alignments'],
+          include: ['outcomes', 'users'],
           sort_by: SortBy.SortableName,
           sort_order: SortOrder.ASC,
           page: 1,
@@ -174,10 +174,12 @@ describe('apiClient', () => {
         displayFilters: [
           DisplayFilter.SHOW_STUDENT_AVATARS,
           DisplayFilter.SHOW_STUDENTS_WITH_NO_RESULTS,
+          DisplayFilter.SHOW_OUTCOMES_WITH_NO_RESULTS,
         ],
         nameDisplayFormat: NameDisplayFormat.FIRST_LAST,
         studentsPerPage: 15,
         scoreDisplayFormat: ScoreDisplayFormat.ICON_ONLY,
+        outcomeArrangement: OutcomeArrangement.UPLOAD_ORDER,
       }
 
       await saveLearningMasteryGradebookSettings('123', settings)
@@ -189,9 +191,12 @@ describe('apiClient', () => {
             secondary_info_display: 'sis_id',
             show_student_avatars: true,
             show_students_with_no_results: true,
+            show_outcomes_with_no_results: true,
+            show_unpublished_assignments: false,
             name_display_format: 'first_last',
             students_per_page: 15,
             score_display_format: 'icon_only',
+            outcome_arrangement: 'upload_order',
           },
         },
       )
@@ -204,6 +209,7 @@ describe('apiClient', () => {
         nameDisplayFormat: NameDisplayFormat.FIRST_LAST,
         studentsPerPage: 30,
         scoreDisplayFormat: ScoreDisplayFormat.ICON_AND_LABEL,
+        outcomeArrangement: OutcomeArrangement.ALPHABETICAL,
       }
 
       await saveLearningMasteryGradebookSettings('456', settings)
@@ -215,9 +221,12 @@ describe('apiClient', () => {
             secondary_info_display: 'none',
             show_student_avatars: false,
             show_students_with_no_results: false,
+            show_outcomes_with_no_results: false,
+            show_unpublished_assignments: false,
             name_display_format: 'first_last',
             students_per_page: 30,
             score_display_format: 'icon_and_label',
+            outcome_arrangement: 'alphabetical',
           },
         },
       )
@@ -230,6 +239,7 @@ describe('apiClient', () => {
         nameDisplayFormat: NameDisplayFormat.FIRST_LAST,
         studentsPerPage: 50,
         scoreDisplayFormat: ScoreDisplayFormat.ICON_ONLY,
+        outcomeArrangement: OutcomeArrangement.CUSTOM,
       }
 
       await saveLearningMasteryGradebookSettings(789, settings)
@@ -241,9 +251,12 @@ describe('apiClient', () => {
             secondary_info_display: 'sis_id',
             show_student_avatars: false,
             show_students_with_no_results: false,
+            show_outcomes_with_no_results: false,
+            show_unpublished_assignments: false,
             name_display_format: 'first_last',
             students_per_page: 50,
             score_display_format: 'icon_only',
+            outcome_arrangement: 'custom',
           },
         },
       )
@@ -256,6 +269,7 @@ describe('apiClient', () => {
         nameDisplayFormat: NameDisplayFormat.FIRST_LAST,
         studentsPerPage: DEFAULT_STUDENTS_PER_PAGE,
         scoreDisplayFormat: ScoreDisplayFormat.ICON_ONLY,
+        outcomeArrangement: OutcomeArrangement.UPLOAD_ORDER,
       }
 
       await saveLearningMasteryGradebookSettings('123', settings)
@@ -267,9 +281,12 @@ describe('apiClient', () => {
             secondary_info_display: 'none',
             show_student_avatars: true,
             show_students_with_no_results: false,
+            show_outcomes_with_no_results: false,
+            show_unpublished_assignments: false,
             name_display_format: 'first_last',
             students_per_page: 15,
             score_display_format: 'icon_only',
+            outcome_arrangement: 'upload_order',
           },
         },
       )
@@ -282,6 +299,7 @@ describe('apiClient', () => {
         nameDisplayFormat: NameDisplayFormat.LAST_FIRST,
         studentsPerPage: DEFAULT_STUDENTS_PER_PAGE,
         scoreDisplayFormat: ScoreDisplayFormat.ICON_ONLY,
+        outcomeArrangement: OutcomeArrangement.UPLOAD_ORDER,
       }
 
       await saveLearningMasteryGradebookSettings('123', settings)
@@ -293,9 +311,12 @@ describe('apiClient', () => {
             secondary_info_display: 'none',
             show_student_avatars: false,
             show_students_with_no_results: false,
+            show_outcomes_with_no_results: false,
+            show_unpublished_assignments: false,
             name_display_format: 'last_first',
             students_per_page: 15,
             score_display_format: 'icon_only',
+            outcome_arrangement: 'upload_order',
           },
         },
       )
@@ -308,6 +329,7 @@ describe('apiClient', () => {
         nameDisplayFormat: NameDisplayFormat.FIRST_LAST,
         studentsPerPage: DEFAULT_STUDENTS_PER_PAGE,
         scoreDisplayFormat: ScoreDisplayFormat.ICON_AND_POINTS,
+        outcomeArrangement: OutcomeArrangement.UPLOAD_ORDER,
       }
 
       await saveLearningMasteryGradebookSettings('123', settings)
@@ -319,9 +341,42 @@ describe('apiClient', () => {
             secondary_info_display: 'none',
             show_student_avatars: false,
             show_students_with_no_results: false,
+            show_outcomes_with_no_results: false,
+            show_unpublished_assignments: false,
             name_display_format: 'first_last',
             students_per_page: 15,
             score_display_format: 'icon_and_points',
+            outcome_arrangement: 'upload_order',
+          },
+        },
+      )
+    })
+
+    it('includes show_unpublished_assignments when filter is enabled', async () => {
+      const settings = {
+        secondaryInfoDisplay: SecondaryInfoDisplay.NONE,
+        displayFilters: [DisplayFilter.SHOW_UNPUBLISHED_ASSIGNMENTS],
+        nameDisplayFormat: NameDisplayFormat.FIRST_LAST,
+        studentsPerPage: DEFAULT_STUDENTS_PER_PAGE,
+        scoreDisplayFormat: ScoreDisplayFormat.ICON_ONLY,
+        outcomeArrangement: OutcomeArrangement.UPLOAD_ORDER,
+      }
+
+      await saveLearningMasteryGradebookSettings('123', settings)
+
+      expect(mockedAxios.put).toHaveBeenCalledWith(
+        '/api/v1/courses/123/learning_mastery_gradebook_settings',
+        {
+          learning_mastery_gradebook_settings: {
+            secondary_info_display: 'none',
+            show_student_avatars: false,
+            show_students_with_no_results: false,
+            show_outcomes_with_no_results: false,
+            show_unpublished_assignments: true,
+            name_display_format: 'first_last',
+            students_per_page: 15,
+            score_display_format: 'icon_only',
+            outcome_arrangement: 'upload_order',
           },
         },
       )
@@ -362,6 +417,70 @@ describe('apiClient', () => {
 
       expect(response.data).toEqual(mockStudents)
       expect(response.status).toBe(200)
+    })
+  })
+
+  describe('saveOutcomeOrder', () => {
+    it('calls the correct endpoint with outcome order data', async () => {
+      const outcomes = [
+        {
+          id: '1',
+          title: 'Outcome 1',
+          calculation_method: 'highest',
+          mastery_points: 3,
+          points_possible: 3,
+          ratings: [],
+        },
+        {
+          id: '2',
+          title: 'Outcome 2',
+          calculation_method: 'highest',
+          mastery_points: 3,
+          points_possible: 3,
+          ratings: [],
+        },
+        {
+          id: '3',
+          title: 'Outcome 3',
+          calculation_method: 'highest',
+          mastery_points: 3,
+          points_possible: 3,
+          ratings: [],
+        },
+      ]
+
+      await saveOutcomeOrder('123', outcomes)
+
+      expect(mockedAxios.post).toHaveBeenCalledWith('/api/v1/courses/123/assign_outcome_order', [
+        {outcome_id: 1, position: 0},
+        {outcome_id: 2, position: 1},
+        {outcome_id: 3, position: 2},
+      ])
+    })
+
+    it('accepts numeric courseId', async () => {
+      const outcomes = [
+        {
+          id: 42,
+          title: 'Outcome',
+          calculation_method: 'highest',
+          mastery_points: 3,
+          points_possible: 3,
+          ratings: [],
+        },
+      ]
+
+      await saveOutcomeOrder(456, outcomes)
+
+      expect(mockedAxios.post).toHaveBeenCalledWith('/api/v1/courses/456/assign_outcome_order', [
+        {outcome_id: 42, position: 0},
+      ])
+    })
+
+    it('handles empty outcome array', async () => {
+      await saveOutcomeOrder('123', [])
+
+      expect(mockedAxios.post).toHaveBeenCalledWith('/api/v1/courses/123/assign_outcome_order', [])
     })
   })
 })

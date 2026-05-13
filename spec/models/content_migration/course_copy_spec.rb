@@ -63,7 +63,7 @@ describe ContentMigration do
     end
 
     it "records the job id" do
-      allow(Delayed::Worker).to receive(:current_job).and_return(double("Delayed::Job", id: 123))
+      allow(Delayed::Worker).to receive(:current_job).and_return(instance_double(Delayed::Job, id: 123))
       run_course_copy
       expect(@cm.reload.migration_settings[:job_ids]).to eq([123])
     end
@@ -561,8 +561,7 @@ describe ContentMigration do
                                        })
 
       tool = reg.deployments.first
-
-      # For asserting context controls don't copy
+      Lti::ContextControl.create!(course: @copy_from, deployment: tool, available: false)
       reg.new_external_tool(@copy_from)
 
       @copy_from.lti_resource_links.create!(
@@ -606,7 +605,9 @@ describe ContentMigration do
       expect(@copy_to.tab_configuration).to eq @copy_from.tab_configuration
 
       expect(@copy_to.lti_resource_links.size).to eq 2
-      expect(Lti::ContextControl.where(course: @copy_to).size).to eq 0
+      controls = Lti::ContextControl.where(context: @copy_to)
+      expect(controls.size).to eq 1
+      expect(controls.first.deployment.context).to eq @copy_to
       rla = @copy_to.lti_resource_links.find { |rl| rl.lookup_uuid == "1b302c1e-c0a2-42dc-88b6-c029699a7c7a" }
       expect(rla.url).to eq "http://example.com/resource-link-url"
 
@@ -799,7 +800,7 @@ describe ContentMigration do
       tag1_to.reload
       tag2_to.reload
 
-      expect(tag1_to).to_not be_deleted
+      expect(tag1_to).not_to be_deleted
       expect(tag2_to).to be_deleted
     end
 
@@ -831,41 +832,38 @@ describe ContentMigration do
     it "changes user linked files to course linked files" do
       image = attachment_model(context: @teacher, display_name: "cn_image.jpg", uploaded_data: fixture_file_upload("cn_image.jpg"))
       body = <<~HTML
-        <p><img src="/users/#{@teacher.id}/files/#{image.id}/preview"></p>
+        <p><img src="/users/#{@teacher.id}/files/#{image.id}/preview?verifier=#{image.uuid}"></p>
       HTML
       page = @copy_from.wiki_pages.create!(title: "some page", body:, updating_user: @teacher)
 
       run_course_copy
 
-      image_to = @copy_to.attachments.find_by(context: @copy_to, migration_id: mig_id(image))
+      image_to = @copy_to.attachments.find_by(migration_id: mig_id(image))
       page_to = @copy_to.wiki_pages.find_by(migration_id: mig_id(page))
-      expect(page_to.body).to include "/courses/#{@copy_to.id}/files/#{image_to.id}/preview"
+      expect(page_to.body).to eq(%(<p><img src="/courses/#{@copy_to.id}/files/#{image_to.id}/preview"></p>))
       expect(image_to.folder).to eq Folder.media_folder(@copy_to)
       expect(image_to.folder.hidden).to be_truthy
     end
 
     context "media objects" do
       before do
-        kaltura_double = double("kaltura")
+        kaltura_double = instance_double(CanvasKaltura::ClientV3)
+        flavor_asset = {
+          isOriginal: 1,
+          containerFormat: "mp4",
+          fileExt: "mp4",
+          id: "one",
+          size: 15,
+        }
         allow(kaltura_double).to receive(:startSession)
-        # rubocop:disable RSpec/ReceiveMessages
-        allow(kaltura_double).to receive(:flavorAssetGetByEntryId).and_return([
-                                                                                {
-                                                                                  isOriginal: 1,
-                                                                                  containerFormat: "mp4",
-                                                                                  fileExt: "mp4",
-                                                                                  id: "one",
-                                                                                  size: 15,
-                                                                                }
-                                                                              ])
-        allow(kaltura_double).to receive(:flavorAssetGetOriginalAsset).and_return(kaltura_double.flavorAssetGetByEntryId.first)
-        allow(kaltura_double).to receive(:media_sources).and_return([{
-                                                                      isOriginal: "0",
-                                                                      fileExt: "mp4",
-                                                                      url: "http://example.com/media_path",
-                                                                      content_type: "video/mp4"
-                                                                    }])
-        # rubocop:enable RSpec/ReceiveMessages
+        allow(kaltura_double).to receive_messages(flavorAssetGetByEntryId: [flavor_asset],
+                                                  flavorAssetGetOriginalAsset: flavor_asset,
+                                                  media_sources: [{
+                                                    isOriginal: "0",
+                                                    fileExt: "mp4",
+                                                    url: "http://example.com/media_path",
+                                                    content_type: "video/mp4"
+                                                  }])
         allow(CanvasKaltura::ClientV3).to receive_messages(config: true, new: kaltura_double)
       end
 
@@ -1072,7 +1070,7 @@ describe ContentMigration do
         run_course_copy
         media_to = @copy_to.attachments.find_by(context: @copy_to, migration_id: mig_id(media))
         expect(@copy_to.media_objects.count).to eq 0
-        expect(@copy_to.syllabus_body).to include "/media_attachments_iframe/#{media_to.id}?type=video&amp;embedded=true"
+        expect(@copy_to.syllabus_body).to include "/media_attachments_iframe/#{media_to.id}?type=video&embedded=true"
         expect(@copy_to.attachment_associations.pluck(:attachment_id)).to include(media_to.id)
       end
 
@@ -1332,9 +1330,9 @@ describe ContentMigration do
       run_course_copy
 
       new_mod.reload
-      expect(new_mod).to_not be_deleted
+      expect(new_mod).not_to be_deleted
       new_mod.content_tags.each do |new_tag|
-        expect(new_tag).to_not be_deleted
+        expect(new_tag).not_to be_deleted
       end
     end
 
@@ -1467,6 +1465,40 @@ describe ContentMigration do
         run_course_copy
 
         expect(@copy_to.reload.late_policy.late_submission_deduction).to eq 10.0
+      end
+
+      it "does not copy late policy when LatePolicy is in importer_skips" do
+        @copy_from.create_late_policy!(missing_submission_deduction_enabled: true, late_submission_deduction: 15.0, late_submission_interval: "day")
+
+        @cm.copy_options = { everything: true }
+        @cm.migration_settings = { importer_skips: ["LatePolicy"] }
+        @cm.save!
+
+        run_course_copy
+
+        expect(@copy_to.reload.late_policy).to be_nil
+      end
+
+      it "does not apply missing submission zeros when LatePolicy is in importer_skips" do
+        student = User.create!
+        @copy_to.enroll_student(student, enrollment_state: "active")
+        @copy_to.create_late_policy!(missing_submission_deduction_enabled: true, missing_submission_deduction: 100)
+        assignment = @copy_from.assignments.create!(
+          title: "Past Due",
+          due_at: 1.day.ago,
+          submission_types: "online_text_entry",
+          points_possible: 10
+        )
+
+        @cm.copy_options = { everything: true }
+        @cm.migration_settings = { importer_skips: ["LatePolicy"] }
+        @cm.save!
+
+        run_course_copy
+
+        copied_assignment = @copy_to.assignments.find_by(title: assignment.title)
+        submission = copied_assignment.submissions.find_by(user: student)
+        expect(submission&.score).to be_nil
       end
     end
 

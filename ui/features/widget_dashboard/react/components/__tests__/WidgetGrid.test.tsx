@@ -16,67 +16,92 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-// Mock react-beautiful-dnd FIRST before any imports
-jest.mock('react-beautiful-dnd', () => ({
-  DragDropContext: ({children}: any) => <div data-testid="drag-drop-context">{children}</div>,
-  Droppable: ({children, droppableId}: any) => (
-    <div data-testid={`droppable-${droppableId}`}>
-      {children(
+import React from 'react'
+
+// Mock react-beautiful-dnd AFTER React import
+vi.mock('react-beautiful-dnd', () => ({
+  DragDropContext: ({children}: any) =>
+    React.createElement('div', {'data-testid': 'drag-drop-context'}, children),
+  Droppable: ({children, droppableId}: any) =>
+    React.createElement(
+      'div',
+      {'data-testid': `droppable-${droppableId}`},
+      children(
         {
-          innerRef: jest.fn(),
+          innerRef: vi.fn(),
           droppableProps: {'data-rbd-droppable-id': droppableId},
           placeholder: null,
         },
         {isDraggingOver: false},
-      )}
-    </div>
-  ),
-  Draggable: ({children, draggableId, index}: any) => (
-    <div data-testid={`draggable-${draggableId}`} data-rbd-draggable-id={draggableId}>
-      {children(
+      ),
+    ),
+  Draggable: ({children, draggableId, index}: any) =>
+    React.createElement(
+      'div',
+      {
+        'data-testid': `draggable-${draggableId}`,
+        'data-rbd-draggable-id': draggableId,
+      },
+      children(
         {
-          innerRef: jest.fn(),
+          innerRef: vi.fn(),
           draggableProps: {'data-rbd-draggable-id': draggableId},
           dragHandleProps: {'data-rbd-drag-handle-draggable-id': draggableId},
         },
         {isDragging: false},
-      )}
-    </div>
-  ),
+      ),
+    ),
 }))
 
 // Mock the WidgetRegistry to avoid dependency issues
-jest.mock('../WidgetRegistry', () => ({
-  getWidget: jest.fn(() => ({
-    component: ({widget}: any) => <div data-testid={`widget-${widget.id}`}>{widget.title}</div>,
+vi.mock('../WidgetRegistry', () => ({
+  getWidget: vi.fn(() => ({
+    component: ({widget}: any) =>
+      React.createElement('div', {'data-testid': `widget-${widget.id}`}, widget.title),
     displayName: 'Mock Widget',
     description: 'Mock widget for testing',
   })),
 }))
-
-import React from 'react'
 import {render, screen} from '@testing-library/react'
+import {QueryClient, QueryClientProvider} from '@tanstack/react-query'
 import WidgetGrid from '../WidgetGrid'
-import type {WidgetConfig} from '../../types'
+import {getWidget} from '../WidgetRegistry'
+import type {BaseWidgetProps, WidgetConfig} from '../../types'
 import {ResponsiveProvider} from '../../hooks/useResponsiveContext'
 import {WidgetLayoutProvider} from '../../hooks/useWidgetLayout'
 import {WidgetDashboardEditProvider} from '../../hooks/useWidgetDashboardEdit'
+import {WidgetDashboardProvider} from '../../hooks/useWidgetDashboardContext'
+import {PlatformTestWrapper} from '../../__tests__/testHelpers'
 
 type Props = {
   config: WidgetConfig
   matches?: string[]
+  currentUserRoles?: string[]
 }
 
 const setUp = (props: Props, isEditMode = false) => {
-  const {matches = ['desktop'], ...gridProps} = props
+  const {matches = ['desktop'], currentUserRoles, ...gridProps} = props
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {retry: false},
+      mutations: {retry: false},
+    },
+  })
+
   return render(
-    <ResponsiveProvider matches={matches}>
-      <WidgetDashboardEditProvider>
-        <WidgetLayoutProvider>
-          <WidgetGrid {...gridProps} isEditMode={isEditMode} />
-        </WidgetLayoutProvider>
-      </WidgetDashboardEditProvider>
-    </ResponsiveProvider>,
+    <PlatformTestWrapper>
+      <QueryClientProvider client={queryClient}>
+        <WidgetDashboardProvider currentUserRoles={currentUserRoles}>
+          <ResponsiveProvider matches={matches}>
+            <WidgetDashboardEditProvider>
+              <WidgetLayoutProvider>
+                <WidgetGrid {...gridProps} isEditMode={isEditMode} />
+              </WidgetLayoutProvider>
+            </WidgetDashboardEditProvider>
+          </ResponsiveProvider>
+        </WidgetDashboardProvider>
+      </QueryClientProvider>
+    </PlatformTestWrapper>,
   )
 }
 
@@ -123,7 +148,7 @@ const indexInParent = (el: HTMLElement) => Array.from(el.parentNode!.children).i
 const mockMatchMedia = (width: number) => {
   Object.defineProperty(window, 'matchMedia', {
     writable: true,
-    value: jest.fn().mockImplementation((query: string) => {
+    value: vi.fn().mockImplementation((query: string) => {
       let matches = false
 
       // Mobile: maxWidth: '639px'
@@ -143,11 +168,11 @@ const mockMatchMedia = (width: number) => {
         matches,
         media: query,
         onchange: null,
-        addListener: jest.fn(),
-        removeListener: jest.fn(),
-        addEventListener: jest.fn(),
-        removeEventListener: jest.fn(),
-        dispatchEvent: jest.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
       }
     }),
   })
@@ -160,7 +185,7 @@ describe('WidgetGrid', () => {
   })
 
   afterEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   describe('Desktop Layout (≥1024px)', () => {
@@ -194,7 +219,7 @@ describe('WidgetGrid', () => {
       mockMatchMedia(800)
     })
 
-    it('renders single column layout', () => {
+    it('renders stacked column layout', () => {
       const {getByTestId} = setUp({...buildDefaultProps(), matches: ['tablet']})
       const grid = getByTestId('widget-columns')
 
@@ -202,17 +227,55 @@ describe('WidgetGrid', () => {
       expect(grid).toHaveStyle({
         display: 'flex',
       })
-      expect(grid.childElementCount).toBe(1)
+      expect(grid.childElementCount).toBe(2)
+
+      expect(getByTestId('widget-column-1-stacked')).toBeInTheDocument()
+      expect(getByTestId('widget-column-2-stacked')).toBeInTheDocument()
     })
 
-    it('sorts widgets in proper stacking order (relative)', () => {
+    it('groups widgets by column (column 1 first, then column 2)', () => {
       const {getAllByTestId} = setUp({...buildDefaultProps(), matches: ['tablet']})
       const widgetContainers = getAllByTestId(/^widget-container-/)
 
-      // Expected order: widget-1 (relative 1), widget-2 (relative 2), widget-3 (relative 3)
       expect(widgetContainers[0]).toHaveAttribute('data-testid', 'widget-container-widget-1')
-      expect(widgetContainers[1]).toHaveAttribute('data-testid', 'widget-container-widget-2')
-      expect(widgetContainers[2]).toHaveAttribute('data-testid', 'widget-container-widget-3')
+      expect(widgetContainers[1]).toHaveAttribute('data-testid', 'widget-container-widget-3')
+      expect(widgetContainers[2]).toHaveAttribute('data-testid', 'widget-container-widget-2')
+    })
+
+    it('supports edit mode with drag-and-drop', () => {
+      const {getByTestId} = setUp({...buildDefaultProps(), matches: ['tablet']}, true)
+
+      expect(getByTestId('drag-drop-context')).toBeInTheDocument()
+      expect(getByTestId('droppable-column-1')).toBeInTheDocument()
+      expect(getByTestId('droppable-column-2')).toBeInTheDocument()
+    })
+
+    it('renders add widget placeholders in edit mode', () => {
+      const {getAllByText} = setUp({...buildDefaultProps(), matches: ['tablet']}, true)
+
+      const addButtons = getAllByText('Add widget')
+      expect(addButtons.length).toBeGreaterThanOrEqual(2)
+    })
+  })
+
+  describe('Mobile Layout (<640px)', () => {
+    beforeEach(() => {
+      mockMatchMedia(400)
+    })
+
+    it('renders same stacked layout as tablet', () => {
+      const {getByTestId} = setUp({...buildDefaultProps(), matches: ['mobile']})
+
+      expect(getByTestId('widget-column-1-stacked')).toBeInTheDocument()
+      expect(getByTestId('widget-column-2-stacked')).toBeInTheDocument()
+    })
+
+    it('supports edit mode with drag-and-drop', () => {
+      const {getByTestId} = setUp({...buildDefaultProps(), matches: ['mobile']}, true)
+
+      expect(getByTestId('drag-drop-context')).toBeInTheDocument()
+      expect(getByTestId('droppable-column-1')).toBeInTheDocument()
+      expect(getByTestId('droppable-column-2')).toBeInTheDocument()
     })
   })
 
@@ -250,6 +313,294 @@ describe('WidgetGrid', () => {
       expect(getByTestId('widget-widget-1')).toHaveTextContent('Widget 1')
       expect(getByTestId('widget-widget-2')).toHaveTextContent('Widget 2')
       expect(getByTestId('widget-widget-3')).toHaveTextContent('Widget 3')
+    })
+  })
+
+  describe('Edit Mode', () => {
+    it('renders placeholder buttons at top and after each widget in each column', () => {
+      const {getByTestId, getAllByText} = setUp(buildDefaultProps(), true)
+
+      const column1 = getByTestId('widget-column-1')
+      const column2 = getByTestId('widget-column-2')
+
+      const firstElementCol1 = column1.children[0] as HTMLElement
+      const firstElementCol2 = column2.children[0] as HTMLElement
+
+      expect(firstElementCol1.tagName).toBe('BUTTON')
+      expect(firstElementCol2.tagName).toBe('BUTTON')
+
+      const addButtons = getAllByText('Add widget')
+      expect(addButtons).toHaveLength(5)
+    })
+
+    it('renders placeholder buttons for empty columns', () => {
+      const emptyConfig: WidgetConfig = {
+        columns: 2,
+        widgets: [],
+      }
+
+      const {getByTestId} = setUp({config: emptyConfig}, true)
+
+      const column1 = getByTestId('widget-column-1')
+      const column2 = getByTestId('widget-column-2')
+
+      expect(column1).toBeInTheDocument()
+      expect(column2).toBeInTheDocument()
+    })
+  })
+
+  describe('widgetRenderer.props passthrough', () => {
+    it('spreads registry-declared props onto the rendered widget component', () => {
+      const WidgetWithInjectedProp = ({
+        widget,
+        injectedProp,
+      }: BaseWidgetProps & {injectedProp?: string}) => (
+        <div data-testid={`widget-${widget.id}`} data-injected-prop={injectedProp} />
+      )
+      vi.mocked(getWidget).mockReturnValueOnce({
+        component: WidgetWithInjectedProp,
+        displayName: 'Mock Widget With Props',
+        description: 'Mock widget that receives extra props from the registry',
+        props: {injectedProp: 'yes'},
+      })
+
+      setUp(buildDefaultProps())
+
+      expect(screen.getByTestId('widget-widget-1')).toHaveAttribute('data-injected-prop', 'yes')
+    })
+  })
+
+  describe('Edit Mode — interaction blocking', () => {
+    // Widget that renders focusable content AND the two edit controls,
+    // using the exact data-testid patterns WidgetGrid filters on.
+    const InteractiveWidget = ({widget, dragHandleProps}: BaseWidgetProps) =>
+      React.createElement(
+        'div',
+        {'data-testid': `widget-${widget.id}`},
+        React.createElement(
+          'a',
+          {href: '/test', 'data-testid': `${widget.id}-content-link`},
+          'content link',
+        ),
+        React.createElement(
+          'button',
+          {'data-testid': `${widget.id}-drag-handle`, ...dragHandleProps},
+          'drag',
+        ),
+        React.createElement('button', {'data-testid': `${widget.id}-remove-button`}, 'remove'),
+      )
+
+    const defaultInteractiveImpl = () => ({
+      component: InteractiveWidget,
+      displayName: 'Interactive Mock',
+      description: 'Interactive mock widget for blocking tests',
+    })
+
+    const defaultInertImpl = () => ({
+      component: ({widget}: any) =>
+        React.createElement('div', {'data-testid': `widget-${widget.id}`}, widget.title),
+      displayName: 'Mock Widget',
+      description: 'Mock widget for testing',
+    })
+
+    beforeEach(() => {
+      vi.mocked(getWidget).mockImplementation(defaultInteractiveImpl)
+    })
+
+    afterEach(() => {
+      // vi.clearAllMocks() in the outer afterEach clears call history but not the
+      // base implementation, so we must restore it explicitly here.
+      vi.mocked(getWidget).mockImplementation(defaultInertImpl)
+    })
+
+    it('renders an aria-hidden overlay over each widget in edit mode', () => {
+      const {container} = setUp(buildDefaultProps(), true)
+
+      // Filter to only the overlays we inject (position:absolute, zIndex:1) since
+      // PlatformUiProvider also renders other aria-hidden elements in the tree.
+      const overlays = Array.from(container.querySelectorAll('[aria-hidden="true"]')).filter(
+        el =>
+          (el as HTMLElement).style.position === 'absolute' &&
+          (el as HTMLElement).style.zIndex === '1',
+      )
+      expect(overlays).toHaveLength(3)
+    })
+
+    it('does not render an aria-hidden overlay in view mode', () => {
+      const {container} = setUp(buildDefaultProps(), false)
+
+      expect(container.querySelectorAll('[aria-hidden="true"]')).toHaveLength(0)
+    })
+
+    it('overlay does not set a cursor style', () => {
+      const {container} = setUp(buildDefaultProps(), true)
+
+      const overlay = container.querySelector('[aria-hidden="true"]') as HTMLElement
+      expect(overlay.style.cursor).toBe('')
+    })
+
+    it('injects a <style> tag with remove-button elevation rules in edit mode', () => {
+      const {container} = setUp(buildDefaultProps(), true)
+
+      const styleTag = container.querySelector('style')
+      expect(styleTag).toBeInTheDocument()
+      expect(styleTag!.textContent).toContain('[data-testid$="-remove-button"]')
+      expect(styleTag!.textContent).toContain('z-index: 2')
+    })
+
+    it('does not inject a <style> tag in view mode', () => {
+      const {container} = setUp(buildDefaultProps(), false)
+
+      expect(container.querySelector('style')).not.toBeInTheDocument()
+    })
+
+    it('sets tabindex="-1" on focusable content elements in edit mode', () => {
+      setUp(buildDefaultProps(), true)
+
+      const contentLink = document.querySelector(
+        '[data-testid="widget-1-content-link"]',
+      ) as HTMLElement
+      expect(contentLink).toBeInTheDocument()
+      expect(contentLink).toHaveAttribute('tabindex', '-1')
+      expect(contentLink).toHaveAttribute('data-original-tabindex')
+    })
+
+    it('does not block focusable content elements in view mode', () => {
+      setUp(buildDefaultProps(), false)
+
+      const contentLink = document.querySelector(
+        '[data-testid="widget-1-content-link"]',
+      ) as HTMLElement
+      expect(contentLink).toBeInTheDocument()
+      expect(contentLink).not.toHaveAttribute('tabindex', '-1')
+      expect(contentLink).not.toHaveAttribute('data-original-tabindex')
+    })
+
+    it('does not disable the drag handle in edit mode', () => {
+      setUp(buildDefaultProps(), true)
+
+      const dragHandle = document.querySelector(
+        '[data-testid="widget-1-drag-handle"]',
+      ) as HTMLElement
+      expect(dragHandle).toBeInTheDocument()
+      expect(dragHandle).not.toHaveAttribute('tabindex', '-1')
+      expect(dragHandle).not.toHaveAttribute('data-original-tabindex')
+    })
+
+    it('does not disable the remove button in edit mode', () => {
+      setUp(buildDefaultProps(), true)
+
+      const removeBtn = document.querySelector(
+        '[data-testid="widget-1-remove-button"]',
+      ) as HTMLElement
+      expect(removeBtn).toBeInTheDocument()
+      expect(removeBtn).not.toHaveAttribute('tabindex', '-1')
+      expect(removeBtn).not.toHaveAttribute('data-original-tabindex')
+    })
+
+    it('restores tabindex when exiting edit mode', () => {
+      const props = buildDefaultProps()
+      const queryClient = new QueryClient({
+        defaultOptions: {queries: {retry: false}, mutations: {retry: false}},
+      })
+
+      const Wrapper = ({isEditMode}: {isEditMode: boolean}) => (
+        <PlatformTestWrapper>
+          <QueryClientProvider client={queryClient}>
+            <WidgetDashboardProvider>
+              <ResponsiveProvider matches={['desktop']}>
+                <WidgetDashboardEditProvider>
+                  <WidgetLayoutProvider>
+                    <WidgetGrid {...props} isEditMode={isEditMode} />
+                  </WidgetLayoutProvider>
+                </WidgetDashboardEditProvider>
+              </ResponsiveProvider>
+            </WidgetDashboardProvider>
+          </QueryClientProvider>
+        </PlatformTestWrapper>
+      )
+
+      const {rerender} = render(<Wrapper isEditMode={true} />)
+
+      expect(document.querySelector('[data-testid="widget-1-content-link"]')).toHaveAttribute(
+        'tabindex',
+        '-1',
+      )
+
+      rerender(<Wrapper isEditMode={false} />)
+
+      // Re-query after rerender: switching edit mode remounts the widget tree
+      // (Draggable → Flex.Item), so the pre-rerender reference is stale.
+      const restoredLink = document.querySelector('[data-testid="widget-1-content-link"]')
+      expect(restoredLink).not.toHaveAttribute('tabindex', '-1')
+      expect(restoredLink).not.toHaveAttribute('data-original-tabindex')
+    })
+
+    it('enhances dragHandleProps with position:relative and zIndex:2 in edit mode', () => {
+      let capturedProps: any = null
+      vi.mocked(getWidget).mockImplementation(() => ({
+        component: ({widget, dragHandleProps}: BaseWidgetProps) => {
+          capturedProps = dragHandleProps ?? null
+          return React.createElement('div', {'data-testid': `widget-${widget.id}`})
+        },
+        displayName: 'Capturing Mock',
+        description: 'Captures dragHandleProps for assertion',
+      }))
+
+      setUp(buildDefaultProps(), true)
+
+      expect(capturedProps).not.toBeNull()
+      expect(capturedProps.style).toEqual({position: 'relative', zIndex: 2})
+    })
+
+    it('does not enhance dragHandleProps in view mode', () => {
+      let capturedProps: any = undefined
+      vi.mocked(getWidget).mockImplementation(() => ({
+        component: ({widget, dragHandleProps}: BaseWidgetProps) => {
+          capturedProps = dragHandleProps
+          return React.createElement('div', {'data-testid': `widget-${widget.id}`})
+        },
+        displayName: 'Capturing Mock',
+        description: 'Captures dragHandleProps for assertion',
+      }))
+
+      setUp(buildDefaultProps(), false)
+
+      // In view mode there is no Draggable, so dragHandleProps is undefined
+      expect(capturedProps).toBeUndefined()
+    })
+  })
+
+  describe('observer filtering', () => {
+    const configWithInbox: WidgetConfig = {
+      columns: 2,
+      widgets: [
+        {
+          id: 'inbox-widget-1',
+          type: 'inbox',
+          position: {col: 1, row: 1, relative: 1},
+          title: 'Inbox',
+        },
+        {
+          id: 'other-widget-1',
+          type: 'test-widget',
+          position: {col: 2, row: 1, relative: 2},
+          title: 'Other Widget',
+        },
+      ],
+    }
+
+    it('hides pre-existing inbox widget for observers', () => {
+      setUp({config: configWithInbox, currentUserRoles: ['observer', 'user']})
+
+      expect(screen.queryByTestId('widget-container-inbox-widget-1')).not.toBeInTheDocument()
+      expect(screen.getByTestId('widget-container-other-widget-1')).toBeInTheDocument()
+    })
+
+    it('shows inbox widget for non-observers', () => {
+      setUp({config: configWithInbox})
+
+      expect(screen.getByTestId('widget-container-inbox-widget-1')).toBeInTheDocument()
     })
   })
 })

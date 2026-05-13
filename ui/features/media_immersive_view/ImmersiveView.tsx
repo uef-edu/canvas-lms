@@ -18,11 +18,10 @@
 
 import CanvasStudioPlayer from '@canvas/canvas-studio-player'
 import {NoTranscript} from './components/NoTranscript'
-// @ts-expect-error
 import styles from './ImmersiveView.module.css'
 import {ImmersiveViewBackButton} from './components/ImmersiveViewBackButton'
 import {useMedia} from 'react-use'
-import {useScope as createI18nScope} from '@canvas/i18n'
+import {useTranslation} from '@canvas/i18next'
 import {Heading} from '@instructure/ui-heading'
 
 export type ImmersiveViewProps = {
@@ -32,19 +31,24 @@ export type ImmersiveViewProps = {
   isAttachment?: boolean
 }
 
-const I18n = createI18nScope('media_immersive_view')
-
 export function ImmersiveView({id, title, attachmentId, isAttachment}: ImmersiveViewProps) {
+  const {t} = useTranslation('media_immersive_view')
   const rollingTranscriptElementId = 'immersive-view-transcript-root'
   const isTablet = !useMedia('(min-width: 769px)')
   const playerHeight = isTablet ? 'calc(100vw / (16 / 9) + 40px)' : '490px'
 
+  // Check for custom_embed_hide_header URL parameter
+  const searchParams = new URLSearchParams(window.location.search)
+  const hideHeader = searchParams.get('custom_embed_hide_header') === 'true'
+
   return (
     <div className={styles.immersiveView}>
-      <div className={styles.immersiveViewHeader}>
-        <h1 className={styles.immersiveViewTitle}>{title}</h1>
-        <ImmersiveViewBackButton />
-      </div>
+      {!hideHeader && (
+        <div className={styles.immersiveViewHeader}>
+          <h1 className={styles.immersiveViewTitle}>{title}</h1>
+          <ImmersiveViewBackButton />
+        </div>
+      )}
 
       <div className={styles.immersiveViewContent}>
         <CanvasStudioPlayer
@@ -64,7 +68,7 @@ export function ImmersiveView({id, title, attachmentId, isAttachment}: Immersive
 
         {isTablet && (
           <Heading variant="titleCardRegular" level="h2" margin="small">
-            {I18n.t('Transcript')}
+            {t('Transcript')}
           </Heading>
         )}
 

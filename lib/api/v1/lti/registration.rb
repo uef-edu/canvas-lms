@@ -26,7 +26,7 @@ module Api::V1::Lti::Registration
   include Api::V1::Lti::RegistrationAccountBinding
 
   JSON_ATTRS = %w[
-    id account_id root_account_id internal_service vendor name admin_nickname workflow_state created_at updated_at description
+    id account_id root_account_id internal_service vendor name admin_nickname workflow_state created_at updated_at description lock_deploying template_registration_id
   ].freeze
 
   OVERLAY_VERSION_DEFAULT_LIMIT = 5
@@ -59,10 +59,19 @@ module Api::V1::Lti::Registration
     api_json(registration, user, session, only: JSON_ATTRS).tap do |json|
       json["inherited"] = registration.inherited_for?(context)
       json["lti_version"] = registration.lti_version
-      json["icon_url"] = registration.icon_url
+      # Always use preloaded overlay to compute icon_url to avoid n+1 queries
+      # Even if overlay is not included in the response, we need it for icon_url computation
+      # If overlay is nil, don't include overlay to avoid triggering overlay_for query
+      json["icon_url"] = if overlay.present?
+                           registration.internal_lti_configuration(overlay:, include_overlay: true).dig(:launch_settings, :icon_url)
+                         else
+                           registration.internal_lti_configuration(include_overlay: false).dig(:launch_settings, :icon_url)
+                         end
       json["dynamic_registration"] = true if registration.dynamic_registration?
       json["developer_key_id"] = registration.developer_key&.global_id
       json["ims_registration_id"] = registration.ims_registration&.id
+      json["dynamic_registration_url"] = registration.ims_registration&.registration_url
+      json["reinstall_disabled"] = registration.ims_registration&.reinstall_disabled?
       json["manual_configuration_id"] = registration.manual_configuration&.id
 
       if registration.site_admin?
@@ -110,7 +119,7 @@ module Api::V1::Lti::Registration
       end
 
       # Include pending update information if available
-      json["pending_update"] = pending_update&.global_id&.to_s
+      json["pending_update"] = pending_update&.id&.to_s
     end
   end
 end

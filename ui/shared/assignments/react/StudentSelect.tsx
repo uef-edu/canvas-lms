@@ -24,7 +24,7 @@ import {FormMessage} from '@instructure/ui-form-field'
 import {useAssignedStudents} from '../graphql/hooks/useAssignedStudents'
 import {CourseStudent} from '@canvas/assignments/graphql/teacher/AssignmentTeacherTypes'
 import {Spinner} from '@instructure/ui-spinner'
-import {debounce} from 'lodash'
+import {debounce} from 'es-toolkit/compat'
 import {useScope as createI18nScope} from '@canvas/i18n'
 
 const I18n = createI18nScope('peer_review_student_select')
@@ -183,6 +183,8 @@ const StudentSelect = ({
         id={inputId}
         isRequired={true}
         renderLabel={label}
+        placeholder={I18n.t('Start typing to search')}
+        renderAfterInput={() => null}
         inputRef={ref => handleInputRef(ref)}
         inputValue={inputValue}
         isShowingOptions={error ? false : showOptions}

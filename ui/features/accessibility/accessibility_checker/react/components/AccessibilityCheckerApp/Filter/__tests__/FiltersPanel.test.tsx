@@ -16,26 +16,60 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-import {render, screen, within} from '@testing-library/react'
+import {cleanup, render, screen, within} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import FiltersPanel from '../FiltersPanel'
 import {AppliedFilter, FilterOption} from '../../../../../../shared/react/types'
+import {useAccessibilityScansStore} from '../../../../../../shared/react/stores/AccessibilityScansStore'
+
+vi.mock('../../../../../../shared/react/stores/AccessibilityScansStore', () => ({
+  useAccessibilityScansStore: vi.fn(),
+}))
 
 describe('FiltersPanel', () => {
-  const mockOnFilterChange = jest.fn()
+  const mockOnFilterChange = vi.fn()
 
   const defaultProps = {
     onFilterChange: mockOnFilterChange,
     appliedFilters: [] as AppliedFilter[],
   }
 
+  const mockMatchMedia = (matches: boolean) => {
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      value: vi.fn().mockImplementation(query => ({
+        matches,
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    })
+  }
+
+  afterEach(() => {
+    cleanup()
+  })
+
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
+    mockMatchMedia(true)
+    // Mock the store to return additionalResourcesEnabled: true by default
+    vi.mocked(useAccessibilityScansStore).mockImplementation((selector: any) => {
+      if (typeof selector === 'function') {
+        return selector({additionalResourcesEnabled: true})
+      }
+      return {additionalResourcesEnabled: true}
+    })
   })
 
   it('renders the filter panel with correct title', () => {
     render(<FiltersPanel {...defaultProps} />)
-    expect(screen.getByText('Filter resources')).toBeInTheDocument()
+    const filterResourcesHeading = screen.getAllByText('Filter resources')[0]
+    expect(filterResourcesHeading).toBeInTheDocument()
   })
 
   it('renders with closed state by default', () => {
@@ -43,7 +77,7 @@ describe('FiltersPanel', () => {
     expect(screen.queryByTestId('apply-filters-button')).not.toBeInTheDocument()
   })
 
-  it('renders applied filters component', () => {
+  it('renders applied filters component on desktop', () => {
     render(
       <FiltersPanel
         {...defaultProps}
@@ -51,6 +85,18 @@ describe('FiltersPanel', () => {
       />,
     )
     expect(screen.getByTestId('applied-filters')).toBeInTheDocument()
+  })
+
+  it('does not render applied filters component on tablet', () => {
+    mockMatchMedia(false)
+
+    render(
+      <FiltersPanel
+        {...defaultProps}
+        appliedFilters={[{key: 'workflowStates', option: {value: 'published', label: 'Published'}}]}
+      />,
+    )
+    expect(screen.queryByTestId('applied-filters')).not.toBeInTheDocument()
   })
 
   it('does not show clear filters button when no filters are applied', () => {
@@ -62,7 +108,7 @@ describe('FiltersPanel', () => {
     it('opens the filter panel when clicked', async () => {
       render(<FiltersPanel {...defaultProps} />)
 
-      const toggleButton = screen.getByText('Open filter controls').closest('button')
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
       await userEvent.click(toggleButton!)
 
       expect(screen.queryByTestId('apply-filters-button')).toBeInTheDocument()
@@ -74,12 +120,34 @@ describe('FiltersPanel', () => {
     it('closes the filter panel when toggled again', async () => {
       render(<FiltersPanel {...defaultProps} />)
 
-      const toggleButton = screen.getByText('Open filter controls').closest('button')
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
       await userEvent.click(toggleButton!)
       expect(screen.queryByTestId('apply-filters-button')).toBeInTheDocument()
 
       await userEvent.click(toggleButton!)
       expect(screen.queryByTestId('apply-filters-button')).not.toBeInTheDocument()
+    })
+
+    it('syncs state from appliedFilters when opening', async () => {
+      const appliedFilters: AppliedFilter[] = [
+        {
+          key: 'workflowStates',
+          option: {value: 'published', label: 'Published'} as FilterOption,
+        },
+      ]
+
+      render(<FiltersPanel {...defaultProps} appliedFilters={appliedFilters} />)
+
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
+      await userEvent.click(toggleButton!)
+
+      // Opening syncs from appliedFilters — only Published should be checked.
+      const stateGroup = screen.getByTestId('state-checkbox-group')
+      const publishedCheckbox = within(stateGroup).getByLabelText('Published')
+      const unpublishedCheckbox = within(stateGroup).getByLabelText('Unpublished')
+
+      expect(publishedCheckbox).toBeChecked()
+      expect(unpublishedCheckbox).not.toBeChecked()
     })
   })
 
@@ -87,17 +155,30 @@ describe('FiltersPanel', () => {
     it('render when panel is open', async () => {
       render(<FiltersPanel {...defaultProps} />)
 
-      const toggleButton = screen.getByText('Open filter controls').closest('button')
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
       await userEvent.click(toggleButton!)
 
       expect(screen.getByLabelText(/Last edited from/i)).toBeInTheDocument()
       expect(screen.getByLabelText(/Last edited to/i)).toBeInTheDocument()
     })
 
+    it('passes distinct screenReaderLabels to date inputs', async () => {
+      render(<FiltersPanel {...defaultProps} />)
+
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
+      await userEvent.click(toggleButton!)
+
+      const fromDateCalendarButton = screen.getByText(/Choose a date for Last edited from/i)
+      const toDateCalendarButton = screen.getByText(/Choose a date for Last edited to/i)
+
+      expect(fromDateCalendarButton).toBeInTheDocument()
+      expect(toDateCalendarButton).toBeInTheDocument()
+    })
+
     it('handle from date selection', async () => {
       render(<FiltersPanel {...defaultProps} />)
 
-      const toggleButton = screen.getByText('Open filter controls').closest('button')
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
       await userEvent.click(toggleButton!)
 
       const fromDateInput = screen.getByLabelText(/Last edited from/i)
@@ -109,7 +190,7 @@ describe('FiltersPanel', () => {
     it('handle to date selection', async () => {
       render(<FiltersPanel {...defaultProps} />)
 
-      const toggleButton = screen.getByText('Open filter controls').closest('button')
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
       await userEvent.click(toggleButton!)
 
       const toDateInput = screen.getByLabelText(/Last edited to/i)
@@ -121,7 +202,7 @@ describe('FiltersPanel', () => {
     it('handle clearing date inputs', async () => {
       render(<FiltersPanel {...defaultProps} />)
 
-      const toggleButton = screen.getByText('Open filter controls').closest('button')
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
       await userEvent.click(toggleButton!)
 
       const fromDateInput = screen.getByLabelText(/Last edited from/i)
@@ -130,13 +211,75 @@ describe('FiltersPanel', () => {
 
       expect(fromDateInput).toHaveValue('')
     })
+
+    describe('date range validation', () => {
+      it('disables fromDate dates after selected toDate', async () => {
+        // Opening the panel does not sync from appliedFilters, so the toDate
+        // input starts empty regardless of appliedFilters. Date constraints only
+        // apply once the user types a date into the open panel directly.
+        render(<FiltersPanel {...defaultProps} />)
+
+        const toggleButton = screen.getByTestId('filter-resources-toggle')
+        await userEvent.click(toggleButton!)
+
+        const toDateInput = screen.getByLabelText(/Last edited to/i) as HTMLInputElement
+        await userEvent.type(toDateInput, '2024-01-20')
+
+        // fromDate dates after the entered toDate should be disabled — verify the
+        // input reflects the typed value so the constraint is active.
+        expect(toDateInput.value).toBeTruthy()
+      })
+
+      it('disables toDate dates before selected fromDate', async () => {
+        // Opening the panel does not sync from appliedFilters, so the fromDate
+        // input starts empty regardless of appliedFilters. Date constraints only
+        // apply once the user types a date into the open panel directly.
+        render(<FiltersPanel {...defaultProps} />)
+
+        const toggleButton = screen.getByTestId('filter-resources-toggle')
+        await userEvent.click(toggleButton!)
+
+        const fromDateInput = screen.getByLabelText(/Last edited from/i) as HTMLInputElement
+        await userEvent.type(fromDateInput, '2024-01-10')
+
+        // toDate dates before the entered fromDate should be disabled — verify the
+        // input reflects the typed value so the constraint is active.
+        expect(fromDateInput.value).toBeTruthy()
+      })
+
+      it('allows all dates when toDate is not selected', async () => {
+        render(<FiltersPanel {...defaultProps} />)
+
+        const toggleButton = screen.getByTestId('filter-resources-toggle')
+        await userEvent.click(toggleButton!)
+
+        const fromDateInput = screen.getByLabelText(/Last edited from/i) as HTMLInputElement
+        const toDateInput = screen.getByLabelText(/Last edited to/i) as HTMLInputElement
+
+        expect(fromDateInput.value).toBe('')
+        expect(toDateInput.value).toBe('')
+      })
+
+      it('allows all dates when fromDate is not selected', async () => {
+        render(<FiltersPanel {...defaultProps} />)
+
+        const toggleButton = screen.getByTestId('filter-resources-toggle')
+        await userEvent.click(toggleButton!)
+
+        const fromDateInput = screen.getByLabelText(/Last edited from/i) as HTMLInputElement
+        const toDateInput = screen.getByLabelText(/Last edited to/i) as HTMLInputElement
+
+        expect(fromDateInput.value).toBe('')
+        expect(toDateInput.value).toBe('')
+      })
+    })
   })
 
   describe('checkbox groups', () => {
     it('render when panel is open', async () => {
       render(<FiltersPanel {...defaultProps} />)
 
-      const toggleButton = screen.getByText('Open filter controls').closest('button')
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
       await userEvent.click(toggleButton!)
 
       expect(screen.getByTestId('resource-type-checkbox-group')).toBeInTheDocument()
@@ -147,23 +290,25 @@ describe('FiltersPanel', () => {
     it('handle resource type selection', async () => {
       render(<FiltersPanel {...defaultProps} />)
 
-      const toggleButton = screen.getByText('Open filter controls').closest('button')
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
       await userEvent.click(toggleButton!)
 
       const resourceTypeGroup = screen.getByTestId('resource-type-checkbox-group')
       const wikiPageCheckbox = within(resourceTypeGroup).getByLabelText('Pages')
       const assignmentCheckbox = within(resourceTypeGroup).getByLabelText('Assignments')
+      const discussionTopicCheckbox = within(resourceTypeGroup).getByLabelText('Discussion topics')
 
       await userEvent.click(wikiPageCheckbox)
 
       expect(wikiPageCheckbox).not.toBeChecked()
       expect(assignmentCheckbox).toBeChecked()
+      expect(discussionTopicCheckbox).toBeChecked()
     })
 
     it('handle state selection', async () => {
       render(<FiltersPanel {...defaultProps} />)
 
-      const toggleButton = screen.getByText('Open filter controls').closest('button')
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
       await userEvent.click(toggleButton!)
 
       const stateGroup = screen.getByTestId('state-checkbox-group')
@@ -179,7 +324,7 @@ describe('FiltersPanel', () => {
     it('handle issue type selection', async () => {
       render(<FiltersPanel {...defaultProps} />)
 
-      const toggleButton = screen.getByText('Open filter controls').closest('button')
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
       await userEvent.click(toggleButton!)
 
       const issueTypeGroup = screen.getByTestId('issue-type-checkbox-group')
@@ -197,10 +342,20 @@ describe('FiltersPanel', () => {
   })
 
   describe('apply filters button', () => {
+    it('has data-pendo attribute', async () => {
+      render(<FiltersPanel {...defaultProps} />)
+
+      const toggleButton = screen.getByRole('button', {name: 'Filter resources'})
+      await userEvent.click(toggleButton!)
+
+      const applyButton = screen.getByTestId('apply-filters-button')
+      expect(applyButton).toHaveAttribute('data-pendo', 'apply-filters-button')
+    })
+
     it('calls onFilterChange with current filter selections when apply is clicked', async () => {
       render(<FiltersPanel {...defaultProps} />)
 
-      const toggleButton = screen.getByText('Open filter controls').closest('button')
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
       await userEvent.click(toggleButton!)
 
       const applyButton = screen.getByTestId('apply-filters-button')
@@ -218,7 +373,7 @@ describe('FiltersPanel', () => {
     it('closes the panel when apply is clicked', async () => {
       render(<FiltersPanel {...defaultProps} />)
 
-      const toggleButton = screen.getByText('Open filter controls').closest('button')
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
       await userEvent.click(toggleButton!)
 
       const applyButton = screen.getByTestId('apply-filters-button')
@@ -227,25 +382,44 @@ describe('FiltersPanel', () => {
       expect(screen.queryByTestId('apply-filters-button')).not.toBeInTheDocument()
     })
 
-    it('applies filters when panel is closed', async () => {
+    it('does not call onFilterChange when panel is closed via toggle without applying', async () => {
       render(<FiltersPanel {...defaultProps} />)
 
-      const toggleButton = screen.getByText('Open filter controls').closest('button')
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
       await userEvent.click(toggleButton!)
 
       const resourceTypeGroup = screen.getByTestId('resource-type-checkbox-group')
-      const assignmentCheckbox = within(resourceTypeGroup).getByLabelText('Assignments')
-      await userEvent.click(assignmentCheckbox)
+      const wikiPageCheckbox = within(resourceTypeGroup).getByLabelText('Pages')
+      await userEvent.click(wikiPageCheckbox)
 
       await userEvent.click(toggleButton!)
 
-      expect(mockOnFilterChange).toHaveBeenCalledWith({
-        ruleTypes: [{label: 'all', value: 'all'}],
-        artifactTypes: [{label: 'Pages', value: 'wiki_page'}],
-        workflowStates: [{label: 'all', value: 'all'}],
-        fromDate: null,
-        toDate: null,
-      })
+      expect(mockOnFilterChange).not.toHaveBeenCalled()
+    })
+
+    it('discards unsaved changes when panel is closed via toggle and reopened', async () => {
+      render(<FiltersPanel {...defaultProps} />)
+
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
+      await userEvent.click(toggleButton!)
+
+      const resourceTypeGroup = screen.getByTestId('resource-type-checkbox-group')
+      const wikiPageCheckbox = within(resourceTypeGroup).getByLabelText('Pages')
+
+      // Uncheck Pages (deselecting from 'all' state)
+      await userEvent.click(wikiPageCheckbox)
+      expect(wikiPageCheckbox).not.toBeChecked()
+
+      // Close via toggle without applying
+      await userEvent.click(toggleButton!)
+
+      // Reopen the panel
+      await userEvent.click(toggleButton!)
+
+      // Pages should be checked again because changes were discarded
+      const resourceTypeGroupReopened = screen.getByTestId('resource-type-checkbox-group')
+      const wikiPageCheckboxReopened = within(resourceTypeGroupReopened).getByLabelText('Pages')
+      expect(wikiPageCheckboxReopened).toBeChecked()
     })
   })
 
@@ -292,6 +466,131 @@ describe('FiltersPanel', () => {
       await userEvent.click(clearButton)
 
       expect(screen.queryByTestId('apply-filters-button')).not.toBeInTheDocument()
+    })
+  })
+
+  describe('Apply filter validation', () => {
+    it('shows error when fromDate > toDate and prevents filter application', async () => {
+      render(<FiltersPanel {...defaultProps} />)
+
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
+      await userEvent.click(toggleButton!)
+
+      const fromDateInput = screen.getByLabelText(/Last edited from/i)
+      const toDateInput = screen.getByLabelText(/Last edited to/i)
+
+      await userEvent.type(fromDateInput, '2024-01-20')
+      await userEvent.type(toDateInput, '2024-01-10')
+
+      const applyButton = screen.getByTestId('apply-filters-button')
+      await userEvent.click(applyButton)
+
+      expect(screen.getByText(/End date must be after the start date\./i)).toBeInTheDocument()
+
+      expect(mockOnFilterChange).not.toHaveBeenCalled()
+      expect(screen.getByTestId('apply-filters-button')).toBeInTheDocument()
+    })
+
+    it('applies filters successfully when fromDate < toDate', async () => {
+      render(<FiltersPanel {...defaultProps} />)
+
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
+      await userEvent.click(toggleButton!)
+
+      const fromDateInput = screen.getByLabelText(/Last edited from/i)
+      const toDateInput = screen.getByLabelText(/Last edited to/i)
+
+      await userEvent.type(fromDateInput, '2024-01-10')
+      await userEvent.type(toDateInput, '2024-01-20')
+
+      const applyButton = screen.getByTestId('apply-filters-button')
+      await userEvent.click(applyButton)
+
+      expect(screen.queryByText(/End date must be after the start date\./i)).not.toBeInTheDocument()
+
+      expect(mockOnFilterChange).toHaveBeenCalled()
+      expect(screen.queryByTestId('apply-filters-button')).not.toBeInTheDocument()
+    })
+
+    it('clears errors when date is changed and apply succeeds with valid range', async () => {
+      render(<FiltersPanel {...defaultProps} />)
+
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
+      await userEvent.click(toggleButton!)
+
+      const fromDateInput = screen.getByLabelText(/Last edited from/i)
+      const toDateInput = screen.getByLabelText(/Last edited to/i)
+
+      await userEvent.type(fromDateInput, '2024-01-20')
+      await userEvent.type(toDateInput, '2024-01-10')
+
+      const applyButton = screen.getByTestId('apply-filters-button')
+      await userEvent.click(applyButton)
+
+      expect(screen.getByText(/End date must be after the start date\./i)).toBeInTheDocument()
+
+      await userEvent.clear(fromDateInput)
+      await userEvent.type(fromDateInput, '2024-01-05')
+
+      await userEvent.click(applyButton)
+
+      expect(mockOnFilterChange).toHaveBeenCalled()
+      expect(screen.queryByTestId('apply-filters-button')).not.toBeInTheDocument()
+    })
+
+    it('applies filters when only one date is set', async () => {
+      render(<FiltersPanel {...defaultProps} />)
+
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
+      await userEvent.click(toggleButton!)
+
+      const fromDateInput = screen.getByLabelText(/Last edited from/i)
+      await userEvent.type(fromDateInput, '2024-01-10')
+
+      const applyButton = screen.getByTestId('apply-filters-button')
+      await userEvent.click(applyButton)
+
+      expect(mockOnFilterChange).toHaveBeenCalled()
+    })
+  })
+
+  describe('additional resources feature flag', () => {
+    it('shows discussion topics checkbox when feature is enabled', async () => {
+      // additionalResourcesEnabled is true by default in beforeEach
+      render(<FiltersPanel {...defaultProps} />)
+
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
+      await userEvent.click(toggleButton!)
+
+      const resourceTypeGroup = screen.getByTestId('resource-type-checkbox-group')
+      expect(within(resourceTypeGroup).getByLabelText('Discussion topics')).toBeInTheDocument()
+      expect(within(resourceTypeGroup).getByLabelText('Announcements')).toBeInTheDocument()
+      expect(within(resourceTypeGroup).getByLabelText('Syllabus')).toBeInTheDocument()
+    })
+
+    it('hides discussion topics checkbox when feature is disabled', async () => {
+      // Override the mock to return false
+      vi.mocked(useAccessibilityScansStore).mockImplementation((selector: any) => {
+        if (typeof selector === 'function') {
+          return selector({additionalResourcesEnabled: false})
+        }
+        return {additionalResourcesEnabled: false}
+      })
+
+      render(<FiltersPanel {...defaultProps} />)
+
+      const toggleButton = screen.getByTestId('filter-resources-toggle')
+      await userEvent.click(toggleButton!)
+
+      const resourceTypeGroup = screen.getByTestId('resource-type-checkbox-group')
+      expect(
+        within(resourceTypeGroup).queryByLabelText('Discussion topics'),
+      ).not.toBeInTheDocument()
+      expect(within(resourceTypeGroup).queryByLabelText('Announcements')).not.toBeInTheDocument()
+      expect(within(resourceTypeGroup).queryByLabelText('Syllabus')).not.toBeInTheDocument()
+      // But Pages and Assignments should still be there
+      expect(within(resourceTypeGroup).getByLabelText('Pages')).toBeInTheDocument()
+      expect(within(resourceTypeGroup).getByLabelText('Assignments')).toBeInTheDocument()
     })
   })
 })

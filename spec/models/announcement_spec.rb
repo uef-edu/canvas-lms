@@ -105,7 +105,7 @@ describe Announcement do
       Timecop.freeze(2.weeks.from_now) do
         run_jobs
         expect(announcement.reload).to be_active
-        expect(att.reload).to_not be_locked
+        expect(att.reload).not_to be_locked
       end
     end
   end
@@ -336,7 +336,7 @@ describe Announcement do
       announcement_model(user: @teacher)
       to_users = @a.messages_sent[notification_name].map(&:user)
       expect(to_users).to include(@student)
-      expect(to_users).to_not include(other_student)
+      expect(to_users).not_to include(other_student)
     end
 
     it "does not broadcast if it just got edited to active, if notify_users is false" do
@@ -459,7 +459,7 @@ describe Announcement do
         participant = announcement.discussion_topic_participants.find_by(user: student)
         expect(participant).to be_present
         expect(participant.workflow_state).to eq("unread")
-        expect(participant.unread_entry_count).to eq(1)
+        expect(participant.unread_entry_count).to eq(0)
         expect(participant.subscribed).to be_falsey
         expect(participant.root_account_id).to eq(announcement.root_account_id)
       end
@@ -501,7 +501,7 @@ describe Announcement do
         participant = announcement.discussion_topic_participants.find_by(user: student)
         expect(participant).to be_present
         expect(participant.workflow_state).to eq("unread")
-        expect(participant.unread_entry_count).to eq(1)
+        expect(participant.unread_entry_count).to eq(0)
         expect(participant.subscribed).to be_falsey
         expect(participant.root_account_id).to eq(announcement.root_account_id)
       end
@@ -572,7 +572,7 @@ describe Announcement do
 
       student_participant = announcement.discussion_topic_participants.find_by(user: @student1)
       expect(student_participant.workflow_state).to eq("unread")
-      expect(student_participant.unread_entry_count).to eq(1)
+      expect(student_participant.unread_entry_count).to eq(0)
       expect(student_participant.subscribed).to be_falsey
       expect(student_participant.root_account_id).to eq(announcement.root_account_id)
     end
@@ -622,7 +622,7 @@ describe Announcement do
         participants.each do |participant|
           expect(participant.discussion_topic_id).to eq(@announcement.id)
           expect(participant.workflow_state).to eq("unread")
-          expect(participant.unread_entry_count).to eq(1)
+          expect(participant.unread_entry_count).to eq(0)
           expect(participant.subscribed).to be_falsey
           expect(participant.root_account_id).to eq(@announcement.root_account_id)
         end
@@ -739,6 +739,113 @@ describe Announcement do
         @announcement.save!
 
         expect(@announcement.discussion_topic_participants.where(user: [@student1, @student2]).count).to eq(2)
+      end
+    end
+  end
+
+  describe "accessibility scan" do
+    let(:course) { course_model }
+
+    it_behaves_like "an accessibility scannable resource" do
+      before do
+        Account.site_admin.enable_feature!(:a11y_checker_additional_resources)
+        Account.site_admin.enable_feature!(:a11y_checker_ga2_features)
+      end
+
+      let(:course) { course_model }
+      let(:valid_attributes) { { title: "Test Page", message: "Initial message", course: } }
+      let(:relevant_attributes_for_scan) { { message: "<p>Lorem ipsum</p>" } }
+      let(:irrelevant_attributes_for_scan) { { lock_at: 1.week.ago } }
+    end
+
+    context "when a11y_checker_additional_resources is disabled" do
+      before do
+        Account.site_admin.disable_feature!(:a11y_checker_additional_resources)
+        course.root_account.enable_feature!(:a11y_checker)
+        course.enable_feature!(:a11y_checker_eap)
+        Progress.create!(tag: Accessibility::CourseScanService::SCAN_TAG, context: course, workflow_state: "completed")
+      end
+
+      it "does not trigger accessibility scan for announcements on create" do
+        expect(Accessibility::ResourceScannerService).not_to receive(:call)
+
+        Announcement.create!(title: "Test Announcement", message: "Test message", course:)
+      end
+
+      it "does not trigger accessibility scan for announcements on update" do
+        announcement = Announcement.create!(title: "Test Announcement", message: "Test message", course:)
+
+        expect(Accessibility::ResourceScannerService).not_to receive(:call)
+
+        announcement.update!(message: "Updated message")
+      end
+
+      it "triggers destroy when deleting announcement" do
+        announcement = Announcement.create!(title: "Test Announcement", message: "Test message", course:)
+        AccessibilityResourceScan.create!(context: announcement, course:)
+
+        expect { announcement.destroy! }.to change { AccessibilityResourceScan.where(announcement_id: announcement.id).count }.from(1).to(0)
+      end
+    end
+
+    context "when a11y_checker_additional_resources is enabled" do
+      before do
+        Account.site_admin.enable_feature!(:a11y_checker_additional_resources)
+        course.root_account.enable_feature!(:accessibility_automatic_scanning)
+        course.root_account.enable_feature!(:a11y_checker)
+        course.enable_feature!(:a11y_checker_eap)
+        Progress.create!(tag: Accessibility::CourseScanService::SCAN_TAG, context: course, workflow_state: "completed")
+      end
+
+      it "triggers accessibility scan on create" do
+        expect(Accessibility::ResourceScannerService).to receive(:call).with(resource: an_instance_of(Announcement))
+
+        Announcement.create!(title: "Test Announcement", message: "Test message", course:)
+      end
+
+      it "triggers accessibility scan on update" do
+        announcement = Announcement.create!(title: "Test Announcement", message: "Test message", course:)
+
+        expect(Accessibility::ResourceScannerService).to receive(:call).with(resource: an_instance_of(Announcement))
+
+        announcement.update!(message: "Updated message")
+      end
+
+      it "triggers destroy when deleting announcement" do
+        announcement = Announcement.create!(title: "Test Announcement", message: "Test message", course:)
+
+        expect { announcement.destroy! }.to change { AccessibilityResourceScan.where(announcement_id: announcement.id).count }.from(1).to(0)
+      end
+    end
+
+    context "when automatic scanning feature flag is disabled" do
+      before do
+        Account.site_admin.enable_feature!(:a11y_checker_additional_resources)
+        course.root_account.enable_feature!(:a11y_checker)
+        course.root_account.disable_feature!(:accessibility_automatic_scanning)
+        course.enable_feature!(:a11y_checker_eap)
+        Progress.create!(tag: Accessibility::CourseScanService::SCAN_TAG, context: course, workflow_state: "completed")
+      end
+
+      it "does not trigger accessibility scan on create" do
+        expect(Accessibility::ResourceScannerService).not_to receive(:call)
+
+        Announcement.create!(title: "Test Announcement", message: "Test message", course:)
+      end
+
+      it "does not trigger accessibility scan on update" do
+        announcement = Announcement.create!(title: "Test Announcement", message: "Test message", course:)
+
+        expect(Accessibility::ResourceScannerService).not_to receive(:call)
+
+        announcement.update!(message: "Updated message")
+      end
+
+      it "still triggers destroy when deleting announcement" do
+        announcement = Announcement.create!(title: "Test Announcement", message: "Test message", course:)
+        AccessibilityResourceScan.create!(context: announcement, course:)
+
+        expect { announcement.destroy! }.to change { AccessibilityResourceScan.where(announcement_id: announcement.id).count }.from(1).to(0)
       end
     end
   end

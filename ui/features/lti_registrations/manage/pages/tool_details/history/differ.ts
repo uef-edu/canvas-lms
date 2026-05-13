@@ -16,7 +16,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-import {isEqual} from 'lodash'
+import {isEqual} from 'es-toolkit/compat'
 import {InternalLtiConfiguration} from '../../../model/internal_lti_configuration/InternalLtiConfiguration'
 import {InternalPlacementConfiguration} from '../../../model/internal_lti_configuration/placement_configuration/InternalPlacementConfiguration'
 import {InternalBaseLaunchSettings} from '../../../model/internal_lti_configuration/InternalBaseLaunchSettings'
@@ -163,9 +163,9 @@ const diffLaunchSettings = (
   })
 }
 
-type PlacementMap = Map<LtiPlacement, InternalPlacementConfiguration>
+export type PlacementMap = Map<LtiPlacement, InternalPlacementConfiguration>
 
-const buildPlacementMap = (placements: InternalPlacementConfiguration[]): PlacementMap => {
+export const buildPlacementMap = (placements: InternalPlacementConfiguration[]): PlacementMap => {
   return new Map(placements.map(placement => [placement.placement, placement]))
 }
 
@@ -173,7 +173,7 @@ const placementEnabled = (placementConfig: InternalPlacementConfiguration): bool
   return placementConfig.enabled !== false && placementConfig.enabled !== 'false'
 }
 
-const calculateAddedPlacements = (
+export const calculateAddedPlacements = (
   oldPlacements: PlacementMap,
   newPlacements: PlacementMap,
 ): Array<LtiPlacement> => {
@@ -188,7 +188,7 @@ const calculateAddedPlacements = (
   return added
 }
 
-const calculateRemovedPlacements = (
+export const calculateRemovedPlacements = (
   oldPlacements: PlacementMap,
   newPlacements: PlacementMap,
 ): Array<LtiPlacement> => {
@@ -295,6 +295,8 @@ export type PrivacyLevelDiff = Diff<InternalLtiConfiguration['privacy_level']>
 
 export type WorkflowStateDiff = Diff<LtiRegistrationTrackedAttributes['workflow_state']>
 
+export type LockedDiff = Diff<LtiRegistrationTrackedAttributes['lock_deploying']>
+
 export type ContextControlDiff = Omit<LtiContextControl, 'available'> & {
   availabilityChange: NonNullable<Diff<LtiContextControlTrackedAttributes['available'] | undefined>>
 }
@@ -311,6 +313,8 @@ export type ConfigChangeEntryWithDiff = ConfigChangeHistoryEntry & {
     placements: PlacementsDiff
     naming: NamingDiff
     icons: IconDiff
+    locked: LockedDiff
+    workflowState: WorkflowStateDiff
   } | null
   totalAdditions: number
   totalRemovals: number
@@ -323,6 +327,12 @@ export type AvailabilityChangeEntryWithDiff = AvailabilityChangeHistoryEntry & {
 }
 
 export type LtiHistoryEntryWithDiff = ConfigChangeEntryWithDiff | AvailabilityChangeEntryWithDiff
+
+export const isConfigChangeHistoryEntry = (
+  entry: LtiHistoryEntryWithDiff,
+): entry is ConfigChangeEntryWithDiff => {
+  return 'old_configuration' in entry && 'new_configuration' in entry
+}
 
 const diffNamingChanges = (
   entry: ConfigChangeHistoryEntry,
@@ -427,6 +437,8 @@ const countChanges = (
     ...Array.from(diff.naming?.placementTexts.values() ?? []).map(countDiff),
     countDiff(diff.icons?.iconUrl),
     ...Array.from(diff.icons?.placementIcons.values() ?? []).map(countDiff),
+    countDiff(diff.locked),
+    countDiff(diff.workflowState),
   ])
   additions += diff.launchSettings?.redirectUris?.added.length ?? 0
   removals += diff.launchSettings?.redirectUris?.removed.length ?? 0
@@ -486,6 +498,9 @@ export const diffConfigChangeEntry = (
   const courseNavigationDefault = diffCourseNavDefault(oldPlacements, newPlacements)
   const overridesChanged = diffPlacements(oldPlacements, newPlacements)
 
+  const oldReg = entry.old_configuration.registration
+  const newReg = entry.new_configuration.registration
+
   const internalConfig = deepCheckEmpty({
     launchSettings: diffLaunchSettings(oldOverlaidConfig, newOverlaidConfig),
     permissions: diffArrays(oldOverlaidConfig.scopes, newOverlaidConfig.scopes),
@@ -498,6 +513,8 @@ export const diffConfigChangeEntry = (
     }),
     naming: deepCheckEmpty(diffNamingChanges(entry, oldPlacements, newPlacements)),
     icons: deepCheckEmpty(diffIconChanges(entry, oldPlacements, newPlacements)),
+    locked: createDiffValue(oldReg?.lock_deploying, newReg?.lock_deploying),
+    workflowState: createDiffValue(oldReg?.workflow_state, newReg?.workflow_state),
   })
   const {additions, removals} = countChanges(internalConfig)
 

@@ -24,12 +24,17 @@ import {setupServer} from 'msw/node'
 import {graphql, HttpResponse} from 'msw'
 import PeopleWidget from '../PeopleWidget'
 import type {BaseWidgetProps, Widget} from '../../../../types'
-import {clearWidgetDashboardCache} from '../../../../__tests__/testHelpers'
+import {clearWidgetDashboardCache, PlatformTestWrapper} from '../../../../__tests__/testHelpers'
 import {WidgetLayoutProvider} from '../../../../hooks/useWidgetLayout'
 import {WidgetDashboardEditProvider} from '../../../../hooks/useWidgetDashboardEdit'
 
-jest.mock('@canvas/message-students-modal/react', () => {
-  return function MockMessageStudents({onRequestClose, title, recipients, contextCode}: any) {
+// Mock useBroadcastQuery to avoid BroadcastChannel issues in jsdom
+vi.mock('@instructure/platform-query/broadcast', () => ({
+  useBroadcastQuery: vi.fn(),
+}))
+
+vi.mock('@canvas/message-students-modal/react', () => ({
+  default: function MockMessageStudents({onRequestClose, title, recipients, contextCode}: any) {
     return (
       <div data-testid="message-students-modal">
         <h2>{title}</h2>
@@ -42,8 +47,8 @@ jest.mock('@canvas/message-students-modal/react', () => {
         </button>
       </div>
     )
-  }
-})
+  },
+}))
 
 const server = setupServer(
   // Mock useSharedCourses query
@@ -80,17 +85,21 @@ const server = setupServer(
                 avatarUrl: 'https://example.com/avatar.jpg',
                 email: 'john@example.com',
               },
-              course: {
-                _id: '789',
-                name: 'Computer Science 101',
-                courseCode: 'CS101',
-              },
-              type: 'TeacherEnrollment',
-              role: {
-                _id: '1',
-                name: 'TeacherEnrollment',
-              },
-              enrollmentState: 'active',
+              enrollments: [
+                {
+                  course: {
+                    _id: '789',
+                    name: 'Computer Science 101',
+                    courseCode: 'CS101',
+                  },
+                  type: 'TeacherEnrollment',
+                  role: {
+                    _id: '1',
+                    name: 'TeacherEnrollment',
+                  },
+                  enrollmentState: 'active',
+                },
+              ],
             },
           ],
           pageInfo: {
@@ -130,11 +139,13 @@ const renderWithQueryClient = (ui: React.ReactElement) => {
   })
 
   return render(
-    <QueryClientProvider client={queryClient}>
-      <WidgetDashboardEditProvider>
-        <WidgetLayoutProvider>{ui}</WidgetLayoutProvider>
-      </WidgetDashboardEditProvider>
-    </QueryClientProvider>,
+    <PlatformTestWrapper>
+      <QueryClientProvider client={queryClient}>
+        <WidgetDashboardEditProvider>
+          <WidgetLayoutProvider>{ui}</WidgetLayoutProvider>
+        </WidgetDashboardEditProvider>
+      </QueryClientProvider>
+    </PlatformTestWrapper>,
   )
 }
 
@@ -165,13 +176,21 @@ describe('PeopleWidget', () => {
     expect(screen.getByText('Test People Widget')).toBeInTheDocument()
   })
 
+  it('renders course and role filters', async () => {
+    renderWithQueryClient(<PeopleWidget {...buildDefaultProps()} />)
+
+    await screen.findByText('John Doe')
+    expect(screen.getByTestId('course-filter-select')).toBeInTheDocument()
+    expect(screen.getByTestId('role-filter-select')).toBeInTheDocument()
+  })
+
   it('handles external loading state', () => {
     renderWithQueryClient(<PeopleWidget {...buildDefaultProps({isLoading: true})} />)
     expect(screen.getByText('Loading people data...')).toBeInTheDocument()
   })
 
   it('handles external error state', () => {
-    const onRetry = jest.fn()
+    const onRetry = vi.fn()
     renderWithQueryClient(
       <PeopleWidget {...buildDefaultProps({error: 'Failed to load', onRetry})} />,
     )
@@ -259,10 +278,14 @@ describe('PeopleWidget', () => {
                       avatarUrl: 'https://example.com/alice.jpg',
                       email: 'alice@example.com',
                     },
-                    course: {_id: '100', name: 'Math 101', courseCode: 'MATH101'},
-                    type: 'TeacherEnrollment',
-                    role: {_id: '1', name: 'TeacherEnrollment'},
-                    enrollmentState: 'active',
+                    enrollments: [
+                      {
+                        course: {_id: '100', name: 'Math 101', courseCode: 'MATH101'},
+                        type: 'TeacherEnrollment',
+                        role: {_id: '1', name: 'TeacherEnrollment'},
+                        enrollmentState: 'active',
+                      },
+                    ],
                   },
                   {
                     user: {
@@ -273,10 +296,14 @@ describe('PeopleWidget', () => {
                       avatarUrl: 'https://example.com/bob.jpg',
                       email: 'bob@example.com',
                     },
-                    course: {_id: '100', name: 'Math 101', courseCode: 'MATH101'},
-                    type: 'TaEnrollment',
-                    role: {_id: '2', name: 'TaEnrollment'},
-                    enrollmentState: 'active',
+                    enrollments: [
+                      {
+                        course: {_id: '100', name: 'Math 101', courseCode: 'MATH101'},
+                        type: 'TaEnrollment',
+                        role: {_id: '2', name: 'TaEnrollment'},
+                        enrollmentState: 'active',
+                      },
+                    ],
                   },
                 ],
                 pageInfo: {
@@ -347,7 +374,7 @@ describe('PeopleWidget', () => {
 
   describe('GraphQL Errors', () => {
     beforeEach(() => {
-      jest.spyOn(console, 'error').mockImplementation()
+      vi.spyOn(console, 'error').mockImplementation(() => {})
       server.use(
         graphql.query('GetCourseInstructorsPaginated', () => {
           return HttpResponse.json({
@@ -358,7 +385,7 @@ describe('PeopleWidget', () => {
     })
 
     afterEach(() => {
-      jest.restoreAllMocks()
+      vi.restoreAllMocks()
     })
 
     it('displays error message when query fails', async () => {
@@ -385,10 +412,14 @@ describe('PeopleWidget', () => {
                       avatarUrl: null,
                       email: 'inst1@example.com',
                     },
-                    course: {_id: '100', name: 'Course 1', courseCode: 'C1'},
-                    type: 'TeacherEnrollment',
-                    role: {_id: '1', name: 'TeacherEnrollment'},
-                    enrollmentState: 'active',
+                    enrollments: [
+                      {
+                        course: {_id: '100', name: 'Course 1', courseCode: 'C1'},
+                        type: 'TeacherEnrollment',
+                        role: {_id: '1', name: 'TeacherEnrollment'},
+                        enrollmentState: 'active',
+                      },
+                    ],
                   },
                 ],
                 pageInfo: {
@@ -445,10 +476,14 @@ describe('PeopleWidget', () => {
                       avatarUrl: null,
                       email: null,
                     },
-                    course: {_id: '100', name: 'Course 1', courseCode: 'C1'},
-                    type: 'TeacherEnrollment',
-                    role: {_id: '1', name: 'TeacherEnrollment'},
-                    enrollmentState: 'active',
+                    enrollments: [
+                      {
+                        course: {_id: '100', name: 'Course 1', courseCode: 'C1'},
+                        type: 'TeacherEnrollment',
+                        role: {_id: '1', name: 'TeacherEnrollment'},
+                        enrollmentState: 'active',
+                      },
+                    ],
                   },
                 ],
                 pageInfo: {

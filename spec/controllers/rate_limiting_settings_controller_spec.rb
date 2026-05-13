@@ -62,9 +62,6 @@ describe RateLimitingSettingsController do
           override.enabled = true
         end
 
-        # Enable the feature flag for the target account
-        target_account.enable_feature!(:api_rate_limits)
-
         user_session(site_admin_user)
       end
 
@@ -74,22 +71,11 @@ describe RateLimitingSettingsController do
       end
     end
 
-    context "when feature flag is disabled" do
-      before { account.disable_feature!(:api_rate_limits) }
-
-      it "denies access" do
-        get :index, params: { account_id: account.id }, format: :json
-        expect(response).to have_http_status(:forbidden)
-      end
-    end
-
     context "when user lacks manage_rate_limiting permission" do
       let(:regular_account) { Account.create! }
       let(:regular_admin) { account_admin_user(account: regular_account) }
 
       before do
-        # Enable feature flag but don't grant Site Admin permission
-        regular_account.enable_feature!(:api_rate_limits)
         user_session(regular_admin)
       end
 
@@ -112,8 +98,6 @@ describe RateLimitingSettingsController do
     end
 
     it "returns rate limit settings" do
-      account.enable_feature!(:api_rate_limits)
-
       get :index, params: { account_id: account.id }, format: :json
 
       expect(response).to have_http_status(:ok)
@@ -123,8 +107,6 @@ describe RateLimitingSettingsController do
     end
 
     it "includes pagination metadata in headers" do
-      account.enable_feature!(:api_rate_limits)
-
       get :index, params: { account_id: account.id }, format: :json
 
       expect(response).to have_http_status(:ok)
@@ -133,8 +115,6 @@ describe RateLimitingSettingsController do
     end
 
     it "excludes deleted records from results" do
-      account.enable_feature!(:api_rate_limits)
-
       # Create a deleted record
       deleted_config = account.oauth_client_configs.create!(
         type: "product",
@@ -181,7 +161,6 @@ describe RateLimitingSettingsController do
     end
 
     before do
-      account.enable_feature!(:api_rate_limits)
       # Update timestamps to ensure predictable ordering
       config1.update_column(:created_at, 1.day.ago)
       config2.update_column(:created_at, Time.current)
@@ -399,8 +378,6 @@ describe RateLimitingSettingsController do
     end
 
     it "creates a new rate limit setting" do
-      account.enable_feature!(:api_rate_limits)
-
       expect do
         post :create, params: valid_params, format: :json
       end.to change(OAuthClientConfig, :count).by(1)
@@ -412,12 +389,10 @@ describe RateLimitingSettingsController do
       # Verify the automatic throttle_maximum calculation
       created_config = OAuthClientConfig.find(json["id"])
       expect(created_config.throttle_high_water_mark).to eq(500)
-      expect(created_config.throttle_maximum).to eq(300) # 500 - 200
+      expect(created_config.throttle_maximum).to eq(700) # 500 + 200
     end
 
     it "returns validation errors for invalid data" do
-      account.enable_feature!(:api_rate_limits)
-
       invalid_params = valid_params.deep_dup
       invalid_params[:rate_limit_setting][:type] = "invalid"
 
@@ -452,20 +427,16 @@ describe RateLimitingSettingsController do
     end
 
     it "updates the rate limit setting" do
-      account.enable_feature!(:api_rate_limits)
-
       put :update, params: update_params, format: :json
 
       expect(response).to have_http_status(:ok)
       oauth_client_config.reload
       expect(oauth_client_config.throttle_high_water_mark).to eq(2000)
-      expect(oauth_client_config.throttle_maximum).to eq(1800) # 2000 - 200
+      expect(oauth_client_config.throttle_maximum).to eq(2200) # 2000 + 200
       expect(oauth_client_config.comment).to eq("Updated comment")
     end
 
     it "does not allow updating identifier fields" do
-      account.enable_feature!(:api_rate_limits)
-
       update_params[:rate_limit_setting][:identifier] = "changed-identifier"
 
       put :update, params: update_params, format: :json
@@ -486,8 +457,6 @@ describe RateLimitingSettingsController do
     end
 
     it "deletes the rate limit setting" do
-      account.enable_feature!(:api_rate_limits)
-
       expect do
         delete :destroy, params: { account_id: account.id, id: oauth_client_config.id }, format: :json
       end.to change { OAuthClientConfig.active.count }.by(-1)
@@ -496,8 +465,6 @@ describe RateLimitingSettingsController do
     end
 
     it "returns 404 for non-existent setting" do
-      account.enable_feature!(:api_rate_limits)
-
       delete :destroy, params: { account_id: account.id, id: 99_999 }, format: :json
       expect(response).to have_http_status(:not_found)
     end

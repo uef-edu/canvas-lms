@@ -98,6 +98,75 @@ describe Types::SubmissionStatisticsType do
       it "counts missing submissions" do
         expect(course_type.resolve("submissionStatistics { missingSubmissionsCount }")).to eq 1
       end
+
+      context "with grading periods" do
+        before(:once) do
+          @frozen_time = Time.zone.parse("2025-06-15 12:00:00")
+
+          @gp_term = Account.default.enrollment_terms.create!(start_at: 10.years.ago)
+          @gp_course = course_factory(active_all: true, enrollment_term_id: @gp_term.id)
+          @gp_course.enroll_student(@student, enrollment_state: :active)
+
+          period_group = Account.default.grading_period_groups.create!
+          period_group.enrollment_terms << @gp_course.enrollment_term
+          @closed_period = period_group.grading_periods.create!(
+            title: "Closed Period",
+            start_date: 5.months.ago(@frozen_time),
+            end_date: 2.months.ago(@frozen_time),
+            close_date: 2.months.ago(@frozen_time)
+          )
+          @current_period = period_group.grading_periods.create!(
+            title: "Current Period",
+            start_date: 2.months.ago(@frozen_time),
+            end_date: 2.months.from_now(@frozen_time),
+            close_date: 2.months.from_now(@frozen_time)
+          )
+
+          Timecop.freeze(@frozen_time) do
+            @closed_period_assignment = @gp_course.assignments.create!(
+              title: "Assignment in Closed Period",
+              workflow_state: "published",
+              submission_types: "online_text_entry",
+              due_at: 4.months.ago(@frozen_time)
+            )
+            @current_period_assignment = @gp_course.assignments.create!(
+              title: "Assignment in Current Period",
+              workflow_state: "published",
+              submission_types: "online_text_entry",
+              due_at: 1.month.ago(@frozen_time)
+            )
+
+            @closed_period_submission = @closed_period_assignment.find_or_create_submission(@student)
+            @closed_period_submission.update!(late_policy_status: "missing")
+            @current_period_submission = @current_period_assignment.find_or_create_submission(@student)
+            @current_period_submission.update!(late_policy_status: "missing")
+          end
+        end
+
+        let(:gp_course_type) { GraphQLTypeTester.new(@gp_course, current_user: @student) }
+
+        it "filters missing submissions by current grading period by default" do
+          Timecop.freeze(@frozen_time) do
+            result = gp_course_type.resolve("submissionStatistics { missingSubmissionsCount }")
+            expect(result).to eq 1
+          end
+        end
+
+        it "returns all missing submissions when onlyCurrentGradingPeriod is false" do
+          Timecop.freeze(@frozen_time) do
+            result = gp_course_type.resolve("submissionStatistics { missingSubmissionsCount(onlyCurrentGradingPeriod: false) }")
+            expect(result).to eq 2
+          end
+        end
+
+        it "excludes missing submissions with nil grading_period_id" do
+          Timecop.freeze(@frozen_time) do
+            @closed_period_submission.update_columns(grading_period_id: nil)
+            result = gp_course_type.resolve("submissionStatistics { missingSubmissionsCount }")
+            expect(result).to eq 1
+          end
+        end
+      end
     end
 
     describe "submitted_submissions_count" do
@@ -213,6 +282,144 @@ describe Types::SubmissionStatisticsType do
 
       result = course_type.resolve("submissionStatistics { missingSubmissionsCount }")
       expect(result).to eq 0 # Excused submissions are not missing
+    end
+  end
+
+  describe "submitted_and_graded_count" do
+    it "counts submissions that are graded" do
+      result = course_type.resolve("submissionStatistics { submittedAndGradedCount }")
+      expect(result).to eq 1
+    end
+
+    it "counts excused submissions as graded" do
+      @submission_graded.update!(excused: true)
+      result = course_type.resolve("submissionStatistics { submittedAndGradedCount }")
+      expect(result).to eq 1
+    end
+
+    it "does not count submitted but not graded submissions" do
+      assignment = @course.assignments.create!(
+        name: "New Assignment",
+        submission_types: "online_text_entry",
+        points_possible: 10,
+        due_at: @now + 1.day
+      )
+      assignment.submit_homework(@student, submission_type: "online_text_entry", body: "Test")
+
+      result = course_type.resolve("submissionStatistics { submittedAndGradedCount }")
+      expect(result).to eq 1
+    end
+
+    it "counts submissions with pending_review as not graded" do
+      assignment = @course.assignments.create!(
+        name: "Peer Review Assignment",
+        submission_types: "online_text_entry",
+        points_possible: 10,
+        due_at: @now + 1.day
+      )
+      submission = assignment.submit_homework(@student, submission_type: "online_text_entry", body: "Test")
+      submission.update!(workflow_state: "pending_review")
+
+      result = course_type.resolve("submissionStatistics { submittedAndGradedCount }")
+      expect(result).to eq 1
+    end
+
+    it "returns 0 when current_user is nil" do
+      course_type_no_user = GraphQLTypeTester.new(@course, current_user: nil)
+      expect(course_type_no_user.resolve("submissionStatistics { submittedAndGradedCount }")).to be_nil
+    end
+
+    it "handles no submissions" do
+      course_with_student(active_all: true)
+      empty_course_type = GraphQLTypeTester.new(@course, current_user: @student)
+      result = empty_course_type.resolve("submissionStatistics { submittedAndGradedCount }")
+      expect(result).to eq 0
+    end
+
+    it "handles all submissions graded" do
+      @assignment_due_today.grade_student(@student, score: 10, grader: @teacher)
+      result = course_type.resolve("submissionStatistics { submittedAndGradedCount }")
+      expect(result).to eq 2
+    end
+
+    it "satisfies submittedAndGradedCount + submittedNotGradedCount = submittedSubmissionsCount" do
+      graded_count = course_type.resolve("submissionStatistics { submittedAndGradedCount }")
+      not_graded_count = course_type.resolve("submissionStatistics { submittedNotGradedCount }")
+      submitted_count = course_type.resolve("submissionStatistics { submittedSubmissionsCount }")
+
+      expect(graded_count + not_graded_count).to eq submitted_count
+    end
+  end
+
+  describe "submitted_not_graded_count" do
+    it "counts submissions that are submitted but not graded" do
+      result = course_type.resolve("submissionStatistics { submittedNotGradedCount }")
+      expect(result).to eq 1
+    end
+
+    it "does not count excused submissions" do
+      @submission_submitted.update!(excused: true)
+      result = course_type.resolve("submissionStatistics { submittedNotGradedCount }")
+      expect(result).to eq 0
+    end
+
+    it "does not count graded submissions" do
+      @assignment_due_today.grade_student(@student, score: 9, grader: @teacher)
+      result = course_type.resolve("submissionStatistics { submittedNotGradedCount }")
+      expect(result).to eq 0
+    end
+
+    it "counts pending_review submissions as submitted but not graded" do
+      assignment = @course.assignments.create!(
+        name: "Peer Review Assignment",
+        submission_types: "online_text_entry",
+        points_possible: 10,
+        due_at: @now + 1.day
+      )
+      submission = assignment.submit_homework(@student, submission_type: "online_text_entry", body: "Test")
+      submission.update!(workflow_state: "pending_review")
+
+      result = course_type.resolve("submissionStatistics { submittedNotGradedCount }")
+      expect(result).to eq 2
+    end
+
+    it "returns 0 when current_user is nil" do
+      course_type_no_user = GraphQLTypeTester.new(@course, current_user: nil)
+      expect(course_type_no_user.resolve("submissionStatistics { submittedNotGradedCount }")).to be_nil
+    end
+
+    it "handles no submissions" do
+      course_with_student(active_all: true)
+      empty_course_type = GraphQLTypeTester.new(@course, current_user: @student)
+      result = empty_course_type.resolve("submissionStatistics { submittedNotGradedCount }")
+      expect(result).to eq 0
+    end
+
+    it "handles all submissions graded" do
+      @assignment_due_today.grade_student(@student, score: 10, grader: @teacher)
+      result = course_type.resolve("submissionStatistics { submittedNotGradedCount }")
+      expect(result).to eq 0
+    end
+
+    it "handles mix of submitted and graded submissions" do
+      assignment1 = @course.assignments.create!(
+        name: "Assignment 1",
+        submission_types: "online_text_entry",
+        points_possible: 10,
+        due_at: @now + 1.day
+      )
+      assignment1.submit_homework(@student, submission_type: "online_text_entry", body: "Test 1")
+
+      assignment2 = @course.assignments.create!(
+        name: "Assignment 2",
+        submission_types: "online_text_entry",
+        points_possible: 10,
+        due_at: @now + 2.days
+      )
+      assignment2.grade_student(@student, score: 8, grader: @teacher)
+
+      result = course_type.resolve("submissionStatistics { submittedNotGradedCount }")
+      expect(result).to eq 2
     end
   end
 end

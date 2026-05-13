@@ -16,18 +16,16 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-import {showFlashSuccess, showFlashError} from '@canvas/alerts/react/FlashAlert'
+import {showFlashSuccess, showFlashError, AlertManagerContext} from '@instructure/platform-alerts'
 import {useScope as createI18nScope} from '@canvas/i18n'
-import {RubricAssessmentTray} from '@canvas/rubrics/react/RubricAssessment'
+import {RubricAssessmentTray, isRubricComplete} from '@canvas/rubrics/react/RubricAssessment'
 import {
   RubricAssessmentData,
   Rubric,
   RubricSelfAssessmentData,
 } from '@canvas/rubrics/react/types/rubric'
-import {isRubricComplete} from '../../helpers/RubricHelpers'
 import {useSubmitSelfAssessment} from '../../mutations/useSubmitSelfAssessment'
 import useStore from '../stores/index'
-import {AlertManagerContext} from '@canvas/alerts/react/AlertManager'
 import {useContext} from 'react'
 
 const I18n = createI18nScope('assignments_2_student_content_rubric_self_assessment')
@@ -77,12 +75,24 @@ export const SelfAssessmentTray = ({
     return assessmentFormatted
   }
 
-  const handleSubmitSelfAssessment = async (assessment: RubricSelfAssessmentData) => {
-    if (!isRubricComplete(assessment)) {
+  const validateAndSubmitSelfAssessment = async (rubricAssessment: RubricAssessmentData[]) => {
+    if (
+      !isRubricComplete({
+        criteria: rubric.criteria ?? [],
+        hidePoints,
+        isFreeFormCriterionComments: !!rubric.freeFormCriterionComments,
+        rubricAssessment,
+      })
+    ) {
       setOnFailure(I18n.t('Incomplete Self Assessment'))
       return
     }
 
+    const assessmentFormatted = formatAssessmentForSubmission(rubricAssessment)
+    await handleSubmitSelfAssessment(assessmentFormatted)
+  }
+
+  const handleSubmitSelfAssessment = async (assessment: RubricSelfAssessmentData) => {
     try {
       handleOnSubmitting(true, assessment)
       await submitSelfAssessment({assessment, rubricAssociationId, rubric})
@@ -108,10 +118,7 @@ export const SelfAssessmentTray = ({
       rubricAssessmentData={selfAssessmentData}
       rubric={rubric}
       viewModeOverride="horizontal"
-      onSubmit={assessment => {
-        const assessmentFormatted = formatAssessmentForSubmission(assessment)
-        handleSubmitSelfAssessment(assessmentFormatted)
-      }}
+      onSubmit={validateAndSubmitSelfAssessment}
     />
   )
 }

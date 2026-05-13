@@ -96,11 +96,11 @@ describe "Group Categories API", type: :request do
             @course.save!
           end
 
-          include_examples "basic course roster"
+          it_behaves_like "basic course roster"
         end
 
         context "normal course" do
-          include_examples "basic course roster"
+          it_behaves_like "basic course roster"
         end
       end
 
@@ -284,7 +284,7 @@ describe "Group Categories API", type: :request do
                         {},
                         { expected_status: 403 })
         expect(json["status"]).to eq "unauthorized"
-        expect(category2.reload.name).to_not eq @name
+        expect(category2.reload.name).not_to eq @name
       end
 
       it "allows a teacher to update a category and distribute students to new groups" do

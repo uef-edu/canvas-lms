@@ -16,11 +16,10 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-import {AlertManagerContext} from '@canvas/alerts/react/AlertManager'
+import {AlertManagerContext} from '@instructure/platform-alerts'
 import {useScope as createI18nScope} from '@canvas/i18n'
 import React, {useContext, useEffect} from 'react'
-import uniqBy from 'lodash/uniqBy'
-import orderBy from 'lodash/orderBy'
+import {uniqBy, orderBy} from 'es-toolkit/compat'
 import {SimpleSelect} from '@instructure/ui-simple-select'
 import {View} from '@instructure/ui-view'
 import {ScreenReaderContent} from '@instructure/ui-a11y-content'
@@ -92,7 +91,7 @@ export default function AttemptSelect({
 
   const attemptList = orderBy(uniqBy(filteredSubmissions, 'attempt'), 'attempt').map(sub => {
     const attemptNumber = sub.attempt || 1
-    return [I18n.t('Attempt %{attempt}', {attempt: attemptNumber}), sub.attempt]
+    return [I18n.t('Attempt %{attempt}', {attempt: attemptNumber}), sub.attempt] as const
   })
 
   function handleSubmissionChange(

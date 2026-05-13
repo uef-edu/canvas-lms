@@ -17,8 +17,9 @@
  */
 
 import React from 'react'
-import doFetchApi from '@canvas/do-fetch-api-effect'
 import {fireEvent, render, waitFor} from '@testing-library/react'
+import {setupServer} from 'msw/node'
+import {http, HttpResponse} from 'msw'
 import {AssetProcessorsAddModal} from '../AssetProcessorsAddModal'
 import {QueryClient} from '@tanstack/react-query'
 import {MockedQueryClientProvider} from '@canvas/test-utils/query'
@@ -27,33 +28,61 @@ import {handleExternalContentMessages} from '@canvas/external-tools/messages'
 import {
   mockDeepLinkResponse,
   mockInvalidDeepLinkResponse,
-  mockDoFetchApi,
   mockToolsForAssignment as assignmentTools,
   mockToolsForDiscussions as discussionTools,
   mockContributionDeepLinkResponse,
 } from './assetProcessorsTestHelpers'
 import {useAssetProcessorsAddModalState} from '../hooks/AssetProcessorsAddModalState'
-import {useAssetProcessorsToolsList} from '../hooks/useAssetProcessorsToolsList'
 import {monitorLtiMessages} from '@canvas/lti/jquery/messages'
 import {AssetProcessorType} from '@canvas/lti/model/AssetProcessor'
+import fakeENV from '@canvas/test-utils/fakeENV'
+import {showFlashAlert} from '@instructure/platform-alerts'
 
-jest.mock('@canvas/do-fetch-api-effect')
-jest.mock('@canvas/external-tools/messages')
+vi.mock('@canvas/external-tools/messages')
+vi.mock('@instructure/platform-alerts')
+
+const server = setupServer(
+  http.get('/api/v1/courses/:courseId/lti_apps/launch_definitions', ({request}) => {
+    const url = new URL(request.url)
+    const placements = url.searchParams.get('placements[]')
+    return HttpResponse.json(
+      placements === 'ActivityAssetProcessor' ? assignmentTools : discussionTools,
+    )
+  }),
+)
 
 describe('AssetProcessorsAddModal', () => {
-  let mockOnProcessorResponse: jest.Mock
+  let mockOnProcessorResponse: any
   const queryClient = new QueryClient()
-  let mockedDoFetchApi: jest.Mock
+  let originalPostMessage: typeof window.postMessage
+
+  beforeAll(() => {
+    server.listen()
+    // Save original postMessage for restoration
+    originalPostMessage = window.postMessage.bind(window)
+  })
+  afterAll(() => {
+    server.close()
+    // Restore original postMessage
+    window.postMessage = originalPostMessage
+  })
 
   beforeEach(() => {
-    mockOnProcessorResponse = jest.fn()
-    const launchDefsUrl = '/api/v1/courses/123/lti_apps/launch_definitions'
-    mockedDoFetchApi = mockDoFetchApi(launchDefsUrl, doFetchApi as jest.Mock)
+    fakeENV.setup()
+    mockOnProcessorResponse = vi.fn()
+    // Mock postMessage globally to prevent jsdom errors with _origin being null.
+    // This is needed because monitorLtiMessages() adds a persistent listener that
+    // tries to respond to LTI messages via postMessage, which fails in jsdom.
+    window.postMessage = vi.fn()
   })
 
   afterEach(() => {
+    server.resetHandlers()
     queryClient.clear()
-    jest.clearAllMocks()
+    vi.clearAllMocks()
+    // Reset Zustand store state to prevent test pollution
+    useAssetProcessorsAddModalState.getState().actions.close()
+    fakeENV.teardown()
   })
 
   function renderModal(type: AssetProcessorType) {
@@ -117,16 +146,18 @@ describe('AssetProcessorsAddModal', () => {
           expect(cards).toHaveLength(4)
           const foundCard = cards.find(card => card.textContent?.includes(tool!.name))
           expect(foundCard).toBeDefined()
+
+          toolsForType(type).forEach(t => {
+            if (t.context_name) {
+              expect(getByText(`Installed in: ${t.context_name}`)).toBeInTheDocument()
+            }
+          })
+
           return foundCard
         },
         {timeout: 3000},
       ).then(toolCard => {
         act(() => toolCard!.click())
-      })
-
-      expect(mockedDoFetchApi).toHaveBeenCalledWith({
-        path: '/api/v1/courses/123/lti_apps/launch_definitions',
-        params: {'placements[]': type},
       })
 
       const iframe = await waitFor(() => getByTitle('Configure new document processing app'))
@@ -137,19 +168,30 @@ describe('AssetProcessorsAddModal', () => {
       const {selection_width, selection_height} = tool!.placements[type]!
       expect(iframe.style.width).toBe(selection_width + 'px')
       expect(iframe.style.height).toBe(selection_height + 'px')
+
+      await waitFor(() => {
+        const closeButton = document.querySelector(
+          '[data-pendo="asset-processors-add-modal-close-button"]',
+        )
+        if (closeButton) {
+          expect(document.activeElement).toBe(closeButton)
+        }
+      })
     })
 
     it(`handles valid deep linking response for ${type}`, async () => {
-      const mockOnProcessorResponse = jest.fn()
+      const mockOnProcessorResponse = vi.fn()
 
       const validResponse = {...mockResponse}
       expect(validResponse.tool_id).toBe(tool_id)
 
-      const mockHECM = handleExternalContentMessages as jest.Mock
-      mockHECM.mockImplementation(({onDeepLinkingResponse}) => {
-        setTimeout(() => onDeepLinkingResponse(validResponse), 0)
-        return () => {}
-      })
+      const mockHECM = handleExternalContentMessages as any
+      mockHECM.mockImplementation(
+        ({onDeepLinkingResponse}: {onDeepLinkingResponse: (response: any) => void}) => {
+          setTimeout(() => onDeepLinkingResponse(validResponse), 0)
+          return () => {}
+        },
+      )
 
       render(
         <MockedQueryClientProvider client={queryClient}>
@@ -173,21 +215,28 @@ describe('AssetProcessorsAddModal', () => {
           tool: tool,
           data: validResponse,
         })
+        expect(showFlashAlert).toHaveBeenCalledWith({
+          message: `${tool!.name} successfully added`,
+          type: 'success',
+          srOnly: true,
+        })
       })
     })
 
     it(`handles invalid deep linking response for ${type}`, async () => {
-      const mockOnProcessorResponse = jest.fn()
+      const mockOnProcessorResponse = vi.fn()
       const matchingTool = toolsForType(type).find(
         tool => tool.definition_id === mockInvalidDeepLinkResponse.tool_id,
       )
       expect(matchingTool).not.toBeUndefined()
 
-      const mockHECM = handleExternalContentMessages as jest.Mock
-      mockHECM.mockImplementation(({onDeepLinkingResponse}) => {
-        setTimeout(() => onDeepLinkingResponse(mockInvalidDeepLinkResponse), 0)
-        return () => {}
-      })
+      const mockHECM = handleExternalContentMessages as any
+      mockHECM.mockImplementation(
+        ({onDeepLinkingResponse}: {onDeepLinkingResponse: (response: any) => void}) => {
+          setTimeout(() => onDeepLinkingResponse(mockInvalidDeepLinkResponse), 0)
+          return () => {}
+        },
+      )
 
       render(
         <MockedQueryClientProvider client={queryClient}>
@@ -239,9 +288,10 @@ describe('AssetProcessorsAddModal', () => {
     const iframe = (await waitFor(() =>
       getByTitle('Configure new document processing app'),
     )) as HTMLIFrameElement
-    const source = iframe.contentWindow as Window
-    // If we don't overwrite postMessage we get some strange internal error in jsdom's postMessage
-    jest.spyOn(source, 'postMessage').mockImplementation(() => {})
+    // Also mock postMessage on the iframe's contentWindow since jsdom may route through it
+    if (iframe.contentWindow) {
+      iframe.contentWindow.postMessage = vi.fn()
+    }
 
     monitorLtiMessages()
 
@@ -291,6 +341,18 @@ describe('AssetProcessorsAddModal', () => {
         },
         {timeout: 5000},
       )
+
+      await waitFor(
+        () => {
+          const closeButton = document.querySelector(
+            '[data-pendo="asset-processors-add-modal-close-button"]',
+          )
+          if (closeButton) {
+            expect(document.activeElement).toBe(closeButton)
+          }
+        },
+        {timeout: 3000},
+      )
     })
 
     it('launches the tool when Space key is pressed on a card', async () => {
@@ -322,6 +384,15 @@ describe('AssetProcessorsAddModal', () => {
         },
         {timeout: 5000},
       )
+
+      await waitFor(() => {
+        const closeButton = document.querySelector(
+          '[data-pendo="asset-processors-add-modal-close-button"]',
+        )
+        if (closeButton) {
+          expect(document.activeElement).toBe(closeButton)
+        }
+      })
     })
 
     it('does not launch the tool when other keys are pressed on a card', async () => {

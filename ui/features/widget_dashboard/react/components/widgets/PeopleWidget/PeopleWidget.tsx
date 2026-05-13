@@ -16,7 +16,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-import React, {useState, useMemo} from 'react'
+import React, {useState, useMemo, useCallback} from 'react'
 import {useScope as createI18nScope} from '@canvas/i18n'
 import {Avatar} from '@instructure/ui-avatar'
 import {Text} from '@instructure/ui-text'
@@ -25,13 +25,15 @@ import {Flex} from '@instructure/ui-flex'
 import {List} from '@instructure/ui-list'
 import {IconButton} from '@instructure/ui-buttons'
 import {IconMessageLine} from '@instructure/ui-icons'
+import {ToggleDetails} from '@instructure/ui-toggle-details'
 import MessageStudents from '@canvas/message-students-modal/react'
-import TemplateWidget from '../TemplateWidget/TemplateWidget'
-import type {BaseWidgetProps, CourseOption} from '../../../types'
-import {useSharedCourses} from '../../../hooks/useSharedCourses'
+import {TemplateWidget} from '@instructure/platform-widget-dashboard'
+import PeopleFilters, {type RoleFilterOption, isValidRoleFilterOption} from './PeopleFilters'
+import type {BaseWidgetProps} from '../../../types'
+import {useWidgetTheme} from '../../../theme/WidgetThemeContext'
 import {useCourseInstructorsPaginated} from '../../../hooks/useCourseInstructors'
-import {CourseCode} from '../../shared/CourseCode'
 import {DEFAULT_PAGE_SIZE} from '../../../constants/pagination'
+import {useWidgetConfig} from '../../../hooks/useWidgetConfig'
 
 const I18n = createI18nScope('widget_dashboard')
 
@@ -43,7 +45,18 @@ const PeopleWidget: React.FC<BaseWidgetProps> = ({
   onRetry,
   dragHandleProps,
 }) => {
-  const [selectedCourse, setSelectedCourse] = useState<string>('all')
+  const {isDark} = useWidgetTheme()
+  const [selectedCourse, setSelectedCourse] = useWidgetConfig<string>(
+    widget.id,
+    'selectedCourse',
+    'all',
+  )
+  const [selectedRole, setSelectedRole] = useWidgetConfig<RoleFilterOption>(
+    widget.id,
+    'selectedRole',
+    'all',
+    isValidRoleFilterOption,
+  )
   const [selectedRecipient, setSelectedRecipient] = useState<{
     id: string
     displayName: string
@@ -52,23 +65,6 @@ const PeopleWidget: React.FC<BaseWidgetProps> = ({
   } | null>(null)
   const [modalKey, setModalKey] = useState(0)
 
-  const {
-    data: courseGrades = [],
-    isLoading: coursesLoading,
-    error: coursesError,
-  } = useSharedCourses({
-    limit: 1000,
-  })
-  const userCourses: CourseOption[] = courseGrades.map(courseGrade => ({
-    id: courseGrade.courseId,
-    name: courseGrade.courseName,
-  }))
-
-  const courseOptions: CourseOption[] = useMemo(
-    () => [{id: 'all', name: I18n.t('All Courses')}, ...userCourses],
-    [userCourses],
-  )
-
   const instructorCourseIds = useMemo(() => {
     if (selectedCourse === 'all') {
       return []
@@ -76,25 +72,33 @@ const PeopleWidget: React.FC<BaseWidgetProps> = ({
     return [selectedCourse]
   }, [selectedCourse])
 
+  const enrollmentTypes = useMemo(() => {
+    if (selectedRole === 'all') {
+      return undefined
+    }
+    return selectedRole === 'teacher' ? ['TeacherEnrollment'] : ['TaEnrollment']
+  }, [selectedRole])
+
   const {
     currentPage,
     currentPageIndex,
     totalPages,
     goToPage,
     isLoading: instructorsLoading,
+    isPaginationLoading: instructorsPaginationLoading,
     error: instructorsError,
   } = useCourseInstructorsPaginated({
     courseIds: instructorCourseIds,
     limit: DEFAULT_PAGE_SIZE.PEOPLE,
+    enrollmentTypes,
   })
 
   const instructors = currentPage?.data ?? []
 
   const error =
     externalError ||
-    (coursesError ? I18n.t('Failed to load course data. Please try again.') : null) ||
     (instructorsError ? I18n.t('Failed to load instructor data. Please try again.') : null)
-  const isLoading = !error && (externalIsLoading || coursesLoading || instructorsLoading)
+  const isLoading = !error && (externalIsLoading || instructorsLoading)
 
   const handleOpenMessageModal = (instructor: any) => {
     const courseId = instructor.enrollments?.[0]?.course_id
@@ -111,6 +115,24 @@ const PeopleWidget: React.FC<BaseWidgetProps> = ({
     setSelectedRecipient(null)
   }
 
+  const handleCourseChange = useCallback(
+    (_event: React.SyntheticEvent, data: {value?: string | number; id?: string}) => {
+      if (data.value && typeof data.value === 'string') {
+        setSelectedCourse(data.value)
+      }
+    },
+    [setSelectedCourse],
+  )
+
+  const handleRoleChange = useCallback(
+    (_event: React.SyntheticEvent, data: {value?: string | number; id?: string}) => {
+      if (data.value && typeof data.value === 'string') {
+        setSelectedRole(data.value as RoleFilterOption)
+      }
+    },
+    [setSelectedRole],
+  )
+
   return (
     <TemplateWidget
       widget={widget}
@@ -124,13 +146,22 @@ const PeopleWidget: React.FC<BaseWidgetProps> = ({
         currentPage: currentPageIndex + 1,
         totalPages,
         onPageChange: goToPage,
-        isLoading: instructorsLoading,
         ariaLabel: I18n.t('Instructors pagination'),
+      }}
+      loadingOverlay={{
+        isLoading: instructorsPaginationLoading,
+        ariaLabel: I18n.t('Loading instructors'),
       }}
     >
       <Flex direction="column" height="100%">
+        <PeopleFilters
+          selectedCourse={selectedCourse}
+          selectedRole={selectedRole}
+          onCourseChange={handleCourseChange}
+          onRoleChange={handleRoleChange}
+        />
         <Flex.Item shouldGrow>
-          <View as="div" padding="0">
+          <View as="div" padding="small 0 0 0">
             {instructors.length === 0 ? (
               <Text color="secondary" data-testid="no-instructors-message">
                 {I18n.t('No instructors found')}
@@ -142,9 +173,10 @@ const PeopleWidget: React.FC<BaseWidgetProps> = ({
                     <List.Item key={instructor.id} margin="0">
                       <Flex
                         gap="small"
-                        padding="xxx-small 0"
+                        padding="small 0"
                         role="group"
                         aria-label={instructor.name}
+                        alignItems="start"
                       >
                         <Flex.Item>
                           <Avatar
@@ -156,36 +188,82 @@ const PeopleWidget: React.FC<BaseWidgetProps> = ({
                         </Flex.Item>
                         <Flex.Item shouldGrow shouldShrink>
                           <View as="div">
-                            <Text size="medium" weight="bold" lineHeight="condensed">
+                            <Text
+                              size="medium"
+                              weight="bold"
+                              wrap="break-word"
+                              lineHeight="condensed"
+                            >
                               {instructor.name}
                             </Text>
-                            {instructor.course_code && (
-                              <View as="div" margin="xxx-small 0 0 0">
-                                <CourseCode
-                                  courseId={instructor.enrollments[0]?.course_id}
-                                  overrideCode={instructor.course_code}
-                                  size="x-small"
-                                />
-                              </View>
-                            )}
-                            <View as="div">
-                              <Text size="x-small" color="secondary">
-                                {instructor.enrollments
-                                  .map(enrollment => {
-                                    const role =
-                                      enrollment.type === 'TeacherEnrollment'
-                                        ? I18n.t('Teacher')
-                                        : I18n.t('Teaching Assistant')
-                                    return role
-                                  })
-                                  .join(', ')}
-                              </Text>
-                            </View>
                             {instructor.email && (
                               <View as="div">
-                                <Text size="x-small" color="secondary">
+                                <Text size="small" wrap="break-word">
                                   {instructor.email}
                                 </Text>
+                              </View>
+                            )}
+                            {instructor.enrollments.length === 1 ? (
+                              <>
+                                <View as="div">
+                                  <Text size="small" wrap="break-word">
+                                    {instructor.course_name}
+                                  </Text>
+                                </View>
+                                <View as="div">
+                                  <Text size="small">
+                                    {instructor.enrollments[0].type === 'TeacherEnrollment'
+                                      ? I18n.t('Teacher')
+                                      : I18n.t('Teaching Assistant')}
+                                  </Text>
+                                </View>
+                              </>
+                            ) : (
+                              <View as="div" margin="xx-small 0 0 0">
+                                <ToggleDetails
+                                  summary={
+                                    <Text size="small">
+                                      {I18n.t(
+                                        {
+                                          one: '1 enrollment',
+                                          other: '%{count} enrollments',
+                                        },
+                                        {count: instructor.enrollments.length},
+                                      )}
+                                    </Text>
+                                  }
+                                  size="small"
+                                >
+                                  <View as="div" borderWidth="small 0 0 0" padding="x-small 0 0 0">
+                                    <View
+                                      as="ul"
+                                      margin="0"
+                                      padding="0"
+                                      elementRef={(el: any) => {
+                                        if (el) {
+                                          el.style.listStyleType = 'disc'
+                                        }
+                                      }}
+                                    >
+                                      {instructor.enrollments.map(enrollment => {
+                                        const role =
+                                          enrollment.type === 'TeacherEnrollment'
+                                            ? I18n.t('Teacher')
+                                            : I18n.t('Teaching Assistant')
+                                        return (
+                                          <li key={enrollment.id}>
+                                            <Text size="small" wrap="break-word">
+                                              {I18n.t('%{role} in %{course}', {
+                                                role,
+                                                course: enrollment.course_name,
+                                              })}
+                                            </Text>
+                                          </li>
+                                        )
+                                      })}
+                                    </View>
+                                  </View>
+                                </ToggleDetails>
                               </View>
                             )}
                           </View>
@@ -193,6 +271,7 @@ const PeopleWidget: React.FC<BaseWidgetProps> = ({
                         <Flex.Item>
                           <View as="div" margin="0 small">
                             <IconButton
+                              color={isDark ? 'primary-inverse' : 'secondary'}
                               onClick={() => handleOpenMessageModal(instructor)}
                               screenReaderLabel={I18n.t('Send a message to %{instructor}', {
                                 instructor: instructor.name,

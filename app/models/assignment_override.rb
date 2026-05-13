@@ -18,7 +18,7 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
-class AssignmentOverride < ActiveRecord::Base
+class AssignmentOverride < ApplicationRecord
   include Workflow
   include TextHelper
 
@@ -578,5 +578,29 @@ class AssignmentOverride < ActiveRecord::Base
         due_at: child.due_at
       }
     end
+  end
+
+  def peer_review_override
+    return nil unless assignment
+
+    peer_review_sub = assignment.peer_review_sub_assignment
+    return nil unless peer_review_sub
+
+    peer_review_sub.active_assignment_overrides.find_by(parent_override_id: id)
+  end
+
+  def peer_review_dates_for_override(peer_review_overrides = nil)
+    peer_review_overrides ||= assignment&.peer_review_overrides_for_dates
+    return nil unless peer_review_overrides
+
+    peer_review_sub = peer_review_overrides[:peer_review_sub]
+    override = peer_review_overrides[:overrides][id]
+    source = override || peer_review_sub
+
+    {
+      due_at: source.due_at,
+      unlock_at: source.unlock_at,
+      lock_at: source.lock_at
+    }
   end
 end

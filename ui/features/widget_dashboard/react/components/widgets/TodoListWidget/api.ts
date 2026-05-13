@@ -24,6 +24,13 @@ export interface FetchPlannerItemsParams {
   end_date?: string
   per_page?: number
   order?: 'asc' | 'desc'
+  filter?:
+    | 'new_activity'
+    | 'ungraded_todo_items'
+    | 'all_ungraded_todo_items'
+    | 'incomplete_items'
+    | 'complete_items'
+  observed_user_id?: string | null
 }
 
 export interface FetchPlannerItemsResponse {
@@ -46,6 +53,11 @@ export async function fetchPlannerItems(
     if (params.end_date) queryParams.append('end_date', params.end_date)
     if (params.per_page) queryParams.append('per_page', params.per_page.toString())
     if (params.order) queryParams.append('order', params.order)
+    if (params.filter) queryParams.append('filter', params.filter)
+    if (params.observed_user_id) {
+      queryParams.append('observed_user_id', params.observed_user_id)
+      queryParams.append('include[]', 'all_courses')
+    }
 
     url = `/api/v1/planner/items?${queryParams.toString()}`
   }
@@ -102,6 +114,39 @@ export async function updatePlannerOverride(
 
   if (!json) {
     throw new Error('Failed to update planner override')
+  }
+
+  return json
+}
+
+export interface CreatePlannerNoteParams {
+  title: string
+  todo_date: string
+  details?: string
+  course_id?: string
+}
+
+export interface PlannerNote {
+  id: number
+  title: string
+  description: string
+  user_id: number
+  workflow_state: string
+  course_id: number | null
+  todo_date: string
+  created_at: string
+  updated_at: string
+}
+
+export async function createPlannerNote(params: CreatePlannerNoteParams): Promise<PlannerNote> {
+  const {json} = await doFetchApi<PlannerNote>({
+    path: '/api/v1/planner_notes',
+    method: 'POST',
+    body: params,
+  })
+
+  if (!json) {
+    throw new Error('Failed to create planner note')
   }
 
   return json

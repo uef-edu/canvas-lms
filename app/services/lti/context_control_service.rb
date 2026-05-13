@@ -193,7 +193,8 @@ module Lti
         [[c[:account_id], c[:deployment_id]], true]
       end.to_h
 
-      controls.filter_map do |c|
+      # First pass: calculate all anchor controls that might need to be created
+      anchor_controls = controls.filter_map do |c|
         if deployment_course_ids.key?(c[:deployment_id])
           # course-level deployments never need an anchor control
           next nil
@@ -240,14 +241,34 @@ module Lti
           account_id: anchor_account_id,
           available: parent_availability,
           path:,
-        }
+        }.with_indifferent_access
       end.uniq { [it[:account_id], it[:deployment_id]] }
+
+      # Second pass: query for existing anchor controls and filter them out
+      # If an anchor already exists, we don't need to create it
+      if anchor_controls.any?
+        account_ids = anchor_controls.pluck(:account_id)
+        deployment_ids = anchor_controls.pluck(:deployment_id)
+
+        existing_anchors = Lti::ContextControl
+                           .active
+                           .where(
+                             # We use unnest here to help with query plan caching
+                             "(account_id, deployment_id) IN (SELECT unnest(ARRAY[?]::bigint[]), unnest(ARRAY[?]::bigint[]))",
+                             account_ids,
+                             deployment_ids
+                           )
+                           .pluck(:account_id, :deployment_id)
+                           .to_set { |account_id, deployment_id| [account_id, deployment_id] }
+
+        anchor_controls.reject! { |ac| existing_anchors.include?([ac[:account_id], ac[:deployment_id]]) }
+      end
+
+      anchor_controls
     end
 
     # Calculate attributes in bulk for a collection of Lti::ContextControls.
     # Avoids N+1 queries for API responses that include multiple context controls.
-    # Make sure that you preload :account, :course, :created_by, :updated_by before calling
-    # this method to avoid even more N+1s!
     #
     # @param controls [Array<Lti::ContextControl>] the context controls to preload attributes for
     # @return [Hash] a hash mapping control IDs to their calculated attributes
@@ -278,10 +299,7 @@ module Lti
         end
       end
 
-      all_possible_parent_paths = controls.map do |control|
-        Lti::ContextControl.self_and_all_parent_paths(control.account || control.course)
-      end.flatten.uniq
-
+      all_possible_parent_paths = controls.map(&:self_and_all_parent_paths).flatten.uniq
       parent_paths_of_controls = group_by_deployment_id(
         base_query_for_paths(controls)
           .where(path: all_possible_parent_paths)
@@ -294,10 +312,12 @@ module Lti
         end
       end
 
-      course_account_ids = Course.where(id: course_controls.pluck(:course_id).compact).pluck(:account_id)
+      all_course_ids = course_controls.pluck(:course_id).compact
+      course_account_ids = Course.where(id: all_course_ids).pluck(:account_id)
       account_ids = (course_account_ids + account_controls.pluck(:account_id).compact).uniq
       all_account_ids = Account.multi_account_chain_ids(account_ids)
       all_account_names = Account.where(id: all_account_ids).pluck(:id, :name).to_h
+      all_course_names = Course.where(id: all_course_ids).pluck(:id, :name).to_h
 
       display_paths = controls.each_with_object({}) do |control, paths|
         # exclude control's own context, only include parents
@@ -310,13 +330,17 @@ module Lti
         paths[control.id] = account_names
       end
 
+      context_names = controls.to_h do |c|
+        [c.id, all_course_names[c.course_id] || all_account_names[c.account_id]]
+      end
       account_controls.each do |control|
         attrs[control.id] = {
           subaccount_count: subaccount_ids[control.account_id].size,
           course_count: course_counts[control.account_id],
           child_control_count: child_control_counts[control.id],
           display_path: display_paths[control.id],
-          depth: control_depths[control.id]
+          depth: control_depths[control.id],
+          context_name: context_names[control.id]
         }
       end
 
@@ -326,7 +350,8 @@ module Lti
           course_count: 0,
           child_control_count: 0,
           display_path: display_paths[control.id],
-          depth: control_depths[control.id]
+          depth: control_depths[control.id],
+          context_name: context_names[control.id]
         }
       end
 

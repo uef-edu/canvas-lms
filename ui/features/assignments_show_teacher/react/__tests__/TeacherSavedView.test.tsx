@@ -23,11 +23,11 @@ import {QueryClient} from '@tanstack/react-query'
 import type {TeacherAssignmentType} from '@canvas/assignments/graphql/teacher/AssignmentTeacherTypes'
 import TeacherSavedView from '../TeacherSavedView'
 
-const mockUseModuleSequence = jest.fn()
+const mockUseModuleSequence = vi.fn()
 
-jest.mock('../utils/getModuleItemId', () => ({
+vi.mock('../utils/getModuleItemId', () => ({
   __esModule: true,
-  default: jest.fn(assignment => {
+  default: vi.fn(assignment => {
     if (assignment?.modules && assignment.modules.length > 0) {
       return assignment.modules[0].lid
     }
@@ -35,7 +35,7 @@ jest.mock('../utils/getModuleItemId', () => ({
   }),
 }))
 
-jest.mock('../hooks/useModuleSequence', () => ({
+vi.mock('../hooks/useModuleSequence', () => ({
   __esModule: true,
   default: (...args: any[]) => mockUseModuleSequence(...args),
 }))
@@ -78,7 +78,7 @@ describe('TeacherSavedView', () => {
   }
 
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
     mockUseModuleSequence.mockReturnValue({
       isLoading: false,
       error: null,
@@ -104,6 +104,7 @@ describe('TeacherSavedView', () => {
   describe('Peer Review Tabs', () => {
     beforeEach(() => {
       window.ENV.PEER_REVIEW_ALLOCATION_AND_GRADING_ENABLED = true
+      window.ENV.HAS_PEER_REVIEW_SUB_ASSIGNMENT = true
     })
 
     it('does not render AssignmentTabs when peer reviews are disabled', () => {
@@ -121,6 +122,20 @@ describe('TeacherSavedView', () => {
 
     it('does not render AssignmentTabs when PEER_REVIEW_ALLOCATION_AND_GRADING_ENABLED is false', () => {
       window.ENV.PEER_REVIEW_ALLOCATION_AND_GRADING_ENABLED = false
+      const assignment = createMockAssignment({
+        peerReviews: {
+          enabled: true,
+          count: 2,
+        },
+      })
+
+      renderWithQueryClient(<TeacherSavedView assignment={assignment} breakpoints={{}} />)
+      expect(screen.queryByTestId('assignment-tab')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('peer-review-tab')).not.toBeInTheDocument()
+    })
+
+    it('does not render AssignmentTabs when assignment has no peer review sub-assignment', () => {
+      window.ENV.HAS_PEER_REVIEW_SUB_ASSIGNMENT = false
       const assignment = createMockAssignment({
         peerReviews: {
           enabled: true,
@@ -160,6 +175,7 @@ describe('TeacherSavedView', () => {
   describe('Assignment Details View', () => {
     beforeEach(() => {
       window.ENV.PEER_REVIEW_ALLOCATION_AND_GRADING_ENABLED = true
+      window.ENV.HAS_PEER_REVIEW_SUB_ASSIGNMENT = true
     })
 
     it('renders AssignmentDetailsView when peer reviews are disabled', () => {

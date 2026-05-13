@@ -21,6 +21,7 @@
 module Factories
   def peer_review_model(opts = {})
     @parent_assignment = opts.delete(:parent_assignment)
+    peer_review_count = opts.delete(:peer_review_count) || 1
     course = if @parent_assignment
                opts.delete(:course)
                @parent_assignment.course
@@ -33,10 +34,12 @@ module Factories
       title: "Parent Assignment",
       points_possible: 20,
       peer_reviews: true,
+      peer_review_count:,
       submission_types: "online_text_entry"
     )
 
     @parent_assignment.peer_reviews = true unless @parent_assignment.peer_reviews?
+    @parent_assignment.peer_review_count = peer_review_count unless @parent_assignment.peer_review_count
     @parent_assignment.save!
 
     course.enable_feature!(:peer_review_allocation_and_grading)
@@ -45,16 +48,46 @@ module Factories
       parent_assignment: @parent_assignment,
       **valid_attributes.merge(opts)
     )
+    @parent_assignment.reload
     @peer_review_sub_assignment
   end
 
   def valid_attributes
+    # Calculate dates based on parent assignment to respect validation rules
+    parent_due = @parent_assignment&.due_at
+    parent_unlock = @parent_assignment&.unlock_at
+    parent_lock = @parent_assignment&.lock_at
+
+    # Peer review unlock must be >= parent due_at
+    unlock_at = if parent_due
+                  parent_due + 1.day
+                else
+                  1.day.from_now
+                end
+
+    # If parent has unlock_at, peer review unlock must also be >= that
+    unlock_at = [unlock_at, parent_unlock].compact.max if parent_unlock
+
+    # Peer review due must be >= parent due_at
+    due_at = if parent_due
+               parent_due + 1.week
+             else
+               1.week.from_now
+             end
+
+    # Peer review lock must be <= parent lock_at if it exists
+    lock_at = if parent_lock
+                [parent_lock, due_at + 1.week].min
+              else
+                2.weeks.from_now
+              end
+
     {
       points_possible: 10,
       grading_type: "points",
-      due_at: 1.week.from_now,
-      unlock_at: 1.day.from_now,
-      lock_at: 2.weeks.from_now
+      due_at:,
+      unlock_at:,
+      lock_at:
     }
   end
 end

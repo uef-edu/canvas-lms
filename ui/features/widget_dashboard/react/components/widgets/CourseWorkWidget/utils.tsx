@@ -17,18 +17,9 @@
  */
 
 import React from 'react'
-import {
-  IconAssignmentLine,
-  IconQuizLine,
-  IconDiscussionLine,
-  IconDocumentLine,
-  IconCalendarClockLine,
-  IconCheckMarkLine,
-  IconWarningLine,
-} from '@instructure/ui-icons'
+import {IconCalendarClockLine, IconCheckMarkLine, IconWarningLine} from '@instructure/ui-icons'
 import {useScope as createI18nScope} from '@canvas/i18n'
 import {startOfToday, getTomorrow} from '../../../utils/dateUtils'
-import type {CourseWorkItem} from '../../../hooks/useCourseWork'
 
 const I18n = createI18nScope('widget_dashboard')
 export interface SubmissionStatus {
@@ -68,38 +59,6 @@ export function formatDueDate(dueAt: string | null): string {
   })
 }
 
-export function getTypeIcon(type: CourseWorkItem['type'], isMobile: boolean) {
-  const iconSize = isMobile ? 'x-small' : 'small'
-  switch (type) {
-    case 'assignment':
-      return (
-        <IconAssignmentLine
-          title={I18n.t('Assignment')}
-          size={iconSize}
-          data-testid="assignment-icon"
-        />
-      )
-    case 'quiz':
-      return <IconQuizLine title={I18n.t('Quiz')} size={iconSize} data-testid="quiz-icon" />
-    case 'discussion':
-      return (
-        <IconDiscussionLine
-          title={I18n.t('Discussion')}
-          size={iconSize}
-          data-testid="discussion-icon"
-        />
-      )
-    default:
-      return (
-        <IconDocumentLine
-          title={I18n.t('Course Work Item')}
-          size={iconSize}
-          data-testid="document-icon"
-        />
-      )
-  }
-}
-
 interface SubmissionStatusColors {
   [key: string]: {
     background: string
@@ -107,12 +66,24 @@ interface SubmissionStatusColors {
   }
 }
 
-const SUBMISSION_STATUS_COLORS: SubmissionStatusColors = {
-  blue: {background: '#E0EBF5', textColor: '#2B7ABC'},
+const SUBMISSION_STATUS_COLORS_LIGHT: SubmissionStatusColors = {
+  blue: {background: '#E0EBF5', textColor: '#1A5A8E'},
   red: {background: '#FCE4E5', textColor: '#E62429'},
   orange: {background: '#FCE5D9', textColor: '#CF4A00'},
   green: {background: '#DCEEE4', textColor: '#03893D'},
   grey: {background: '#E8EAEC', textColor: '#6A7883'},
+}
+
+const SUBMISSION_STATUS_COLORS_DARK: SubmissionStatusColors = {
+  blue: {background: '#253443', textColor: '#5A9FD4'},
+  red: {background: '#253443', textColor: '#F08A8D'},
+  orange: {background: '#253443', textColor: '#F0A87A'},
+  green: {background: '#253443', textColor: '#6FCF8A'},
+  grey: {background: '#253443', textColor: '#9EA6AD'},
+}
+
+function getStatusColors(isDark: boolean): SubmissionStatusColors {
+  return isDark ? SUBMISSION_STATUS_COLORS_DARK : SUBMISSION_STATUS_COLORS_LIGHT
 }
 
 export function getSubmissionStatus(
@@ -120,12 +91,15 @@ export function getSubmissionStatus(
   missing: boolean,
   state: string,
   dueAt: string | null,
+  isDark = false,
 ): SubmissionStatus {
+  const colors = getStatusColors(isDark)
+
   if (missing) {
     return {
       type: 'missing',
       label: I18n.t('Missing'),
-      color: SUBMISSION_STATUS_COLORS.red,
+      color: colors.red,
       icon: IconWarningLine,
       iconColor: 'error',
     }
@@ -135,7 +109,7 @@ export function getSubmissionStatus(
     return {
       type: 'late',
       label: I18n.t('Late'),
-      color: SUBMISSION_STATUS_COLORS.orange,
+      color: colors.orange,
       icon: IconWarningLine,
       iconColor: 'warning',
     }
@@ -145,7 +119,7 @@ export function getSubmissionStatus(
     return {
       type: 'pending_review',
       label: I18n.t('Pending Review'),
-      color: SUBMISSION_STATUS_COLORS.orange,
+      color: colors.orange,
     }
   }
 
@@ -153,7 +127,7 @@ export function getSubmissionStatus(
     return {
       type: 'submitted',
       label: I18n.t('Submitted'),
-      color: SUBMISSION_STATUS_COLORS.green,
+      color: colors.green,
       icon: IconCheckMarkLine,
       iconColor: 'success',
     }
@@ -163,7 +137,7 @@ export function getSubmissionStatus(
     return {
       type: 'due_soon',
       label: formatDueDate(dueAt),
-      color: SUBMISSION_STATUS_COLORS.blue,
+      color: colors.blue,
       icon: IconCalendarClockLine,
       iconColor: 'brand',
     }
@@ -172,6 +146,6 @@ export function getSubmissionStatus(
   return {
     type: 'not_submitted',
     label: I18n.t('Not Submitted'),
-    color: SUBMISSION_STATUS_COLORS.grey,
+    color: colors.grey,
   }
 }

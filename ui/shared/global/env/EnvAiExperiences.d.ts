@@ -26,12 +26,15 @@ export interface AIExperience {
   account_id?: string
   course_id?: string | number
   root_account_id?: string
-  workflow_state?: string
+  workflow_state: 'published' | 'unpublished'
   created_at?: string
   updated_at?: string
+  can_manage: boolean
+  can_unpublish?: boolean
 }
 
 export interface EnvAiExperiences {
   AI_EXPERIENCE: AIExperience
   NAVBAR_HEIGHT: number
+  ai_experiences_evaluation_enabled: boolean
 }

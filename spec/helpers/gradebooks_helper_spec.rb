@@ -322,6 +322,32 @@ describe GradebooksHelper do
       expect(translated_due_date_for_speedgrader(assignment)).to eq "Due: No Due Date"
     end
 
+    it "does not show multiple dates when module override and assignment override target same section" do
+      section1 = CourseSection.create!(name: "Section 1", course: @course)
+      student_in_section(section1, user: @student1)
+
+      context_module = @course.context_modules.create!(name: "Test Module")
+      assignment = @course.assignments.create!(
+        title: "Assignment in Module",
+        due_at: "2021-04-10T22:00:24Z"
+      )
+      context_module.add_item(type: "assignment", id: assignment.id)
+
+      AssignmentOverride.create!(
+        context_module:,
+        set: section1,
+        set_type: "CourseSection"
+      )
+
+      assignment.assignment_overrides.create!(
+        due_at: "2021-04-15T22:00:24Z",
+        due_at_overridden: true,
+        set: section1
+      )
+
+      expect(translated_due_date_for_speedgrader(assignment)).to eq "Due: Apr 15, 2021 at 10pm"
+    end
+
     it "produces a translated due date based on single section overriden due date" do
       assignment = @course.assignments.create!(
         title: "My Single Section Overridden Due Date Assignment",
@@ -358,6 +384,25 @@ describe GradebooksHelper do
         due_at: "2021-04-22T22:00:24Z"
       )
       expect(translated_due_date_for_speedgrader(parent)).to eq "Due: Apr 22, 2021 at 10pm"
+    end
+
+    it "handles only one checkpoint having a due date" do
+      @course.account.enable_feature!(:discussion_checkpoints)
+      parent = @course.assignments.create!(
+        title: "Checkpointed Assignment",
+        has_sub_assignments: true,
+        workflow_state: "published"
+      )
+      parent.sub_assignments.create!(
+        context: @course,
+        sub_assignment_tag: CheckpointLabels::REPLY_TO_TOPIC,
+        due_at: "2021-04-15T22:00:24Z"
+      )
+      parent.sub_assignments.create!(
+        context: @course,
+        sub_assignment_tag: CheckpointLabels::REPLY_TO_ENTRY
+      )
+      expect(translated_due_date_for_speedgrader(parent)).to eq "Due: Apr 15, 2021 at 10pm"
     end
 
     it "uses override due date for checkpointed assignment when student has override" do

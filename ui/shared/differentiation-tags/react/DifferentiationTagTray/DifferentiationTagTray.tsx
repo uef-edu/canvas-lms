@@ -37,7 +37,7 @@ import DifferentiationTagSearch from './DifferentiationTagSearch'
 import UploadFileSVG from '../images/UploadFile.svg'
 import {FormMessage} from '@instructure/ui-form-field'
 import doFetchApi, {DoFetchApiResults} from '@canvas/do-fetch-api-effect'
-import {showFlashAlert} from '@canvas/alerts/react/FlashAlert'
+import {showFlashAlert} from '@instructure/platform-alerts'
 import {monitorProgress, type CanvasProgress} from '@canvas/progress/ProgressHelpers'
 
 const I18n = createI18nScope('differentiation_tags')
@@ -54,7 +54,10 @@ export interface DifferentiationTagTrayProps {
 const Header = ({
   onClose,
   showCSVUploadView,
-}: {onClose: () => void; showCSVUploadView: boolean}) => (
+}: {
+  onClose: () => void
+  showCSVUploadView: boolean
+}) => (
   <Flex justifyItems="space-between" width="100%" padding="medium">
     <Flex.Item>
       <Heading level="h2" data-testid="differentiation-tag-header">
@@ -74,7 +77,10 @@ const Header = ({
 const EmptyState = ({
   onCreate,
   handleUploadCSV,
-}: {onCreate: () => void; handleUploadCSV: () => void}) => (
+}: {
+  onCreate: () => void
+  handleUploadCSV: () => void
+}) => (
   <Flex
     direction="column"
     alignItems="center"
@@ -261,7 +267,9 @@ export default function DifferentiationTagTray(props: DifferentiationTagTrayProp
 
   const handleFailedImport = () => {
     showFlashAlert({
-      message: I18n.t('Tag upload failed. Please check the file format and try again.'),
+      message: I18n.t(
+        'Upload failed. Make sure all required info is included, the column names match the template, and the file is a CSV.',
+      ),
       type: 'error',
     })
     setIsProcessingCSV(false)
@@ -319,7 +327,11 @@ export default function DifferentiationTagTray(props: DifferentiationTagTrayProp
     file,
     onError,
     onSuccess,
-  }: {file: DataTransferItem | File; onError: () => void; onSuccess: () => void}) => {
+  }: {
+    file: DataTransferItem | File
+    onError: () => void
+    onSuccess: () => void
+  }) => {
     try {
       const actualFile = file instanceof DataTransferItem ? file.getAsFile() : file
       if (!actualFile) {

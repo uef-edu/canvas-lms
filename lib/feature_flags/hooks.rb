@@ -59,6 +59,22 @@ module FeatureFlags
       end
     end
 
+    def self.project_lhotse_visible_on_hook(_context)
+      false
+    end
+
+    def self.tier_1_visible_on_hook(_context)
+      true
+    end
+
+    def self.tier_2_visible_on_hook(_context)
+      true
+    end
+
+    def self.tier_3_visible_on_hook(_context)
+      true
+    end
+
     def self.quizzes_next_visible_on_hook(context)
       root_account = context.root_account
       # assume all Quizzes.Next provisions so far have been done through uuid_provisioner
@@ -134,11 +150,13 @@ module FeatureFlags
       end
     end
 
-    def self.lti_registrations_discover_page_hook(_user, context, _from_state, transitions)
-      unless context.feature_enabled?(:lti_registrations_page)
-        transitions["on"] ||= {}
-        transitions["on"]["message"] = I18n.t("The LTI Extensions Discover page won't be accessible unless the LTI Registrations page is enabled")
-      end
+    def self.provision_ai_experience_after_change_hook(_user, context, _old_state, _new_state)
+      AiExperiences::Jobs::AiExperienceProvisionJob.delay(
+        run_at: 10.seconds.from_now,
+        singleton: "ai_experience_provision:#{context.uuid}",
+        on_conflict: :overwrite, # Ensures that job launches 10 seconds after final feature flag flip
+        max_attempts: 3
+      ).provision_account_for_ai_experiences(context)
     end
 
     def self.assignment_enhancements_prereq_for_stickers_hook(_user, context, _old_state, new_state)
@@ -187,6 +205,28 @@ module FeatureFlags
 
     def self.only_admins_can_enable_a11y_checker_during_eap(user, context, from_state, transitions)
       only_admins_can_enable_during_eap(user, context, :a11y_checker, from_state, transitions, allow_subaccount_admins: true)
+    end
+
+    def self.oak_visible_on_hook(context)
+      return false unless tier_2_visible_on_hook(context)
+
+      OakPredicate.new(context, Shard.current.database_server.config[:region]).call
+    end
+
+    def self.oak_for_users_visible_on_hook(context)
+      return false unless context.is_a?(User)
+      return false unless Account.current_domain_root_account
+      return false unless oak_visible_on_hook(Account.current_domain_root_account)
+
+      Oak::PermissionChecker.user_permitted?(context, Account.current_domain_root_account)
+    end
+
+    def self.oak_for_teachers_visible_on_hook(context)
+      context.feature_enabled?(:oak_for_admins)
+    end
+
+    def self.study_assist_visible_on_hook(context)
+      context.feature_enabled?(:study_assist)
     end
 
     # Private helper methods

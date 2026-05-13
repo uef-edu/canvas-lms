@@ -17,17 +17,18 @@
  */
 
 import React from 'react'
-import {createRoot} from 'react-dom/client'
+import {render, legacyRender} from '@canvas/react'
 import ModulesContainer from './react/ModulesContainer'
 import ModulesStudentContainer from './react/ModulesStudentContainer'
 import ready from '@instructure/ready'
 import {useScope as createI18nScope} from '@canvas/i18n'
 import type {GlobalEnv} from '@canvas/global/env/GlobalEnv'
-import ErrorBoundary from '@canvas/error-boundary'
-import GenericErrorPage from '@canvas/generic-error-page/react'
-import errorShipUrl from '@canvas/images/ErrorShip.svg'
+import {ErrorBoundary} from '@instructure/platform-error-boundary'
+import {GenericErrorPage} from '@instructure/platform-generic-error-page'
+import {reportError, canvasErrorPageTranslations} from '@canvas/error-page-utils'
+import errorShipUrl from '@instructure/platform-images/assets/ErrorShip.svg'
 import {QueryClientProvider} from '@tanstack/react-query'
-import {queryClient} from '@canvas/query'
+import {queryClient} from '@instructure/platform-query'
 import {ContextModuleProvider} from './react/hooks/useModuleContext'
 import {handleShortcutKey} from './react/utils/KBNavigator'
 import ObserverOptions from '@canvas/observer-picker'
@@ -36,7 +37,6 @@ import {
   autoFocusObserverPicker,
 } from '@canvas/observer-picker/util/pageReloadHelper'
 import {View} from '@instructure/ui-view'
-import ReactDOM from 'react-dom'
 
 const I18n = createI18nScope('context_modules_v2')
 
@@ -55,12 +55,13 @@ ready(() => {
   }
 
   if (container) {
-    const root = createRoot(container)
-    root.render(
+    render(
       <ErrorBoundary
         errorComponent={
           <GenericErrorPage
             imageUrl={errorShipUrl}
+            onReportError={reportError}
+            translations={canvasErrorPageTranslations}
             errorCategory={I18n.t('Context Modules Error Page')}
           />
         }
@@ -108,12 +109,13 @@ ready(() => {
           </ContextModuleProvider>
         </QueryClientProvider>
       </ErrorBoundary>,
+      container,
     )
 
     // Mount observer dropdown to the ERB element if available
     const observerPickerContainer = document.getElementById('observer-picker-mountpoint')
     if (observerPickerContainer && ENV.OBSERVER_OPTIONS?.OBSERVED_USERS_LIST) {
-      ReactDOM.render(
+      legacyRender(
         <View as="div" maxWidth="12em">
           <ObserverOptions
             autoFocus={autoFocusObserverPicker()}

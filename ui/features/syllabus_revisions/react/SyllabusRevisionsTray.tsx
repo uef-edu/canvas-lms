@@ -18,7 +18,7 @@
 
 import React, {useState, useEffect, useCallback} from 'react'
 import {useScope as useI18nScope} from '@canvas/i18n'
-import {showFlashAlert, showFlashError} from '@canvas/alerts/react/FlashAlert'
+import {showFlashAlert, showFlashError} from '@instructure/platform-alerts'
 import doFetchApi from '@canvas/do-fetch-api-effect'
 import {Button, CloseButton} from '@instructure/ui-buttons'
 import {View} from '@instructure/ui-view'
@@ -30,12 +30,18 @@ import {List} from '@instructure/ui-list'
 import {Modal} from '@instructure/ui-modal'
 import {Spinner} from '@instructure/ui-spinner'
 import {dateString} from '@instructure/moment-utils'
+import $ from 'jquery'
+import RichContentEditor from '@canvas/rce/RichContentEditor'
 
 interface SyllabusVersion {
   version: number
   created_at: string
   syllabus_body: string
   updated_at?: string
+  edited_by?: {
+    id: number
+    name: string
+  }
 }
 
 interface SyllabusRevisionsTrayProps {
@@ -57,6 +63,33 @@ export default function SyllabusRevisionsTray({
   const [versionToRestore, setVersionToRestore] = useState<SyllabusVersion | null>(null)
   const [restoring, setRestoring] = useState(false)
   const [currentSyllabusBody, setCurrentSyllabusBody] = useState<string | null>(null)
+  const [isPreviewingVersion, setIsPreviewingVersion] = useState(false)
+  const [hasEditedWhilePreviewing, setHasEditedWhilePreviewing] = useState(false)
+
+  const isInEditMode = (): boolean => {
+    const editForm = document.getElementById('edit_course_syllabus_form')
+    return editForm !== null && editForm.style.display !== 'none'
+  }
+
+  const restoreOriginalSyllabusIfNeeded = () => {
+    if (
+      !isInEditMode() &&
+      isPreviewingVersion &&
+      !hasEditedWhilePreviewing &&
+      currentSyllabusBody
+    ) {
+      const syllabusElement = document.getElementById('course_syllabus')
+      if (syllabusElement) {
+        const currentContent = syllabusElement.innerHTML.trim()
+        const selectedContent = (selectedVersion?.syllabus_body || '').trim()
+
+        if (currentContent === selectedContent && currentContent !== currentSyllabusBody.trim()) {
+          syllabusElement.innerHTML = currentSyllabusBody
+        }
+        $(syllabusElement).removeData('revision_preview')
+      }
+    }
+  }
 
   const fetchVersions = useCallback(async () => {
     setLoading(true)
@@ -85,13 +118,17 @@ export default function SyllabusRevisionsTray({
   useEffect(() => {
     if (open) {
       fetchVersions()
-    } else if (currentSyllabusBody) {
-      const syllabusElement = document.getElementById('course_syllabus')
-      if (syllabusElement && syllabusElement.innerHTML !== currentSyllabusBody) {
-        syllabusElement.innerHTML = currentSyllabusBody
-      }
+      setHasEditedWhilePreviewing(false)
     }
-  }, [open, fetchVersions, currentSyllabusBody])
+  }, [open, fetchVersions])
+
+  useEffect(() => {
+    if (!open && currentSyllabusBody) {
+      restoreOriginalSyllabusIfNeeded()
+      setIsPreviewingVersion(false)
+      setHasEditedWhilePreviewing(false)
+    }
+  }, [open, currentSyllabusBody, isPreviewingVersion, hasEditedWhilePreviewing, selectedVersion])
 
   const formatDateTime = (dateStr: string) => {
     const date = new Date(dateStr)
@@ -110,16 +147,28 @@ export default function SyllabusRevisionsTray({
   }
 
   const handleVersionClick = (version: SyllabusVersion) => {
-    const syllabusElement = document.getElementById('course_syllabus')
-    let shouldUpdateDOM = false
+    if (isInEditMode()) {
+      if (isPreviewingVersion) {
+        setHasEditedWhilePreviewing(true)
+      }
+      const $editorTextarea = $('#course_syllabus_body')
+      if ($editorTextarea.length && version.syllabus_body) {
+        RichContentEditor.callOnRCE($editorTextarea, 'set_code', version.syllabus_body)
+      }
+    } else {
+      const syllabusElement = document.getElementById('course_syllabus')
+      let shouldUpdateDOM = false
 
-    if (syllabusElement && version.syllabus_body) {
-      const normalizedCurrent = syllabusElement.innerHTML.trim()
-      const normalizedNew = version.syllabus_body.trim()
-      shouldUpdateDOM = normalizedCurrent !== normalizedNew
+      if (syllabusElement) {
+        const normalizedCurrent = syllabusElement.innerHTML.trim()
+        const normalizedNew = (version.syllabus_body || '').trim()
+        shouldUpdateDOM = normalizedCurrent !== normalizedNew
 
-      if (shouldUpdateDOM) {
-        syllabusElement.innerHTML = version.syllabus_body
+        if (shouldUpdateDOM) {
+          syllabusElement.innerHTML = version.syllabus_body || ''
+          $(syllabusElement).data('revision_preview', version.syllabus_body || '')
+          setIsPreviewingVersion(true)
+        }
       }
     }
 
@@ -160,14 +209,8 @@ export default function SyllabusRevisionsTray({
   }
 
   const handleTrayDismiss = () => {
-    const syllabusElement = document.getElementById('course_syllabus')
-    if (
-      syllabusElement &&
-      currentSyllabusBody &&
-      syllabusElement.innerHTML !== currentSyllabusBody
-    ) {
-      syllabusElement.innerHTML = currentSyllabusBody
-    }
+    restoreOriginalSyllabusIfNeeded()
+    $('#course_syllabus').removeData('revision_preview')
     onDismiss()
   }
 
@@ -237,8 +280,14 @@ export default function SyllabusRevisionsTray({
                         themeOverride={isSelected ? {backgroundPrimary: '#E0EBF5'} : undefined}
                       >
                         <View as="div" margin="0 0 xx-small 0">
-                          <Text weight="bold" lineHeight="condensed">
-                            {formatDateTime(version.created_at)}
+                          <Text lineHeight="condensed">
+                            <Text weight="bold">{formatDateTime(version.created_at)}</Text>
+                            {version.edited_by && (
+                              <>
+                                {' '}
+                                {I18n.t('by')} {version.edited_by.name}
+                              </>
+                            )}
                           </Text>
                         </View>
                         {revisionText(version, index) && (

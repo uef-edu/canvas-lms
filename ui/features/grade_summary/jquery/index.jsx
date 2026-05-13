@@ -16,7 +16,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-import {forEach, extend as lodashExtend} from 'lodash'
+import {forEach, extend as lodashExtend} from 'es-toolkit/compat'
 import $ from 'jquery'
 import '@canvas/jquery/jquery.ajaxJSON'
 import '@canvas/jquery/jquery.instructure_misc_helpers' /* replaceTags */
@@ -27,7 +27,7 @@ import '@canvas/media-comments' /* mediaComment */
 import axios from '@canvas/axios'
 import {camelizeProperties} from '@canvas/convert-case'
 import React from 'react'
-import ReactDOM from 'react-dom/client'
+import {render, rerender} from '@canvas/react'
 import gradingPeriodSetsApi from '@canvas/grading/jquery/gradingPeriodSetsApi'
 import {htmlEscape} from '@instructure/html-escape'
 import {useScope as createI18nScope} from '@canvas/i18n'
@@ -389,7 +389,7 @@ function calculateSubtotals(byGradingPeriod, calculatedGrades, currentOrFinal) {
       elementIdPrefix: '#submission_group',
     }
   }
-  if (params.grades) {
+  if (params.grades && params.bins) {
     for (let i = 0; i < params.bins.length; i++) {
       const binId = params.bins[i].id
       let grade = params.grades[binId]
@@ -732,18 +732,21 @@ let clearBadgeCountsRoot = null
 
 function renderSelectMenuGroup() {
   const container = document.getElementById('GradeSummarySelectMenuGroup')
+  const element = <SelectMenuGroup {...GradeSummary.getSelectMenuGroupProps()} />
   if (!selectMenuRoot) {
-    selectMenuRoot = ReactDOM.createRoot(container)
+    selectMenuRoot = render(element, container)
+  } else {
+    rerender(selectMenuRoot, element)
   }
-  selectMenuRoot.render(<SelectMenuGroup {...GradeSummary.getSelectMenuGroupProps()} />)
 }
 
 function renderGradeSummaryTable() {
   const container = document.getElementById('grade-summary-react')
   if (!gradeSummaryRoot) {
-    gradeSummaryRoot = ReactDOM.createRoot(container)
+    gradeSummaryRoot = render(<GradeSummaryManager />, container)
+  } else {
+    rerender(gradeSummaryRoot, <GradeSummaryManager />)
   }
-  gradeSummaryRoot.render(<GradeSummaryManager />)
 }
 
 function handleSubmissionsCommentTray(assignmentId) {
@@ -790,28 +793,32 @@ function getSubmissionCommentsTrayProps(assignmentId) {
 
 function renderSubmissionCommentsTray() {
   const container = document.getElementById('GradeSummarySubmissionCommentsTray')
-  if (!submissionCommentsTrayRoot) {
-    submissionCommentsTrayRoot = ReactDOM.createRoot(container)
-  }
-  submissionCommentsTrayRoot.render(
+  const trayElement = (
     <SubmissionCommentsTray
       onDismiss={() => {
         const {submissionTrayAssignmentId} = useStore.getState()
         $(`#comments_thread_${submissionTrayAssignmentId}`).removeClass('comment_thread_show_print')
         $(`#submission_${submissionTrayAssignmentId}`).removeClass('selected-assignment')
       }}
-    />,
+    />
   )
+  if (!submissionCommentsTrayRoot) {
+    submissionCommentsTrayRoot = render(trayElement, container)
+  } else {
+    rerender(submissionCommentsTrayRoot, trayElement)
+  }
 }
 
 function renderClearBadgeCountsButton() {
   const container = document.getElementById('ClearBadgeCountsButton')
-  if (!clearBadgeCountsRoot) {
-    clearBadgeCountsRoot = ReactDOM.createRoot(container)
-  }
   const userId = ENV.student_id
   const courseId = ENV.course_id ?? ENV.context_asset_string.replace('course_', '')
-  clearBadgeCountsRoot.render(<ClearBadgeCountsButton userId={userId} courseId={courseId} />)
+  const badgeElement = <ClearBadgeCountsButton userId={userId} courseId={courseId} />
+  if (!clearBadgeCountsRoot) {
+    clearBadgeCountsRoot = render(badgeElement, container)
+  } else {
+    rerender(clearBadgeCountsRoot, badgeElement)
+  }
 }
 
 function addAssetProcessorToLegacyTable() {
@@ -822,7 +829,7 @@ function addAssetProcessorToLegacyTable() {
   const fetchParams = {
     courseId: ENV.course_id,
     studentId: ENV.student_id,
-    gradingPeriodId: ENV.current_grading_period_id,
+    gradingPeriodId: GradeSummary.getSelectedGradingPeriodId(),
   }
 
   if (!fetchParams.courseId || !fetchParams.studentId) {

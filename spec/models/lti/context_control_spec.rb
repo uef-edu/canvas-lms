@@ -376,6 +376,15 @@ describe Lti::ContextControl do
                              "a#{account.id}.a#{subaccount.id}.c#{course.id}.",
                            ])
     end
+
+    it "handles being passed a bare path" do
+      result = Lti::ContextControl.send(:self_and_all_parent_paths, "a1.a2.c3.")
+      expect(result).to eq([
+                             "a1.",
+                             "a1.a2.",
+                             "a1.a2.c3.",
+                           ])
+    end
   end
 
   describe ".deployment_ids_for_context" do
@@ -886,6 +895,96 @@ describe Lti::ContextControl do
     it "returns the correct path" do
       expect(described_class.calculate_path_for_account_ids([1, 2, 3]))
         .to eq("a3.a2.a1.")
+    end
+  end
+
+  describe "#sync_app_id" do
+    context "when registration_id is local (same shard)" do
+      it "sets app_id to registration_id" do
+        control = create!
+        expect(control.app_id).to be(registration.id)
+      end
+    end
+
+    context "when registration_id is cross-shard" do
+      specs_require_sharding
+
+      let(:account) { @shard2.activate { account_model } }
+      let(:user) { @shard2.activate { user_model } }
+      let(:deployment) { @shard2.activate { registration.new_external_tool(account, current_user: user) } }
+      let(:registration) do
+        Account.site_admin.shard.activate { lti_registration_with_tool(account: Account.site_admin) }
+      end
+
+      def clear_out_controls
+        Shard.find_each do |shard|
+          # No really, we want a clean slate
+          shard.activate { Lti::ContextControl.connection.execute("DELETE FROM #{Lti::ContextControl.quoted_table_name}") }
+        end
+      end
+
+      before(:once) do
+        clear_out_controls
+      end
+
+      context "when a local registration exists" do
+        let(:local_copy) do
+          @shard2.activate do
+            Lti::InstallTemplateRegistrationService.call(
+              account:,
+              user:,
+              template: registration
+            )[:local_copy]
+          end
+        end
+
+        it "sets app_id to the local copy's id" do
+          local_copy
+          deployment
+          clear_out_controls
+          @shard2.activate do
+            control = create!(registration:, deployment:)
+            expect(control.app_id).to be(local_copy.id)
+          end
+        end
+      end
+
+      context "when no local registration exists" do
+        it "raises" do
+          # Create a local copy so the deployment can be created, then destroy
+          # it to simulate bad DB state (e.g. a missed backfill entry).
+          local_reg = @shard2.activate do
+            Lti::InstallTemplateRegistrationService.call(
+              account:, user:, template: registration
+            )[:local_copy]
+          end
+          deployment
+          clear_out_controls
+          local_reg.destroy!
+          @shard2.activate do
+            expect { create!(registration:, deployment:) }.to raise_error(Lti::LocalAppNotFound)
+          end
+        end
+      end
+    end
+  end
+
+  describe "#deleted?" do
+    let(:control) { create! }
+
+    it "returns false when workflow_state is active" do
+      expect(control.workflow_state).to eq("active")
+      expect(control.deleted?).to be false
+    end
+
+    it "returns true when workflow_state is deleted" do
+      control.update!(workflow_state: "deleted")
+      expect(control.deleted?).to be true
+    end
+
+    it "returns true when workflow_state is deleted_with_context" do
+      control.update!(workflow_state: "deleted_with_context")
+      expect(control.deleted?).to be true
     end
   end
 end

@@ -17,16 +17,21 @@
  */
 
 import React from 'react'
-import ReactDOM from 'react-dom'
+import {legacyUnmountComponentAtNode} from '@canvas/react'
 import {renderLtiAssetReports} from '../speed_grader'
 import {Attachment, HistoricalSubmission, Submission} from '../speed_grader.d'
 import {LtiAssetReportsForSpeedgraderProps} from '@canvas/lti-asset-processor/shared-with-sg/replicated/components/LtiAssetReportsForSpeedgrader'
+import fakeEnv from '@canvas/test-utils/fakeENV'
 
 const SPEED_GRADER_LTI_ASSET_REPORTS_MOUNT_POINT = 'speed_grader_lti_asset_reports_mount_point'
 
-jest.mock('react-dom', () => ({
-  render: jest.fn(),
-  unmountComponentAtNode: jest.fn(),
+let lastRenderedProps: LtiAssetReportsForSpeedgraderProps | null = null
+
+vi.mock('@canvas/lti-asset-processor/react/LtiAssetReportsForSpeedgraderWrapper', () => ({
+  LtiAssetReportsForSpeedgraderWrapper: (props: LtiAssetReportsForSpeedgraderProps) => {
+    lastRenderedProps = props
+    return <div data-testid="lti-asset-reports-mock">Mock LtiAssetReportsForSpeedgrader</div>
+  },
 }))
 
 describe('renderLtiAssetReports', () => {
@@ -36,18 +41,18 @@ describe('renderLtiAssetReports', () => {
     mountPoint = document.createElement('div')
     mountPoint.id = SPEED_GRADER_LTI_ASSET_REPORTS_MOUNT_POINT
     document.body.appendChild(mountPoint)
-    jest.clearAllMocks()
-    // @ts-expect-error
-    window.ENV = {FEATURES: {lti_asset_processor: true}}
-    // @ts-expect-error - Reset window.jsonData for each test
-    window.jsonData = {
+    lastRenderedProps = null
+    fakeEnv.setup({FEATURES: {lti_asset_processor: true}})
+    ;(window as any).jsonData = {
       submission_types: 'online_text_entry',
       has_sub_assignments: false,
     }
   })
 
   afterEach(() => {
+    legacyUnmountComponentAtNode(mountPoint)
     document.body.removeChild(mountPoint)
+    fakeEnv.teardown()
   })
 
   const submission: Submission = {
@@ -85,10 +90,10 @@ describe('renderLtiAssetReports', () => {
       versioned_attachments: [{attachment}],
     }
     renderLtiAssetReports(submission, historicalSubmission)
-    expect(ReactDOM.render).toHaveBeenCalled()
-    expect(ReactDOM.unmountComponentAtNode).not.toHaveBeenCalled()
 
-    const component = (ReactDOM.render as jest.Mock).mock.calls[0][0] as React.Component
+    // The mock component should be rendered
+    expect(mountPoint.querySelector('[data-testid="lti-asset-reports-mock"]')).toBeInTheDocument()
+
     const expected: LtiAssetReportsForSpeedgraderProps = {
       assignmentId: '12',
       attachments: [{_id: '456', displayName: 'student-essay-doc'}],
@@ -97,18 +102,31 @@ describe('renderLtiAssetReports', () => {
       studentUserId: '123',
       submissionType: 'online_text_entry',
     }
-    expect(component.props).toEqual(expected)
+    expect(lastRenderedProps).toEqual(expected)
   })
 
   it('should unmount when there is no submission', () => {
-    const historicalSubmission = {
+    // First render something
+    const historicalSubmission: HistoricalSubmission = {
+      attempt: 1,
+      submission_type: 'online_text_entry',
+      versioned_attachments: [{attachment}],
+    }
+    renderLtiAssetReports(submission, historicalSubmission)
+    expect(mountPoint.querySelector('[data-testid="lti-asset-reports-mock"]')).toBeInTheDocument()
+
+    // Now call with null attempt and submission_type
+    const emptyHistoricalSubmission = {
       attempt: null,
       submission_type: null,
     }
     // @ts-expect-error
-    renderLtiAssetReports(submission, historicalSubmission, jsonData)
-    expect(ReactDOM.render).not.toHaveBeenCalled()
-    expect(ReactDOM.unmountComponentAtNode).toHaveBeenCalledWith(mountPoint)
+    renderLtiAssetReports(submission, emptyHistoricalSubmission, jsonData)
+
+    // The component should be unmounted
+    expect(
+      mountPoint.querySelector('[data-testid="lti-asset-reports-mock"]'),
+    ).not.toBeInTheDocument()
   })
 
   describe('checkpointed discussions', () => {
@@ -118,8 +136,7 @@ describe('renderLtiAssetReports', () => {
         submission_types: 'discussion_topic',
         has_sub_assignments: true,
       }
-      // @ts-expect-error
-      window.jsonData = checkpointedJsonData
+      ;(window as any).jsonData = checkpointedJsonData
 
       const historicalSubmission: HistoricalSubmission = {
         attempt: 2,
@@ -128,9 +145,8 @@ describe('renderLtiAssetReports', () => {
       }
 
       renderLtiAssetReports(submission, historicalSubmission)
-      expect(ReactDOM.render).toHaveBeenCalled()
+      expect(mountPoint.querySelector('[data-testid="lti-asset-reports-mock"]')).toBeInTheDocument()
 
-      const component = (ReactDOM.render as jest.Mock).mock.calls[0][0] as React.Component
       const expected: LtiAssetReportsForSpeedgraderProps = {
         assignmentId: '12',
         attachments: [{_id: '456', displayName: 'student-essay-doc'}],
@@ -139,7 +155,7 @@ describe('renderLtiAssetReports', () => {
         studentUserId: '123',
         submissionType: 'discussion_topic',
       }
-      expect(component.props).toEqual(expected)
+      expect(lastRenderedProps).toEqual(expected)
     })
 
     it('should use historical submission data for non-checkpointed discussions', () => {
@@ -148,8 +164,7 @@ describe('renderLtiAssetReports', () => {
         submission_types: 'discussion_topic',
         has_sub_assignments: false, // Not checkpointed
       }
-      // @ts-expect-error
-      window.jsonData = regularDiscussionJsonData
+      ;(window as any).jsonData = regularDiscussionJsonData
 
       const historicalSubmission: HistoricalSubmission = {
         attempt: 3,
@@ -158,9 +173,8 @@ describe('renderLtiAssetReports', () => {
       }
 
       renderLtiAssetReports(submission, historicalSubmission)
-      expect(ReactDOM.render).toHaveBeenCalled()
+      expect(mountPoint.querySelector('[data-testid="lti-asset-reports-mock"]')).toBeInTheDocument()
 
-      const component = (ReactDOM.render as jest.Mock).mock.calls[0][0] as React.Component
       const expected: LtiAssetReportsForSpeedgraderProps = {
         assignmentId: '12',
         attachments: [{_id: '456', displayName: 'student-essay-doc'}],
@@ -169,7 +183,7 @@ describe('renderLtiAssetReports', () => {
         studentUserId: '123',
         submissionType: 'discussion_topic',
       }
-      expect(component.props).toEqual(expected)
+      expect(lastRenderedProps).toEqual(expected)
     })
 
     it('should use historical submission data for non-discussion assignments', () => {
@@ -178,8 +192,7 @@ describe('renderLtiAssetReports', () => {
         submission_types: 'online_upload',
         has_sub_assignments: false,
       }
-      // @ts-expect-error
-      window.jsonData = regularJsonData
+      ;(window as any).jsonData = regularJsonData
 
       const historicalSubmission: HistoricalSubmission = {
         attempt: 3,
@@ -188,9 +201,8 @@ describe('renderLtiAssetReports', () => {
       }
 
       renderLtiAssetReports(submission, historicalSubmission)
-      expect(ReactDOM.render).toHaveBeenCalled()
+      expect(mountPoint.querySelector('[data-testid="lti-asset-reports-mock"]')).toBeInTheDocument()
 
-      const component = (ReactDOM.render as jest.Mock).mock.calls[0][0] as React.Component
       const expected: LtiAssetReportsForSpeedgraderProps = {
         assignmentId: '12',
         attachments: [{_id: '456', displayName: 'student-essay-doc'}],
@@ -199,7 +211,7 @@ describe('renderLtiAssetReports', () => {
         studentUserId: '123',
         submissionType: 'online_upload',
       }
-      expect(component.props).toEqual(expected)
+      expect(lastRenderedProps).toEqual(expected)
     })
   })
 })

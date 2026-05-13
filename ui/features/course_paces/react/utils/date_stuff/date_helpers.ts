@@ -96,8 +96,9 @@ export const addDays = (
   excludeWeekends: boolean,
   selectedDaysToSkip: string[] = [],
   blackoutDates: BlackoutDate[] = [],
+  timezone?: string,
 ): string => {
-  const date = moment(start)
+  const date = timezone ? moment.tz(start, timezone) : moment(start)
 
   while (dayIsDisabled(date, excludeWeekends, selectedDaysToSkip, blackoutDates)) {
     date.add(1, 'day')
@@ -158,7 +159,8 @@ const dayIsDisabled = (
   )
 }
 
-// @ts-expect-error
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore - untyped function parameter
 export const formatTimeAgoDate = date => {
   if (typeof date === 'string') {
     date = Date.parse(date)
@@ -186,6 +188,8 @@ export const formatTimeAgoDate = date => {
   if (weeks < 4) {
     return I18n.t({one: '1 week ago', other: '%{count} weeks ago'}, {count: weeks})
   }
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+  // @ts-ignore - tz.format's third argument (zone) is optional at runtime but required by tsgo
   return tz.format(date, 'date.formats.long')
 }
 
@@ -210,7 +214,8 @@ const getStartDateCaption = (
         ? 'enrollment_time_selection'
         : contextType
 
-    // @ts-expect-error
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore - dynamic object property access
     return START_DATE_CAPTIONS[contextTypeValue]
   }
   return START_DATE_CAPTIONS.empty
@@ -222,7 +227,8 @@ const getEndDateCaption = (
   contextType: string,
 ) => {
   if (endDateValue && coursePace.end_date_context !== 'hypothetical') {
-    // @ts-expect-error
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore - dynamic object property access
     return END_DATE_CAPTIONS[contextType]
   }
   return END_DATE_CAPTIONS.empty
@@ -241,7 +247,7 @@ export const generateDatesCaptions = (
   if (contextType === 'enrollment') {
     const appliedPaceContextType = appliedPace?.type.toLocaleLowerCase()
     const paceType = ['course', 'section'].includes(appliedPaceContextType)
-      ? appliedPaceContextType
+      ? `enrollment_${appliedPaceContextType}`
       : 'default'
     captions.endDate = getEndDateCaption(endDateValue, coursePace, paceType)
     return captions

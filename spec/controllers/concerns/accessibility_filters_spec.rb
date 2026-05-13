@@ -17,8 +17,6 @@
 # You should have received a copy of the GNU Affero General Public License along
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
-require "spec_helper"
-
 describe AccessibilityFilters do
   let(:course) { course_model }
   let(:teacher) { user_model }
@@ -219,6 +217,93 @@ describe AccessibilityFilters do
         result = controller.apply_accessibility_filters(base_relation, filters)
 
         expect(result.to_a).to be_empty
+      end
+
+      context "with discussion topics" do
+        let(:discussion_topic1) { discussion_topic_model(context: course, title: "Discussion 1") }
+        let(:discussion_topic2) { discussion_topic_model(context: course, title: "Discussion 2") }
+
+        let!(:discussion_published_today) do
+          scan = create_scan(discussion_topic1, "published", today)
+          create_issue(scan, list_structure_rule)
+          scan
+        end
+
+        let!(:discussion_unpublished_yesterday) do
+          scan = create_scan(discussion_topic2, "unpublished", yesterday)
+          create_issue(scan, heading_sequence_rule)
+          scan
+        end
+
+        it "returns only discussion topic scans" do
+          filters = { artifactTypes: ["discussion_topic"] }
+          result = controller.apply_accessibility_filters(base_relation, filters)
+
+          expected_scans = [
+            discussion_published_today,
+            discussion_unpublished_yesterday
+          ]
+
+          expect(result.to_a).to match_array(expected_scans)
+        end
+
+        it "returns discussion topics with other resource types" do
+          filters = { artifactTypes: ["wiki_page", "discussion_topic"] }
+          result = controller.apply_accessibility_filters(base_relation, filters)
+
+          expected_scans = [
+            page_published_today_list,
+            page_published_yesterday_heading,
+            page_unpublished_today_list,
+            page_unpublished_yesterday_heading,
+            discussion_published_today,
+            discussion_unpublished_yesterday
+          ]
+
+          expect(result.to_a).to match_array(expected_scans)
+        end
+      end
+
+      context "with syllabus" do
+        let!(:syllabus_scan) do
+          AccessibilityResourceScan.create!(
+            course_id: course.id,
+            is_syllabus: true,
+            resource_name: "Course Syllabus",
+            resource_workflow_state: "published",
+            resource_updated_at: today,
+            workflow_state: "completed",
+            issue_count: 1
+          )
+        end
+
+        before do
+          create_issue(syllabus_scan, list_structure_rule)
+        end
+
+        it "returns only syllabus scans" do
+          filters = { artifactTypes: ["syllabus"] }
+          result = controller.apply_accessibility_filters(base_relation, filters)
+
+          expected_scans = [syllabus_scan]
+
+          expect(result.to_a).to match_array(expected_scans)
+        end
+
+        it "returns syllabus with other resource types" do
+          filters = { artifactTypes: ["wiki_page", "syllabus"] }
+          result = controller.apply_accessibility_filters(base_relation, filters)
+
+          expected_scans = [
+            page_published_today_list,
+            page_published_yesterday_heading,
+            page_unpublished_today_list,
+            page_unpublished_yesterday_heading,
+            syllabus_scan
+          ]
+
+          expect(result.to_a).to match_array(expected_scans)
+        end
       end
     end
 

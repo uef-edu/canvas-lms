@@ -80,6 +80,8 @@ export interface WidgetRenderer {
   component: React.ComponentType<BaseWidgetProps>
   displayName: string
   description: string
+  roles?: string[]
+  props?: Record<string, unknown>
 }
 
 export type WidgetRegistry = Record<string, WidgetRenderer>
@@ -90,15 +92,20 @@ export interface CourseGrade {
   courseId: string
   courseCode: string
   courseName: string
+  originalName?: string
   currentGrade: number | null
   gradingScheme: 'percentage' | GradingStandardData
   lastUpdated?: Date | null
+  courseColor?: string
+  term?: string | null
+  image?: string
 }
 
 export interface CourseGradeCardProps {
   courseId: string
   courseCode: string
   courseName: string
+  originalName?: string
   currentGrade: number | null
   gradingScheme: 'percentage' | GradingStandardData
   lastUpdated?: Date | null
@@ -106,6 +113,9 @@ export interface CourseGradeCardProps {
   gridIndex?: number
   globalGradeVisibility?: boolean
   onGradeVisibilityChange?: (visible: boolean) => void
+  courseColor?: string
+  term?: string | null
+  image?: string
 }
 export interface Announcement {
   id: string
@@ -125,4 +135,91 @@ export interface Announcement {
     avatarUrl: string
   } | null
   isRead?: boolean
+}
+
+export interface RecentGradeSubmission {
+  _id: string
+  submittedAt: string | null
+  gradedAt: string | null
+  score: number | null
+  grade: string | null
+  excused: boolean
+  state: string
+  assignment: {
+    _id: string
+    name: string
+    htmlUrl: string
+    pointsPossible: number | null
+    gradingType: string
+    submissionTypes: string[]
+    quiz: {_id: string; title: string} | null
+    discussion: {_id: string; title: string} | null
+    course: {
+      _id: string
+      name: string
+      courseCode?: string
+    }
+  }
+}
+
+export interface GradeItemProps {
+  submission: RecentGradeSubmission
+  isRightColumn?: boolean
+}
+
+export interface ConversationParticipant {
+  id: string
+  name: string
+  avatarUrl?: string
+}
+
+export interface InboxMessage {
+  id: string
+  subject: string
+  lastMessageAt: string
+  messagePreview: string
+  workflowState: 'read' | 'unread' | 'archived'
+  conversationUrl: string
+  participants: ConversationParticipant[]
+}
+
+export interface RubricCriterion {
+  _id: string
+  description: string | null
+  longDescription: string | null
+  points: number | null
+}
+
+export interface RubricAssessmentRating {
+  _id: string | null
+  criterion: RubricCriterion | null
+  description: string | null
+  points: number | null
+  comments: string | null
+  commentsHtml: string | null
+}
+
+export interface RubricAssessment {
+  _id: string
+  score: number | null
+  assessmentRatings: RubricAssessmentRating[]
+}
+
+export interface SubmissionCommentAuthor {
+  _id: string
+  name: string
+}
+
+export interface SubmissionComment {
+  _id: string
+  comment: string | null
+  htmlComment: string | null
+  author: SubmissionCommentAuthor | null
+  createdAt: string
+}
+
+export interface SubmissionDetails {
+  rubricAssessments: RubricAssessment[]
+  comments: SubmissionComment[]
+  totalCommentsCount: number
 }

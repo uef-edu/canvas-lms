@@ -20,7 +20,7 @@ import $ from 'jquery'
 import {useScope as createI18nScope} from '@canvas/i18n'
 import initLastAttended from './react/index'
 import React from 'react'
-import ReactDOM from 'react-dom'
+import {legacyRender, render} from '@canvas/react'
 import GeneratePairingCode from '@canvas/generate-pairing-code'
 import '@canvas/jquery/jquery.ajaxJSON'
 import '@canvas/jquery/jquery.instructure_misc_plugins'
@@ -30,7 +30,7 @@ import {datetimeString} from '@canvas/datetime/date-functions'
 import ready from '@instructure/ready'
 import {AccessTokensSection} from '@canvas/access-tokens/AccessTokensSection'
 import {QueryClientProvider} from '@tanstack/react-query'
-import {queryClient} from '@canvas/query'
+import {queryClient} from '@instructure/platform-query'
 
 const I18n = createI18nScope('context.roster_user')
 
@@ -128,23 +128,20 @@ ready(() => {
 
   const container = document.querySelector('#pairing-code')
   if (container != null) {
-    ReactDOM.render(
+    legacyRender(
       <GeneratePairingCode userId={ENV.USER_ID} name={ENV.CONTEXT_USER_DISPLAY_NAME} />,
       container,
     )
   }
 
-  if (
-    ENV.FEATURES.student_access_token_management &&
-    ENV.PERMISSIONS?.can_view_user_generated_access_tokens
-  ) {
+  if (ENV.PERMISSIONS?.can_view_user_generated_access_tokens) {
     const accessTokensContainer = document.getElementById('user_access_tokens_react_mount_point')
     if (accessTokensContainer) {
-      const accessTokensRoot = ReactDOM.createRoot(accessTokensContainer)
-      accessTokensRoot.render(
+      render(
         <QueryClientProvider client={queryClient}>
           <AccessTokensSection userId={ENV.USER_ID} />
         </QueryClientProvider>,
+        accessTokensContainer,
       )
     }
   }

@@ -64,9 +64,13 @@ export const getAsContentItem = (scan: AccessibilityResourceScan): ContentItem =
   }
 }
 
-export const getAsAccessibilityResourceScan = (item: ContentItem): AccessibilityResourceScan => {
+export const getAsAccessibilityResourceScan = (
+  item: ContentItem,
+  courseId: number,
+): AccessibilityResourceScan => {
   return {
     id: item.id,
+    courseId,
     resourceId: item.id,
     resourceType: item.type as ResourceType,
     resourceName: item.title,
@@ -92,6 +96,12 @@ export const getAsContentItemType = (type?: ResourceType): ContentItemType | und
       return ContentItemType.Assignment
     case ResourceType.Attachment:
       return ContentItemType.Attachment
+    case ResourceType.DiscussionTopic:
+      return ContentItemType.DiscussionTopic
+    case ResourceType.Announcement:
+      return ContentItemType.Announcement
+    case ResourceType.Syllabus:
+      return ContentItemType.Syllabus
   }
 }
 
@@ -105,14 +115,6 @@ export const findById = <T extends HasId>(data: T[] | null, id: string | number)
 export const replaceById = <T extends HasId>(data: T[] | null, item: T): T[] => {
   if (!data) return []
   return data.map(existingItem => (existingItem.id === item.id ? item : existingItem))
-}
-
-export const calculateTotalIssuesCount = (data?: AccessibilityResourceScan[] | null): number => {
-  if (!data) return 0
-
-  return data.reduce((total, scan) => {
-    return total + (scan.issueCount || 0)
-  }, 0)
 }
 
 const formatDateFilter = (date?: string) => {

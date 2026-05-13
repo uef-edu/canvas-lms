@@ -51,7 +51,7 @@ module Types
     field :submission_id, ID, null: false
 
     field :author, Types::UserType, null: true
-    field :author_visible_name, Types::HtmlEncodedStringType, null: true
+    field :author_visible_name, String, null: true
     field :media_comment_id, String, null: true
 
     field :comment, String, null: true
@@ -59,14 +59,12 @@ module Types
       Nokogiri::HTML(object.comment).text
     end
 
-    # rubocop:disable GraphQL/FieldMethod
     # To keep the GraphQL endpoint consistent, we need to keep the comment field as plain text
     # and return the html comment separately
     field :html_comment, String, null: true
     def html_comment
-      object.comment
+      Sanitize.clean((object.comment || "").to_s, CanvasSanitize::SANITIZE)
     end
-    # rubocop:enable GraphQL/FieldMethod
 
     def author
       # We are preloading submission and assignment here for the permission check.
@@ -166,6 +164,11 @@ module Types
     def can_reply
       !object.submission.course.concluded? &&
         object.submission.grants_right?(current_user, :comment)
+    end
+
+    field :publishable, Boolean, null: false
+    def publishable
+      object.publishable_for?(current_user)
     end
 
     field :provisional, Boolean, null: false

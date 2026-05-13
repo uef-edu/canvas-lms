@@ -18,12 +18,11 @@
 
 import {useScope as createI18nScope} from '@canvas/i18n'
 import React from 'react'
-import ReactDOM from 'react-dom'
+import {legacyRender} from '@canvas/react'
 import ready from '@instructure/ready'
 import ContentTypeExternalToolDrawer from '@canvas/trays/react/ContentTypeExternalToolDrawer'
 import {TopNavigationTools, MobileTopNavigationTools} from './react/TopNavigationTools'
 import type {Tool} from '@canvas/global/env/EnvCommon'
-import iframeAllowances from '@canvas/external-apps/iframeAllowances'
 
 const I18n = createI18nScope('common')
 
@@ -50,7 +49,7 @@ ready(() => {
   }
 
   function renderExternalToolDrawer(): void {
-    ReactDOM.render(
+    legacyRender(
       <ContentTypeExternalToolDrawer
         tool={selectedTool}
         // @ts-expect-error
@@ -63,20 +62,19 @@ ready(() => {
         onDismiss={handleDismissToolDrawer}
         onResize={handleResize}
         open={!!selectedTool}
-        iframeAllowances={iframeAllowances()}
       />,
       drawerLayoutMountPoint,
     )
   }
 
   function renderTopNavigationTools(): void {
-    ReactDOM.render(
+    legacyRender(
       <TopNavigationTools tools={ENV.top_navigation_tools} handleToolLaunch={handleToolLaunch} />,
       topNavToolsMountPoint,
     )
 
     if (mobileTopNavToolsMountPoint) {
-      ReactDOM.render(
+      legacyRender(
         <MobileTopNavigationTools
           tools={ENV.top_navigation_tools}
           handleToolLaunch={handleToolLaunch}

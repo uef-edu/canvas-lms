@@ -28,6 +28,7 @@ import {
   AsyncPageViewJobStatus,
   AsyncPageviewJob,
   displayTTL,
+  errorCodeDisplayName,
   isInProgress,
   notExpired,
   statusColor,
@@ -37,7 +38,7 @@ import {
 import {Pill} from '@instructure/ui-pill'
 import {Link} from '@instructure/ui-link'
 import {FetchApiError} from '@canvas/do-fetch-api-effect'
-import {showFlashAlert} from '@canvas/alerts/react/FlashAlert'
+import {showFlashAlert} from '@instructure/platform-alerts'
 
 const I18n = i18nScope('page_views')
 
@@ -271,6 +272,12 @@ export function PageViewsDownload({userId}: PageViewsDownloadProps): React.JSX.E
                   <Table.Cell id={`export-status-${record.query_id}`}>
                     <div aria-live="polite">
                       <Pill color={statusColor(record)}>{statusDisplayName(record)}</Pill>
+                      {record.status === AsyncPageViewJobStatus.Failed && (
+                        <>
+                          {' '}
+                          <Text color="warning">{errorCodeDisplayName(record)}</Text>
+                        </>
+                      )}
                     </div>
                   </Table.Cell>
                   <Table.Cell id={`export-ttl-${record.query_id}`}>{displayTTL(record)}</Table.Cell>

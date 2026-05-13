@@ -32,6 +32,7 @@
 #
 class SecurityController < ApplicationController
   skip_before_action :load_user
+  skip_before_action :require_user
 
   def self.messages_supported(account)
     Lti::ResourcePlacement::PLACEMENTS_BY_MESSAGE_TYPE.keys
@@ -111,7 +112,7 @@ class SecurityController < ApplicationController
       return
     end
 
-    host = Lti::Oidc.auth_domain(HostUrl.context_host(account, request.host_with_port))
+    host = Lti::Oidc.auth_domain(account.environment_specific_domain)
 
     render json: {
       issuer: Canvas::Security.config["lti_iss"],

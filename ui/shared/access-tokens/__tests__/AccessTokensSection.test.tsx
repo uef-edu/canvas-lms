@@ -22,24 +22,30 @@ import userEvent from '@testing-library/user-event'
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query'
 import {http, HttpResponse} from 'msw'
 import {setupServer} from 'msw/node'
+import {type MockedFunction} from 'vitest'
 import {AccessTokensSection} from '../AccessTokensSection'
 import {ZTokenId, type Token} from '../Token'
 import {ZUserId} from '../UserId'
-import {confirmDanger} from '@canvas/instui-bindings/react/Confirm'
+import {confirmDanger} from '@instructure/platform-instui-bindings'
 
-const mockConfirmDanger = confirmDanger as jest.MockedFunction<typeof confirmDanger>
+const mockConfirmDanger = confirmDanger as MockedFunction<typeof confirmDanger>
 
-jest.mock('@canvas/instui-bindings/react/Confirm', () => ({
-  confirmDanger: jest.fn(),
+vi.mock('@instructure/platform-instui-bindings', async () => ({
+  ...(await vi.importActual<typeof import('@instructure/platform-instui-bindings')>('@instructure/platform-instui-bindings')),
+  confirmDanger: vi.fn(),
 }))
 
-jest.mock('@canvas/alerts/react/FlashAlert', () => ({
-  showFlashAlert: jest.fn(),
-}))
+vi.mock('@instructure/platform-alerts', async () => {
+  const actual = await vi.importActual('@instructure/platform-alerts')
+  return {
+    ...actual,
+    showFlashAlert: vi.fn(),
+  }
+})
 
 // Mock TruncateText component, we don't need to test that
 // it truncates text correctly
-jest.mock('@instructure/ui-truncate-text', () => {
+vi.mock('@instructure/ui-truncate-text', () => {
   return {
     TruncateText: ({children}: React.PropsWithChildren) => children,
   }
@@ -94,7 +100,7 @@ export const server = setupServer(...defaultHandlers)
 
 beforeAll(() => server.listen({onUnhandledRequest: 'error'}))
 afterEach(() => {
-  jest.clearAllMocks()
+  vi.clearAllMocks()
   server.resetHandlers()
 })
 afterAll(() => server.close())
@@ -119,7 +125,7 @@ const renderWithQueryClient = (component: React.ReactElement) => {
 describe('AccessTokensSection', () => {
   const userId = ZUserId.parse('123')
   afterEach(() => {
-    jest.restoreAllMocks()
+    vi.restoreAllMocks()
   })
 
   it('renders tokens table when data is loaded', async () => {
@@ -131,6 +137,7 @@ describe('AccessTokensSection', () => {
       ).toBeInTheDocument()
     })
 
+    expect(screen.getByText('abc123')).toBeInTheDocument()
     expect(screen.getByText('Test Token 1')).toBeInTheDocument()
     expect(screen.getByText('Test Token 2')).toBeInTheDocument()
     expect(screen.getByText(/Jan 1, 2025/)).toBeInTheDocument()
@@ -144,6 +151,8 @@ describe('AccessTokensSection', () => {
     renderWithQueryClient(<AccessTokensSection userId={userId} />)
 
     await waitFor(() => {
+      expect(screen.getByText('ID')).toBeInTheDocument()
+      expect(screen.getByText('Token')).toBeInTheDocument()
       expect(screen.getByText('Purpose')).toBeInTheDocument()
     })
 

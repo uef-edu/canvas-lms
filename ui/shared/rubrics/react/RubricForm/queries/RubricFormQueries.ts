@@ -25,99 +25,132 @@ import type {Rubric, RubricAssociation, RubricCriterion} from '@canvas/rubrics/r
 import {
   mapRubricAssociationUnderscoredKeysToCamelCase,
   mapRubricUnderscoredKeysToCamelCase,
+  decodeHTML,
 } from '@canvas/rubrics/react/utils'
-import getCookie from '@instructure/get-cookie'
+import {getCookie} from '@instructure/platform-get-cookie'
+import {
+  SharedAccountRubricQueryQuery,
+  SharedCourseRubricQueryQuery,
+} from '@canvas/graphql/codegen/graphql'
 
-const RUBRIC_QUERY = gql`
-  query SharedRubricQuery($rubricId: ID!) {
-    rubric(id: $rubricId) {
+const RUBRIC_FORM_RUBRIC_FRAGMENT = gql`
+  fragment RubricFormRubric on Rubric {
+    id: _id
+    title
+    hasRubricAssociations
+    rubricAssociationForContext {
+      associationId
+      associationType
+      hidePoints
+      hideScoreTotal
+      hideOutcomeResults
       id: _id
-      title
-      hasRubricAssociations
-      rubricAssociationForContext {
-        associationId
-        associationType
-        hidePoints
-        hideScoreTotal
-        hideOutcomeResults
-        id: _id
-        useForGrading
-      }
-      buttonDisplay
-      ratingOrder
-      freeFormCriterionComments
-      workflowState
-      pointsPossible
-      unassessed
-      canUpdateRubric
-      criteria {
-        id: _id
-        ratings {
-          description
-          longDescription
-          points
-          id: _id
-        }
-        outcome {
-          displayName
-          title
-        }
-        learningOutcomeId
-        ignoreForScoring
-        masteryPoints
-        points
-        longDescription
+      useForGrading
+    }
+    buttonDisplay
+    ratingOrder
+    freeFormCriterionComments
+    workflowState
+    pointsPossible
+    unassessed
+    canUpdateRubric
+    criteria {
+      id: _id
+      ratings {
         description
-        criterionUseRange
+        longDescription
+        points
+        id: _id
       }
+      outcome {
+        displayName
+        title
+      }
+      learningOutcomeId
+      ignoreForScoring
+      masteryPoints
+      points
+      longDescription
+      description
+      criterionUseRange
     }
   }
 `
 
-export type RubricAssociationQueryResponse = {
-  associationId: string
-  associationType: 'Assignment' | 'Account' | 'Course'
-  hidePoints: boolean
-  hideScoreTotal: boolean
-  hideOutcomeResults: boolean
-  id: string
-  useForGrading: boolean
-}
-export type RubricQueryResponse = Pick<
-  Rubric,
-  | 'id'
-  | 'title'
-  | 'criteria'
-  | 'hidePoints'
-  | 'freeFormCriterionComments'
-  | 'pointsPossible'
-  | 'buttonDisplay'
-  | 'ratingOrder'
-  | 'workflowState'
-> & {
-  unassessed: boolean
-  hasRubricAssociations: boolean
-  rubricAssociationForContext?: RubricAssociationQueryResponse
-  canUpdateRubric: boolean
-}
+const COURSE_RUBRIC_QUERY = gql`
+  query SharedCourseRubricQuery($courseId: ID!, $rubricId: ID!) {
+    course(id: $courseId) {
+      rubricsConnection(id: $rubricId) {
+        nodes {
+          ...RubricFormRubric
+        }
+      }
+    }
+  }
+  ${RUBRIC_FORM_RUBRIC_FRAGMENT}
+`
+const ACCOUNT_RUBRIC_QUERY = gql`
+  query SharedAccountRubricQuery($accountId: ID!, $rubricId: ID!) {
+    account(id: $accountId) {
+      rubricsConnection(id: $rubricId) {
+        nodes {
+          ...RubricFormRubric
+        }
+      }
+    }
+  }
+  ${RUBRIC_FORM_RUBRIC_FRAGMENT}
+`
 
-type FetchRubricResponse = {
-  rubric: RubricQueryResponse
-}
+type AccountRubricQueryResponse = SharedAccountRubricQueryQuery['account']
+type CourseRubricQueryResponse = SharedCourseRubricQueryQuery['course']
+export type RubricQueryResponse = NonNullable<
+  NonNullable<
+    NonNullable<
+      NonNullable<AccountRubricQueryResponse | CourseRubricQueryResponse>['rubricsConnection']
+    >['nodes']
+  >[number]
+>
+
 type FetchRubricParams = {
   queryKey: string[]
 }
+
 export const fetchRubric = async ({
   queryKey,
 }: FetchRubricParams): Promise<RubricQueryResponse | null> => {
-  const [_, rubricId] = queryKey
+  const [_, rubricId, accountId, courseId] = queryKey
   if (!rubricId) return null
 
-  const {rubric} = await executeQuery<FetchRubricResponse>(RUBRIC_QUERY, {
+  if (!accountId && !courseId) {
+    throw new Error('Missing context for fetching rubric')
+  }
+
+  return accountId
+    ? await fetchAccountRubric(accountId, rubricId)
+    : await fetchCourseRubric(courseId, rubricId)
+}
+
+export const fetchAccountRubric = async (
+  accountId: string,
+  rubricId: string,
+): Promise<RubricQueryResponse | null> => {
+  const {account} = await executeQuery<SharedAccountRubricQueryQuery>(ACCOUNT_RUBRIC_QUERY, {
+    accountId,
     rubricId,
   })
+  return (account?.rubricsConnection?.nodes?.[0] ?? null) as RubricQueryResponse | null
+}
 
-  return rubric
+export const fetchCourseRubric = async (
+  courseId: string,
+  rubricId: string,
+): Promise<RubricQueryResponse | null> => {
+  const {course} = await executeQuery<SharedCourseRubricQueryQuery>(COURSE_RUBRIC_QUERY, {
+    courseId,
+    rubricId,
+  })
+  return (course?.rubricsConnection?.nodes?.[0] ?? null) as RubricQueryResponse | null
 }
 
 export type SaveRubricResponse = {
@@ -162,7 +195,8 @@ export const saveRubric = async (
      */
     const longDescription = criterion.outcome
       ? criterion.longDescription
-      : criterion.longDescription?.replace(/<br\/>/g, '')
+      : // unescape any escaped html entities
+        decodeHTML(criterion.longDescription?.replace(/<br\/>/g, '') ?? '')
 
     return {
       id: criterion.id,
@@ -177,6 +211,7 @@ export const saveRubric = async (
       ignore_for_scoring: criterion.ignoreForScoring,
       mastery_points: criterion.masteryPoints,
       criterion_use_range: criterion.criterionUseRange,
+      generated: criterion.isGenerated,
       ratings: criterion.ratings.map(rating => ({
         description: rating.description,
         long_description: rating.longDescription,
@@ -186,10 +221,26 @@ export const saveRubric = async (
     }
   })
 
+  let rubricAssociationTypeId = rubric.associationTypeId
+
+  if (!rubricAssociationTypeId) {
+    if (rubric.associationType === 'Assignment') {
+      rubricAssociationTypeId = assignmentId
+    } else if (rubric.associationType === 'Course') {
+      rubricAssociationTypeId = courseId
+    } else if (rubric.associationType === 'Account') {
+      rubricAssociationTypeId = accountId
+    }
+  }
+
+  if (!rubricAssociationTypeId) {
+    throw new Error('Missing rubric association type ID')
+  }
+
   const response = await fetch(url, {
     method,
     headers: {
-      'X-CSRF-Token': getCookie('_csrf_token'),
+      'X-CSRF-Token': getCookie('_csrf_token') ?? '',
       'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
     },
     body: qs.stringify({
@@ -206,7 +257,7 @@ export const saveRubric = async (
       rubric_association_id: rubricAssociationId,
       rubric_association: {
         id: rubricAssociationId,
-        association_id: assignmentId ?? accountId ?? courseId,
+        association_id: rubricAssociationTypeId,
         association_type: rubric.associationType,
         purpose: rubric.associationType === 'Assignment' ? 'grading' : 'bookmark',
         hide_points: hidePoints ? 1 : 0,
@@ -235,7 +286,11 @@ export const saveRubric = async (
       association_count: savedRubric.association_count,
     },
     rubricAssociation: rubric_association
-      ? mapRubricAssociationUnderscoredKeysToCamelCase(rubric_association)
+      ? {
+          ...mapRubricAssociationUnderscoredKeysToCamelCase(rubric_association),
+          canUpdate: rubric_association.permissions?.update,
+          canDelete: rubric_association.permissions?.delete,
+        }
       : undefined,
   }
 }
@@ -251,7 +306,7 @@ export const generateCriteria = async (
   const response = await fetch(url, {
     method,
     headers: {
-      'X-CSRF-Token': getCookie('_csrf_token'),
+      'X-CSRF-Token': getCookie('_csrf_token') ?? '',
       'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
     },
     body: qs.stringify({
@@ -263,7 +318,7 @@ export const generateCriteria = async (
       generate_options: {
         criteria_count: generateCriteriaProps.criteriaCount,
         rating_count: generateCriteriaProps.ratingCount,
-        points_per_criterion: generateCriteriaProps.pointsPerCriterion,
+        total_points: generateCriteriaProps.totalPoints,
         use_range: generateCriteriaProps.useRange,
         additional_prompt_info: generateCriteriaProps.additionalPromptInfo,
         grade_level: generateCriteriaProps.gradeLevel,
@@ -294,7 +349,7 @@ export const regenerateCriteria = async (
   const response = await fetch(url, {
     method,
     headers: {
-      'X-CSRF-Token': getCookie('_csrf_token'),
+      'X-CSRF-Token': getCookie('_csrf_token') ?? '',
       'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
     },
     body: qs.stringify({
@@ -309,6 +364,10 @@ export const regenerateCriteria = async (
         long_description: criterion.longDescription,
         points: criterion.points,
         criterion_use_range: criterion.criterionUseRange,
+        learning_outcome_id: criterion.learningOutcomeId,
+        ignore_for_scoring: criterion.ignoreForScoring,
+        mastery_points: criterion.masteryPoints,
+        generated: criterion.isGenerated,
         ratings: criterion.ratings.map(rating => ({
           id: rating.id,
           criterion_id: criterion.id,
@@ -320,14 +379,14 @@ export const regenerateCriteria = async (
       generate_options: {
         criteria_count: generateFormOptions?.criteriaCount,
         rating_count: generateFormOptions?.ratingCount,
-        points_per_criterion: generateFormOptions?.pointsPerCriterion,
+        total_points: generateFormOptions?.totalPoints,
         use_range: generateFormOptions?.useRange,
         grade_level: generateFormOptions?.gradeLevel,
+        standard: generateFormOptions?.standard,
       },
       regenerate_options: {
         criterion_id: criterionId,
         additional_user_prompt: additionalPrompt,
-        standard: generateFormOptions?.standard,
       },
     }),
   })

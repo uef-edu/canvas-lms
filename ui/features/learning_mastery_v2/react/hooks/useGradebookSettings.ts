@@ -19,14 +19,14 @@
 import {useState, useEffect} from 'react'
 import {useScope as createI18nScope} from '@canvas/i18n'
 import {loadLearningMasteryGradebookSettings} from '../apiClient'
+import {GradebookSettings, DEFAULT_GRADEBOOK_SETTINGS} from '@canvas/outcomes/react/utils/constants'
 import {
-  GradebookSettings,
   DisplayFilter,
   SecondaryInfoDisplay,
   NameDisplayFormat,
   ScoreDisplayFormat,
-  DEFAULT_GRADEBOOK_SETTINGS,
-} from '../utils/constants'
+  OutcomeArrangement,
+} from '@instructure/outcomes-ui/lib/util/gradebook/constants'
 
 const I18n = createI18nScope('LearningMasteryGradebook')
 
@@ -52,6 +52,18 @@ const buildDisplayFilters = (apiSettings: any): DisplayFilter[] => {
     DEFAULT_GRADEBOOK_SETTINGS.displayFilters.includes(DisplayFilter.SHOW_STUDENTS_WITH_NO_RESULTS)
   ) {
     displayFilters.push(DisplayFilter.SHOW_STUDENTS_WITH_NO_RESULTS)
+  }
+  if (
+    apiSettings.show_outcomes_with_no_results ??
+    DEFAULT_GRADEBOOK_SETTINGS.displayFilters.includes(DisplayFilter.SHOW_OUTCOMES_WITH_NO_RESULTS)
+  ) {
+    displayFilters.push(DisplayFilter.SHOW_OUTCOMES_WITH_NO_RESULTS)
+  }
+  if (
+    apiSettings.show_unpublished_assignments ??
+    DEFAULT_GRADEBOOK_SETTINGS.displayFilters.includes(DisplayFilter.SHOW_UNPUBLISHED_ASSIGNMENTS)
+  ) {
+    displayFilters.push(DisplayFilter.SHOW_UNPUBLISHED_ASSIGNMENTS)
   }
 
   return displayFilters
@@ -85,6 +97,9 @@ export const useGradebookSettings = (courseId: string): UseGradebookSettingsRetu
             scoreDisplayFormat:
               apiSettings.score_display_format ??
               (DEFAULT_GRADEBOOK_SETTINGS.scoreDisplayFormat as ScoreDisplayFormat),
+            outcomeArrangement:
+              apiSettings.outcome_arrangement ??
+              (DEFAULT_GRADEBOOK_SETTINGS.outcomeArrangement as OutcomeArrangement),
           }
 
           setSettings(loadedSettings)

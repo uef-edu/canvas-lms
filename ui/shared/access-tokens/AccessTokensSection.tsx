@@ -18,6 +18,7 @@
 
 import {format} from '@instructure/moment-utils'
 import {useScope as createI18nScope} from '@canvas/i18n'
+import {getActiveCanvasTheme} from '@canvas/react'
 import {Table} from '@instructure/ui-table'
 import {Text} from '@instructure/ui-text'
 import {Button, IconButton} from '@instructure/ui-buttons'
@@ -28,11 +29,11 @@ import {View} from '@instructure/ui-view'
 import type {Token} from './Token'
 import type {UserId} from './UserId'
 import {useManuallyGeneratedTokens, useDeleteToken} from './api'
-import {showFlashAlert} from '@canvas/alerts/react/FlashAlert'
+import {showFlashAlert} from '@instructure/platform-alerts'
 import {Flex} from '@instructure/ui-flex'
 import {memo} from 'react'
-import {confirmDanger} from '@canvas/instui-bindings/react/Confirm'
-import TruncateWithTooltip from '@canvas/instui-bindings/react/TruncateWithTooltip'
+import {confirmDanger} from '@instructure/platform-instui-bindings'
+import {TruncateWithTooltip} from '@instructure/platform-instui-bindings'
 
 const I18n = createI18nScope('access_tokens')
 
@@ -97,11 +98,17 @@ export const AccessTokensSection = ({userId}: AccessTokensTableProps) => {
       <Table caption={I18n.t('User Generated Access Tokens')} margin="small 0" layout="fixed">
         <Table.Head>
           <Table.Row>
+            <Table.ColHeader id="token-id" width="5%">
+              {I18n.t('ID')}
+            </Table.ColHeader>
+            <Table.ColHeader id="visible-token" width="15%">
+              {I18n.t('Token')}
+            </Table.ColHeader>
             <Table.ColHeader id="purpose">{I18n.t('Purpose')}</Table.ColHeader>
             <Table.ColHeader id="created">{I18n.t('Created')}</Table.ColHeader>
             <Table.ColHeader id="last-used">{I18n.t('Last Used')}</Table.ColHeader>
             <Table.ColHeader id="expires">{I18n.t('Expires')}</Table.ColHeader>
-            <Table.ColHeader id="remove" width="5rem">
+            <Table.ColHeader id="remove" width="7%">
               {I18n.t('Remove')}
             </Table.ColHeader>
           </Table.Row>
@@ -150,13 +157,19 @@ const handleDeleteToken = async (token: Token, deleteToken: ReturnType<typeof us
       messageDangerouslySetInnerHTML: {
         __html: I18n.t(
           `You are about to delete a user generated API token with the following purpose:
-          <div style="text-overflow: ellipsis; overflow: hidden; white-space: nowrap;"><strong>%{purpose}</strong></div>.
+          *%{purpose}*
           This action can not be undone.`,
           {
+            wrappers:
+              '<div style="text-overflow: ellipsis; overflow: hidden; white-space: nowrap;"><strong>$1</strong></div>',
             purpose: token.purpose || I18n.t('User Generated'),
           },
         ),
       },
+      confirmButtonLabel: I18n.t('Delete'),
+      cancelButtonLabel: I18n.t('Cancel'),
+      closeButtonLabel: I18n.t('Close'),
+      theme: getActiveCanvasTheme(),
     }))
   ) {
     return
@@ -184,25 +197,33 @@ type TokenRowProps = {
 const TokenRow = memo(({token}: TokenRowProps) => {
   const deleteToken = useDeleteToken(token.user_id)
 
+  const createdAtFormatted = format(token.created_at, 'date.formats.full', undefined)
+  const lastUsedAtFormattedValue = format(token.last_used_at, 'date.formats.full', undefined)
+  const lastUsedAtFormatted = token.last_used_at ? lastUsedAtFormattedValue : null
+  const expiresAtFormattedValue = format(token.expires_at, 'date.formats.full', undefined)
+  const expiresAtFormatted = token.expires_at ? expiresAtFormattedValue : null
+
   return (
     <Table.Row>
+      <Table.Cell>
+        <Text>{token.id}</Text>
+      </Table.Cell>
+      <Table.Cell>
+        <Text wrap="break-word">{token.visible_token}</Text>
+      </Table.Cell>
       <Table.Cell>
         <TruncateWithTooltip>
           <Text>{token.purpose || I18n.t('User Generated')}</Text>
         </TruncateWithTooltip>
       </Table.Cell>
       <Table.Cell>
-        <Text>{format(token.created_at, 'date.formats.full')}</Text>
+        <Text>{createdAtFormatted}</Text>
       </Table.Cell>
       <Table.Cell>
-        <Text>
-          {token.last_used_at ? format(token.last_used_at, 'date.formats.full') : I18n.t('Unused')}
-        </Text>
+        <Text>{lastUsedAtFormatted ?? I18n.t('Unused')}</Text>
       </Table.Cell>
       <Table.Cell>
-        <Text>
-          {token.expires_at ? format(token.expires_at, 'date.formats.full') : I18n.t('Never')}
-        </Text>
+        <Text>{expiresAtFormatted ?? I18n.t('Never')}</Text>
       </Table.Cell>
       <Table.Cell>
         <IconButton

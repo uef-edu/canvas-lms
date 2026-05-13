@@ -22,13 +22,12 @@ import {Flex} from '@instructure/ui-flex'
 import {View} from '@instructure/ui-view'
 import {Text} from '@instructure/ui-text'
 import {List} from '@instructure/ui-list'
-import TemplateWidget from '../TemplateWidget/TemplateWidget'
+import {TemplateWidget} from '@instructure/platform-widget-dashboard'
 import CourseWorkFilters, {
   type DateFilterOption,
   isValidDateFilterOption,
 } from '../../shared/CourseWorkFilters'
-import type {BaseWidgetProps, CourseOption} from '../../../types'
-import {useSharedCourses} from '../../../hooks/useSharedCourses'
+import type {BaseWidgetProps} from '../../../types'
 import {useCourseWorkPaginated} from '../../../hooks/useCourseWork'
 import {convertDateFilterToParams} from '../../../utils/dateUtils'
 import {CourseWorkItem as CourseWorkItemComponent} from '../../shared/CourseWorkItem'
@@ -56,13 +55,6 @@ const CourseWorkWidget: React.FC<BaseWidgetProps> = ({
     isValidDateFilterOption,
   )
 
-  // Fetch user's enrolled courses
-  const {data: courseGrades = []} = useSharedCourses({limit: 1000})
-  const userCourses: CourseOption[] = courseGrades.map(courseGrade => ({
-    id: courseGrade.courseId,
-    name: courseGrade.courseName,
-  }))
-
   // Convert frontend filter values to backend parameters
   const courseFilter = selectedCourse === 'all' ? undefined : selectedCourse
   const dateParams = convertDateFilterToParams(selectedDateFilter)
@@ -78,6 +70,7 @@ const CourseWorkWidget: React.FC<BaseWidgetProps> = ({
     resetPagination,
     refetch,
     isLoading: courseWorkLoading,
+    isPaginationLoading: courseWorkPaginationLoading,
     error: courseWorkError,
   } = useCourseWorkPaginated({
     pageSize,
@@ -125,8 +118,11 @@ const CourseWorkWidget: React.FC<BaseWidgetProps> = ({
         currentPage: currentPageIndex + 1,
         totalPages,
         onPageChange: goToPage,
-        isLoading: courseWorkLoading,
         ariaLabel: I18n.t('Course work pagination'),
+      }}
+      loadingOverlay={{
+        isLoading: courseWorkPaginationLoading,
+        ariaLabel: I18n.t('Loading course work'),
       }}
     >
       <Flex direction="column" gap="small" height="100%">
@@ -136,7 +132,6 @@ const CourseWorkWidget: React.FC<BaseWidgetProps> = ({
             selectedDateFilter={selectedDateFilter}
             onCourseChange={handleCourseChange}
             onDateFilterChange={handleDateFilterChange}
-            userCourses={userCourses}
           />
         </Flex.Item>
         <Flex.Item shouldGrow>

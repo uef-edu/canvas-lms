@@ -26,11 +26,15 @@ import {ZTokenId, type Token} from '../Token'
 import {ZUserId} from '../UserId'
 import {renderHook} from '@testing-library/react-hooks'
 
-const mockShowFlashAlert = jest.fn()
+const mockShowFlashAlert = vi.fn()
 
-jest.mock('@canvas/alerts/react/FlashAlert', () => ({
-  showFlashAlert: mockShowFlashAlert,
-}))
+vi.mock('@instructure/platform-alerts', async () => {
+  const actual = await vi.importActual('@instructure/platform-alerts')
+  return {
+    ...actual,
+    showFlashAlert: mockShowFlashAlert,
+  }
+})
 
 const mockTokens: Token[] = [
   {

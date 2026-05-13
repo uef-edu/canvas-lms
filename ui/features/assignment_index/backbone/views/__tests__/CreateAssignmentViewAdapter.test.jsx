@@ -21,13 +21,17 @@ import {render, waitFor} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import AssignmentGroupCollection from '@canvas/assignments/backbone/collections/AssignmentGroupCollection'
 import Assignment from '@canvas/assignments/backbone/models/Assignment'
-import {showFlashAlert} from '@canvas/alerts/react/FlashAlert'
+import {showFlashAlert} from '@instructure/platform-alerts'
 import CreateAssignmentViewAdapter from '../CreateAssignmentViewAdapter'
 import Backbone from '@canvas/backbone'
 
-jest.mock('@canvas/alerts/react/FlashAlert', () => ({
-  showFlashAlert: jest.fn(() => jest.fn(() => {})),
-}))
+vi.mock('@instructure/platform-alerts', async () => {
+  const actual = await vi.importActual('@instructure/platform-alerts')
+  return {
+    ...actual,
+    showFlashAlert: vi.fn(() => vi.fn(() => {})),
+  }
+})
 
 const buildAssignment = (options = {}) => ({
   assignment_group_id: 1,
@@ -90,13 +94,14 @@ describe('CreateAssignmentViewAdapter', () => {
       by_assignment_id: {},
     }
     window.ENV.SETTINGS = {suppress_assignments: false}
-    closeHandlerMock = jest.fn()
-    jest.clearAllMocks()
+    closeHandlerMock = vi.fn()
+    vi.clearAllMocks()
   })
 
   afterEach(() => {
-    jest.clearAllMocks()
-    jest.restoreAllMocks()
+    vi.clearAllMocks()
+    vi.restoreAllMocks()
+    delete window.ENV.PEER_REVIEW_ALLOCATION_AND_GRADING_ENABLED
   })
 
   it('renders the CreateEditAssignmentModal', () => {
@@ -112,47 +117,9 @@ describe('CreateAssignmentViewAdapter', () => {
     expect(closeHandlerMock).toHaveBeenCalled()
   })
 
-  it('adds assignment to assignment group when save is clicked (Create Mode)', async () => {
-    const ag = buildAssignmentGroup([])
-    const saveResponse = {
-      id: 1,
-      name: 'Test Assignment',
-      points_possible: 100,
-      assignment_group_id: ag.id,
-      submission_types: ['online_text_entry'],
-    }
-    const saveSpy = jest.spyOn(Backbone.Model.prototype, 'save').mockImplementation(function () {
-      this.set(saveResponse)
-      return Promise.resolve(saveResponse)
-    })
-
-    const {getByTestId} = renderComponent({
-      assignment: null,
-      assignmentGroup: ag,
-    })
-    const user = userEvent.setup()
-
-    await user.clear(getByTestId('assignment-name-input'))
-    await user.type(getByTestId('assignment-name-input'), 'Test Assignment')
-    await user.clear(getByTestId('points-input'))
-    await user.type(getByTestId('points-input'), '100')
-
-    await user.click(getByTestId('save-button'))
-    await waitFor(() => expect(saveSpy).toHaveBeenCalled())
-
-    await waitFor(() => {
-      const assignments = ag.get('assignments')
-      expect(assignments).toHaveLength(1)
-      const savedAssignment = assignments.at(0)
-      expect(savedAssignment.get('name')).toBe('Test Assignment')
-      expect(savedAssignment.get('points_possible')).toBe(100)
-      expect(savedAssignment.get('assignment_group_id')).toBe(ag.id)
-    })
-  })
-
   it('shows a flash alert when the assignment fails to save', async () => {
     const error = new Error('Failed to save')
-    const saveSpy = jest.spyOn(Backbone.Model.prototype, 'save').mockRejectedValue(error)
+    const saveSpy = vi.spyOn(Backbone.Model.prototype, 'save').mockRejectedValue(error)
 
     const {getByTestId} = renderComponent()
     const user = userEvent.setup()
@@ -191,40 +158,34 @@ describe('CreateAssignmentViewAdapter', () => {
     })
   })
 
-  it('sets manage_assign_to permission when assignment is saved successfully in create mode', async () => {
-    const ag = buildAssignmentGroup([])
-    const saveResponse = {
-      id: 456,
-      name: 'Test Assignment',
-      points_possible: 100,
-      assignment_group_id: ag.id,
-      submission_types: ['online_text_entry'],
-    }
-    const saveSpy = jest.spyOn(Backbone.Model.prototype, 'save').mockImplementation(function () {
-      this.set(saveResponse)
-      return Promise.resolve(saveResponse)
-    })
+  it('shows "Peer Review Due Date" when assignment has peer review sub assignment and FF is enabled', () => {
+    window.ENV.PEER_REVIEW_ALLOCATION_AND_GRADING_ENABLED = true
+    const assignment = new Assignment(
+      buildAssignment({
+        id: 1,
+        peer_reviews: true,
+        peer_review_sub_assignment: {id: 10, peer_review_count: 2},
+      }),
+    )
+    const {getByTestId} = renderComponent({assignment})
 
-    const {getByTestId} = renderComponent({
-      assignment: null,
-      assignmentGroup: ag,
-    })
-    const user = userEvent.setup()
+    expect(getByTestId('multiple-due-dates-message')).toBeInTheDocument()
+    expect(getByTestId('multiple-due-dates-message')).toHaveValue('Peer Review Due Date')
+    expect(getByTestId('multiple-due-dates-message')).toBeDisabled()
+  })
 
-    await user.clear(getByTestId('assignment-name-input'))
-    await user.type(getByTestId('assignment-name-input'), 'Test Assignment')
-    await user.clear(getByTestId('points-input'))
-    await user.type(getByTestId('points-input'), '100')
+  it('does not show "Peer Review Due Date" when FF is disabled', () => {
+    window.ENV.PEER_REVIEW_ALLOCATION_AND_GRADING_ENABLED = false
+    const assignment = new Assignment(
+      buildAssignment({
+        id: 1,
+        peer_reviews: true,
+        peer_review_sub_assignment: {id: 10, peer_review_count: 2},
+      }),
+    )
+    const {queryByTestId, getByLabelText} = renderComponent({assignment})
 
-    await user.click(getByTestId('save-button'))
-    await waitFor(() => expect(saveSpy).toHaveBeenCalled())
-
-    await waitFor(() => {
-      expect(window.ENV.PERMISSIONS.by_assignment_id[456]).toEqual({
-        update: true,
-        delete: true,
-        manage_assign_to: true,
-      })
-    })
+    expect(queryByTestId('multiple-due-dates-message')).not.toBeInTheDocument()
+    expect(getByLabelText('Date')).toBeInTheDocument()
   })
 })

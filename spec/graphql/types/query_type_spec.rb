@@ -178,6 +178,108 @@ describe Types::QueryType do
         ).to eq(original_object.id.to_s)
       end
     end
+
+    context "with multiple root accounts on same shard" do
+      let_once(:shared_sis_id) { "SHARED_SIS_ID" }
+      let_once(:root_account_1) { Account.create! }
+      let_once(:root_account_2) { Account.create! }
+      let_once(:account_1) { root_account_1.sub_accounts.create!(name: "Sub Account 1") }
+      let_once(:account_2) { root_account_2.sub_accounts.create!(name: "Sub Account 2") }
+      let_once(:course_1) do
+        Course.create!(
+          account: account_1,
+          root_account: root_account_1,
+          sis_source_id: shared_sis_id,
+          name: "Course 1"
+        )
+      end
+      let_once(:course_2) do
+        Course.create!(
+          account: account_2,
+          root_account: root_account_2,
+          sis_source_id: shared_sis_id,
+          name: "Course 2"
+        )
+      end
+
+      it "returns course from domain root account for local user" do
+        user = user_factory
+        course_1.enroll_teacher(user, enrollment_state: "active")
+
+        result = CanvasSchema.execute(
+          "{ course(sisId: \"#{shared_sis_id}\") { _id name } }",
+          context: { current_user: user, domain_root_account: root_account_1 }
+        )
+
+        expect(result.dig("data", "course", "_id")).to eq(course_1.id.to_s)
+        expect(result.dig("data", "course", "name")).to eq("Course 1")
+      end
+
+      it "returns null for local user querying from wrong account" do
+        user = user_factory
+        course_2.enroll_teacher(user, enrollment_state: "active")
+
+        result = CanvasSchema.execute(
+          "{ course(sisId: \"#{shared_sis_id}\") { _id name } }",
+          context: { current_user: user, domain_root_account: root_account_1 }
+        )
+
+        expect(result.dig("data", "course")).to be_nil
+      end
+
+      it "returns course from domain root account for siteadmin" do
+        siteadmin = site_admin_user
+
+        result = CanvasSchema.execute(
+          "{ course(sisId: \"#{shared_sis_id}\") { _id name } }",
+          context: { current_user: siteadmin, domain_root_account: root_account_2 }
+        )
+
+        expect(result.dig("data", "course", "_id")).to eq(course_2.id.to_s)
+        expect(result.dig("data", "course", "name")).to eq("Course 2")
+      end
+
+      it "scopes account queries to domain root account" do
+        account_1.update!(sis_source_id: shared_sis_id)
+        account_2.update!(sis_source_id: shared_sis_id)
+        siteadmin = site_admin_user
+
+        result = CanvasSchema.execute(
+          "{ account(sisId: \"#{shared_sis_id}\") { _id name } }",
+          context: { current_user: siteadmin, domain_root_account: root_account_1 }
+        )
+
+        expect(result.dig("data", "account", "_id")).to eq(account_1.id.to_s)
+      end
+
+      it "scopes assignment queries to domain root account" do
+        assignment_1 = course_1.assignments.create!(name: "Assignment 1", sis_source_id: shared_sis_id)
+        course_2.assignments.create!(name: "Assignment 2", sis_source_id: shared_sis_id)
+        siteadmin = site_admin_user
+
+        result = CanvasSchema.execute(
+          "{ assignment(sisId: \"#{shared_sis_id}\") { _id name } }",
+          context: { current_user: siteadmin, domain_root_account: root_account_1 }
+        )
+
+        expect(result.dig("data", "assignment", "_id")).to eq(assignment_1.id.to_s)
+        expect(result.dig("data", "assignment", "name")).to eq("Assignment 1")
+      end
+
+      it "scopes term queries to domain root account" do
+        root_account_1.enrollment_terms.create!(name: "Term 1", sis_source_id: shared_sis_id)
+        term_2 = root_account_2.enrollment_terms.create!(name: "Term 2", sis_source_id: shared_sis_id)
+        siteadmin = site_admin_user
+
+        result = CanvasSchema.execute(
+          "{ term(sisId: \"#{shared_sis_id}\") { _id name } }",
+          context: { current_user: siteadmin, domain_root_account: root_account_2 }
+        )
+
+        expect(result.dig("data", "term", "_id")).to eq(term_2.id.to_s)
+        expect(result.dig("data", "term", "name")).to eq("Term 2")
+      end
+    end
   end
 
   context "LearningOutcome" do
@@ -618,9 +720,15 @@ describe Types::QueryType do
                 _id
                 name
               }
-              course {
-                _id
-                name
+              enrollments {
+                course {
+                  _id
+                  name
+                }
+                type
+                role {
+                  name
+                }
               }
             }
           }
@@ -697,8 +805,8 @@ describe Types::QueryType do
         context: { current_user: @observer }
       )
 
-      course_ids = result.dig("data", "courseInstructorsConnection", "nodes")
-                         .pluck("course").pluck("_id").sort
+      nodes = result.dig("data", "courseInstructorsConnection", "nodes")
+      course_ids = nodes.flat_map { |node| node["enrollments"].pluck("course").pluck("_id") }.sort
       expect(course_ids).to eq([@course1.id.to_s, @course2.id.to_s])
     end
 
@@ -726,7 +834,8 @@ describe Types::QueryType do
       # Should only return instructor1 once, not three times (one per section)
       expect(instructors.length).to eq(1)
       expect(instructors[0].dig("user", "name")).to eq("Instructor 1")
-      expect(instructors[0].dig("course", "_id")).to eq(@course1.id.to_s)
+      expect(instructors[0]["enrollments"].length).to eq(1)
+      expect(instructors[0]["enrollments"][0].dig("course", "_id")).to eq(@course1.id.to_s)
     end
 
     it "filters out past enrollments based on course end dates" do
@@ -780,6 +889,49 @@ describe Types::QueryType do
       instructors = result.dig("data", "courseInstructorsConnection", "nodes")
       # Should not return instructors from unpublished courses
       expect(instructors).to be_empty
+    end
+
+    it "groups instructors teaching multiple courses with their enrollments" do
+      @course3.enroll_student(@student, enrollment_state: "active")
+
+      grouped_query = <<~GQL
+        query($courseIds: [ID!]!) {
+          courseInstructorsConnection(courseIds: $courseIds) {
+            nodes {
+              user {
+                _id
+                name
+              }
+              enrollments {
+                course {
+                  _id
+                  name
+                }
+                type
+                role {
+                  name
+                }
+              }
+            }
+          }
+        }
+      GQL
+
+      result = CanvasSchema.execute(
+        grouped_query,
+        variables: { courseIds: [@course1.id.to_s, @course3.id.to_s] },
+        context: { current_user: @student }
+      )
+
+      nodes = result.dig("data", "courseInstructorsConnection", "nodes")
+      expect(nodes.length).to eq(1)
+
+      instructor_node = nodes[0]
+      expect(instructor_node.dig("user", "name")).to eq("Instructor 1")
+      expect(instructor_node["enrollments"].length).to eq(2)
+
+      enrollment_course_ids = instructor_node["enrollments"].pluck("course").pluck("_id").sort
+      expect(enrollment_course_ids).to eq([@course1.id.to_s, @course3.id.to_s].sort)
     end
 
     describe "pagination" do
@@ -962,7 +1114,9 @@ describe Types::QueryType do
                   user {
                     name
                   }
-                  type
+                  enrollments {
+                    type
+                  }
                 }
               }
             }
@@ -976,9 +1130,9 @@ describe Types::QueryType do
         teacher_nodes = nodes.select { |n| n["user"]["name"].include?("Teacher User") }
 
         expect(ta_nodes.length).to eq(2)
-        expect(ta_nodes.all? { |n| n["type"] == "TaEnrollment" }).to be true
+        expect(ta_nodes.all? { |n| n["enrollments"].first["type"] == "TaEnrollment" }).to be true
         expect(teacher_nodes.length).to eq(1)
-        expect(teacher_nodes.first["type"]).to eq("TeacherEnrollment")
+        expect(teacher_nodes.first["enrollments"].first["type"]).to eq("TeacherEnrollment")
       end
 
       it "returns TAs when course has only TAs and no teachers" do
@@ -997,6 +1151,138 @@ describe Types::QueryType do
         expect(instructors.length).to eq(2)
         instructor_names = instructors.pluck("user").pluck("name").sort
         expect(instructor_names).to eq(["TA User 1", "TA User 2"])
+      end
+    end
+
+    describe "enrollment_types filter" do
+      before(:once) do
+        @filter_course = Course.create!(name: "Filter Course", workflow_state: "available")
+        @filter_student = user_factory(name: "Filter Student")
+        @filter_course.enroll_student(@filter_student, enrollment_state: "active")
+
+        @filter_teacher1 = user_factory(name: "Filter Teacher 1")
+        @filter_teacher2 = user_factory(name: "Filter Teacher 2")
+        @filter_ta1 = user_factory(name: "Filter TA 1")
+        @filter_ta2 = user_factory(name: "Filter TA 2")
+
+        @filter_course.enroll_teacher(@filter_teacher1).accept!
+        @filter_course.enroll_teacher(@filter_teacher2).accept!
+        @filter_course.enroll_ta(@filter_ta1).accept!
+        @filter_course.enroll_ta(@filter_ta2).accept!
+      end
+
+      let(:filter_query) do
+        <<~GQL
+          query($courseIds: [ID!]!, $enrollmentTypes: [String!]) {
+            courseInstructorsConnection(courseIds: $courseIds, enrollmentTypes: $enrollmentTypes) {
+              nodes {
+                user {
+                  _id
+                  name
+                }
+                enrollments {
+                  type
+                }
+              }
+            }
+          }
+        GQL
+      end
+
+      it "filters to only teachers when enrollmentTypes is [TeacherEnrollment]" do
+        result = CanvasSchema.execute(
+          filter_query,
+          variables: { courseIds: [@filter_course.id.to_s], enrollmentTypes: ["TeacherEnrollment"] },
+          context: { current_user: @filter_student }
+        )
+
+        nodes = result.dig("data", "courseInstructorsConnection", "nodes")
+        expect(nodes.length).to eq(2)
+
+        instructor_names = nodes.pluck("user").pluck("name").sort
+        expect(instructor_names).to eq(["Filter Teacher 1", "Filter Teacher 2"])
+
+        types = nodes.flat_map { |n| n["enrollments"].pluck("type") }.uniq
+        expect(types).to eq(["TeacherEnrollment"])
+      end
+
+      it "filters to only TAs when enrollmentTypes is [TaEnrollment]" do
+        result = CanvasSchema.execute(
+          filter_query,
+          variables: { courseIds: [@filter_course.id.to_s], enrollmentTypes: ["TaEnrollment"] },
+          context: { current_user: @filter_student }
+        )
+
+        nodes = result.dig("data", "courseInstructorsConnection", "nodes")
+        expect(nodes.length).to eq(2)
+
+        instructor_names = nodes.pluck("user").pluck("name").sort
+        expect(instructor_names).to eq(["Filter TA 1", "Filter TA 2"])
+
+        types = nodes.flat_map { |n| n["enrollments"].pluck("type") }.uniq
+        expect(types).to eq(["TaEnrollment"])
+      end
+
+      it "returns both teachers and TAs when enrollmentTypes includes both types" do
+        result = CanvasSchema.execute(
+          filter_query,
+          variables: {
+            courseIds: [@filter_course.id.to_s],
+            enrollmentTypes: ["TeacherEnrollment", "TaEnrollment"]
+          },
+          context: { current_user: @filter_student }
+        )
+
+        nodes = result.dig("data", "courseInstructorsConnection", "nodes")
+        expect(nodes.length).to eq(4)
+
+        instructor_names = nodes.pluck("user").pluck("name").sort
+        expect(instructor_names).to eq(["Filter TA 1", "Filter TA 2", "Filter Teacher 1", "Filter Teacher 2"])
+
+        types = nodes.flat_map { |n| n["enrollments"].pluck("type") }.uniq.sort
+        expect(types).to eq(["TaEnrollment", "TeacherEnrollment"])
+      end
+
+      it "returns both teachers and TAs when enrollmentTypes is not provided" do
+        result = CanvasSchema.execute(
+          filter_query,
+          variables: { courseIds: [@filter_course.id.to_s] },
+          context: { current_user: @filter_student }
+        )
+
+        nodes = result.dig("data", "courseInstructorsConnection", "nodes")
+        expect(nodes.length).to eq(4)
+
+        instructor_names = nodes.pluck("user").pluck("name").sort
+        expect(instructor_names).to eq(["Filter TA 1", "Filter TA 2", "Filter Teacher 1", "Filter Teacher 2"])
+      end
+
+      it "returns both teachers and TAs when enrollmentTypes is empty array" do
+        result = CanvasSchema.execute(
+          filter_query,
+          variables: { courseIds: [@filter_course.id.to_s], enrollmentTypes: [] },
+          context: { current_user: @filter_student }
+        )
+
+        nodes = result.dig("data", "courseInstructorsConnection", "nodes")
+        expect(nodes.length).to eq(4)
+
+        instructor_names = nodes.pluck("user").pluck("name").sort
+        expect(instructor_names).to eq(["Filter TA 1", "Filter TA 2", "Filter Teacher 1", "Filter Teacher 2"])
+      end
+
+      it "does not include invalid enrollment types" do
+        result = CanvasSchema.execute(
+          filter_query,
+          variables: { courseIds: [@filter_course.id.to_s], enrollmentTypes: ["InvalidType", "TeacherEnrollment"] },
+          context: { current_user: @filter_student }
+        )
+
+        nodes = result.dig("data", "courseInstructorsConnection", "nodes")
+        expect(nodes.length).to eq(2)
+
+        types = nodes.flat_map { |n| n["enrollments"].pluck("type") }.uniq
+        expect(types).to eq(["TeacherEnrollment"])
       end
     end
 
@@ -1037,7 +1323,9 @@ describe Types::QueryType do
               courseInstructorsConnection(courseIds: $courseIds) {
                 nodes {
                   user { name }
-                  enrollmentState
+                  enrollments {
+                    enrollmentState
+                  }
                 }
               }
             }
@@ -1046,7 +1334,7 @@ describe Types::QueryType do
           context: { current_user: @priority_student }
         )
 
-        enrollment_state = result_with_state.dig("data", "courseInstructorsConnection", "nodes", 0, "enrollmentState")
+        enrollment_state = result_with_state.dig("data", "courseInstructorsConnection", "nodes", 0, "enrollments", 0, "enrollmentState")
         expect(enrollment_state).to eq("active")
       end
 
@@ -1087,7 +1375,9 @@ describe Types::QueryType do
               courseInstructorsConnection(courseIds: $courseIds) {
                 nodes {
                   user { name }
-                  type
+                  enrollments {
+                    type
+                  }
                 }
               }
             }
@@ -1099,8 +1389,10 @@ describe Types::QueryType do
         nodes = result.dig("data", "courseInstructorsConnection", "nodes")
         dual_role_nodes = nodes.select { |n| n["user"]["name"] == "Dual Role Instructor" }
 
-        # Should return only one enrollment (deduplicated by course_id + user_id)
+        # Should return one instructor with one enrollment (deduplicated by course + user)
+        # The DISTINCT ON query picks the highest priority enrollment
         expect(dual_role_nodes.length).to eq(1)
+        expect(dual_role_nodes.first["enrollments"].length).to eq(1)
       end
 
       it "filters out completed enrollments even when user has no active enrollment" do
@@ -1143,23 +1435,41 @@ describe Types::QueryType do
         @course_m.enroll_teacher(@instructor_m).accept!
       end
 
-      it "sorts by course name ascending, then by user sortable name ascending" do
+      it "sorts instructors by sortable name, then courses within enrollments by name" do
         result = CanvasSchema.execute(
-          query,
+          <<~GQL,
+            query($courseIds: [ID!]!) {
+              courseInstructorsConnection(courseIds: $courseIds) {
+                nodes {
+                  user {
+                    name
+                    sortableName
+                  }
+                  enrollments {
+                    course {
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          GQL
           variables: { courseIds: [@course_z.id.to_s, @course_a.id.to_s, @course_m.id.to_s] },
           context: { current_user: @sort_student }
         )
 
         nodes = result.dig("data", "courseInstructorsConnection", "nodes")
-        course_names = nodes.pluck("course").pluck("name")
 
-        # Should be sorted by course name: A Course, M Course, Z Course
-        expect(course_names).to eq(["A Course", "A Course", "M Course", "Z Course"])
+        # Should return 3 instructors, sorted by sortable name
+        expect(nodes.length).to eq(3)
+        instructor_names = nodes.pluck("user").pluck("sortableName")
+        expect(instructor_names).to eq(["A, Instructor", "M, Instructor", "Z, Instructor"])
 
-        # Within A Course, should be sorted by sortable name: A then Z
-        a_course_instructors = nodes.select { |n| n["course"]["name"] == "A Course" }
-        a_course_names = a_course_instructors.pluck("user").pluck("name")
-        expect(a_course_names).to eq(["Instructor A", "Instructor Z"])
+        # Instructor Z has enrollments in both A Course and Z Course
+        # Courses within enrollments should be sorted alphabetically
+        instructor_z_node = nodes.find { |n| n["user"]["name"] == "Instructor Z" }
+        z_courses = instructor_z_node["enrollments"].pluck("course").pluck("name")
+        expect(z_courses).to eq(["A Course", "Z Course"])
       end
     end
 
@@ -1233,6 +1543,32 @@ describe Types::QueryType do
         expect(instructor_ids.uniq).to eq(instructor_ids) # No duplicates
       end
 
+      it "returns instructor only once when student is dual-enrolled via multiple sections" do
+        # active_by_date.pluck(:course_id).uniq collapses duplicate course_ids from the student's
+        # two section enrollments, so the instructor is fetched only once
+        course = Course.create!(name: "Dual Student Course", account: Account.default, workflow_state: "available")
+        section1 = course.default_section
+        section2 = course.course_sections.create!(name: "Section B")
+
+        instructor = User.create!(name: "Dual Student Instructor")
+        course.enroll_teacher(instructor).accept!
+
+        student = User.create!(name: "Dual Enrolled Student")
+        course.enroll_student(student, section: section1, enrollment_state: "active")
+        e2 = course.enroll_student(student, section: section2, allow_multiple_enrollments: true)
+        e2.accept!
+
+        result = CanvasSchema.execute(
+          query,
+          variables: { courseIds: [course.id.to_s] },
+          context: { current_user: student }
+        )
+
+        instructors = result.dig("data", "courseInstructorsConnection", "nodes")
+        expect(instructors.length).to eq(1)
+        expect(instructors[0].dig("user", "name")).to eq("Dual Student Instructor")
+      end
+
       it "returns empty result for course with no instructors" do
         course = Course.create!(name: "Empty Course", account: Account.default, workflow_state: "available")
         student = User.create!(name: "Student")
@@ -1246,6 +1582,495 @@ describe Types::QueryType do
 
         instructors = result.dig("data", "courseInstructorsConnection", "nodes")
         expect(instructors).to be_empty
+      end
+    end
+
+    describe "lightweight type fields" do
+      before(:once) do
+        @lt_course = Course.create!(name: "LT Course", course_code: "LTC101", workflow_state: "available")
+        @lt_student = user_factory(name: "LT Student")
+        @lt_course.enroll_student(@lt_student, enrollment_state: "active")
+
+        @lt_teacher = user_factory(name: "LT Teacher", short_name: "LT", sortable_name: "Teacher, LT")
+        @lt_course.enroll_teacher(@lt_teacher).accept!
+      end
+
+      let(:detailed_query) do
+        <<~GQL
+          query($courseIds: [ID!]!) {
+            courseInstructorsConnection(courseIds: $courseIds) {
+              nodes {
+                user {
+                  _id
+                  name
+                  shortName
+                  sortableName
+                  avatarUrl
+                  email
+                }
+                enrollments {
+                  course {
+                    _id
+                    name
+                    courseCode
+                  }
+                  type
+                  role { _id name }
+                  enrollmentState
+                }
+              }
+            }
+          }
+        GQL
+      end
+
+      it "returns all InstructorUserInfo fields" do
+        result = CanvasSchema.execute(
+          detailed_query,
+          variables: { courseIds: [@lt_course.id.to_s] },
+          context: { current_user: @lt_student, domain_root_account: Account.default }
+        )
+
+        user = result.dig("data", "courseInstructorsConnection", "nodes", 0, "user")
+        expect(user["_id"]).to eq(@lt_teacher.id.to_s)
+        expect(user["name"]).to eq("LT Teacher")
+        expect(user["shortName"]).to eq("LT")
+        expect(user["sortableName"]).to eq("Teacher, LT")
+        expect(user).to have_key("avatarUrl")
+        expect(user).to have_key("email")
+      end
+
+      it "returns all InstructorCourseInfo fields" do
+        result = CanvasSchema.execute(
+          detailed_query,
+          variables: { courseIds: [@lt_course.id.to_s] },
+          context: { current_user: @lt_student, domain_root_account: Account.default }
+        )
+
+        enrollment = result.dig("data", "courseInstructorsConnection", "nodes", 0, "enrollments", 0)
+        expect(enrollment.dig("course", "_id")).to eq(@lt_course.id.to_s)
+        expect(enrollment.dig("course", "name")).to eq("LT Course")
+        expect(enrollment.dig("course", "courseCode")).to eq("LTC101")
+        expect(enrollment["type"]).to eq("TeacherEnrollment")
+        expect(enrollment["enrollmentState"]).to be_present
+        expect(enrollment.dig("role", "name")).to be_present
+      end
+
+      it "returns nil for email when not cached on user" do
+        result = CanvasSchema.execute(
+          detailed_query,
+          variables: { courseIds: [@lt_course.id.to_s] },
+          context: { current_user: @lt_student, domain_root_account: Account.default }
+        )
+
+        user = result.dig("data", "courseInstructorsConnection", "nodes", 0, "user")
+        expect(user).to have_key("email")
+        expect(user["email"]).to be_nil
+      end
+    end
+  end
+
+  context "peerReviewSubAssignment query" do
+    before(:once) do
+      @course = Course.create!(name: "Test Course")
+      @teacher = teacher_in_course(course: @course, active_all: true).user
+      @course.enable_feature!(:peer_review_allocation_and_grading)
+
+      @parent_assignment = @course.assignments.create!(
+        title: "Parent Assignment",
+        peer_reviews: true,
+        peer_review_count: 2
+      )
+      @peer_review_sub_assignment = peer_review_model(parent_assignment: @parent_assignment)
+    end
+
+    let(:query) do
+      <<~GQL
+        query($id: ID!) {
+          peerReviewSubAssignment(id: $id) {
+            _id
+            name
+            parentAssignmentId
+          }
+        }
+      GQL
+    end
+
+    def execute_query(query_string = query, user = @teacher, id = @peer_review_sub_assignment.id.to_s, other_context = {})
+      CanvasSchema.execute(
+        query_string,
+        variables: { id: },
+        context: { current_user: user }.merge(other_context)
+      )
+    end
+
+    context "with valid id" do
+      it "returns peer review sub assignment" do
+        result = execute_query
+
+        assignment = result.dig("data", "peerReviewSubAssignment")
+        expect(assignment["_id"]).to eq @peer_review_sub_assignment.id.to_s
+        expect(assignment["name"]).to eq @peer_review_sub_assignment.name
+        expect(assignment["parentAssignmentId"]).to eq @parent_assignment.id.to_s
+      end
+
+      it "works with relay id format" do
+        relay_id = GraphQLHelpers.relay_or_legacy_id_prepare_func("PeerReviewSubAssignment").call(@peer_review_sub_assignment.id.to_s)
+        result = execute_query(query, @teacher, relay_id)
+
+        assignment = result.dig("data", "peerReviewSubAssignment")
+        expect(assignment["_id"]).to eq @peer_review_sub_assignment.id.to_s
+      end
+    end
+
+    context "when feature flag is disabled" do
+      before do
+        @course.disable_feature!(:peer_review_allocation_and_grading)
+      end
+
+      it "returns nil" do
+        result = execute_query
+
+        expect(result.dig("data", "peerReviewSubAssignment")).to be_nil
+      end
+    end
+
+    context "with invalid permissions" do
+      before(:once) do
+        @other_course = Course.create!(name: "Other Course")
+        @other_teacher = teacher_in_course(course: @other_course, active_all: true).user
+      end
+
+      it "returns nil for user without access" do
+        result = execute_query(query, @other_teacher)
+
+        expect(result.dig("data", "peerReviewSubAssignment")).to be_nil
+      end
+    end
+
+    context "with non-existent id" do
+      it "returns nil" do
+        result = execute_query(query, @teacher, "999999")
+
+        expect(result.dig("data", "peerReviewSubAssignment")).to be_nil
+      end
+    end
+
+    context "querying inherited fields" do
+      it "resolves fields inherited from AssignmentType" do
+        extended_query = <<~GQL
+          query($id: ID!) {
+            peerReviewSubAssignment(id: $id) {
+              _id
+              name
+              pointsPossible
+              courseId
+              state
+            }
+          }
+        GQL
+
+        result = execute_query(extended_query, @teacher, @peer_review_sub_assignment.id.to_s, request: ActionDispatch::TestRequest.create)
+
+        peer_review_sub_assignment = result.dig("data", "peerReviewSubAssignment")
+        expect(peer_review_sub_assignment["_id"]).to eq @peer_review_sub_assignment.id.to_s
+        expect(peer_review_sub_assignment["name"]).to eq @peer_review_sub_assignment.name
+        expect(peer_review_sub_assignment["pointsPossible"]).to eq @peer_review_sub_assignment.points_possible
+        expect(peer_review_sub_assignment["courseId"]).to eq @course.id.to_s
+        expect(peer_review_sub_assignment["state"]).to eq @peer_review_sub_assignment.workflow_state
+      end
+
+      context "overridden fields" do
+        it "returns html_url pointing to parent assignment" do
+          extended_query = <<~GQL
+            query($id: ID!) {
+              peerReviewSubAssignment(id: $id) {
+                htmlUrl
+                parentAssignment {
+                  htmlUrl
+                }
+              }
+            }
+          GQL
+
+          result = execute_query(extended_query, @teacher, @peer_review_sub_assignment.id.to_s, request: ActionDispatch::TestRequest.create)
+
+          peer_review_sub_assignment = result.dig("data", "peerReviewSubAssignment")
+          parent_assignment = peer_review_sub_assignment["parentAssignment"]
+          expect(peer_review_sub_assignment["htmlUrl"]).to eq(parent_assignment["htmlUrl"])
+        end
+      end
+    end
+  end
+
+  context "assignment query with includeTypes parameter" do
+    before(:once) do
+      @course = Course.create!(name: "Test Course")
+      @teacher = teacher_in_course(course: @course, active_all: true).user
+      @course.enable_feature!(:peer_review_allocation_and_grading)
+
+      @course.offer!
+      @parent_assignment = @course.assignments.create!(
+        title: "Parent Assignment",
+        peer_reviews: true,
+        peer_review_count: 2,
+        submission_types: "online_text_entry"
+      )
+      @peer_review_sub_assignment = peer_review_model(parent_assignment: @parent_assignment)
+    end
+
+    let(:base_query) do
+      <<~GQL
+        query($id: ID!) {
+          assignment(id: $id) {
+            _id
+            name
+            assignmentType
+            parentAssignmentId
+          }
+        }
+      GQL
+    end
+
+    let(:query_with_include_types) do
+      <<~GQL
+        query($id: ID!, $includeTypes: [AssignmentTypeEnum!]) {
+          assignment(id: $id, includeTypes: $includeTypes) {
+            _id
+            name
+            assignmentType
+            parentAssignmentId
+            parentAssignment {
+              _id
+              name
+            }
+          }
+        }
+      GQL
+    end
+
+    def execute_query(query_string, user, variables = {})
+      CanvasSchema.execute(
+        query_string,
+        variables:,
+        context: { current_user: user, request: ActionDispatch::TestRequest.create }
+      )
+    end
+
+    context "default behavior (backward compatible)" do
+      it "returns Assignment when queried by assignment ID" do
+        result = execute_query(base_query, @teacher, { id: @parent_assignment.id.to_s })
+
+        assignment = result.dig("data", "assignment")
+        expect(assignment["_id"]).to eq @parent_assignment.id.to_s
+        expect(assignment["assignmentType"]).to eq "ASSIGNMENT"
+        expect(assignment["parentAssignmentId"]).to be_nil
+      end
+
+      it "returns nil when queried by PRSA ID without includeTypes" do
+        result = execute_query(base_query, @teacher, { id: @peer_review_sub_assignment.id.to_s })
+
+        expect(result.dig("data", "assignment")).to be_nil
+      end
+
+      it "defaults to Assignment when includeTypes is empty" do
+        result = execute_query(
+          query_with_include_types,
+          @teacher,
+          { id: @parent_assignment.id.to_s, includeTypes: [] }
+        )
+
+        assignment = result.dig("data", "assignment")
+        expect(assignment["_id"]).to eq @parent_assignment.id.to_s
+        expect(assignment["assignmentType"]).to eq "ASSIGNMENT"
+      end
+    end
+
+    context "with includeTypes: [PEER_REVIEW_SUB_ASSIGNMENT]" do
+      it "returns PRSA when queried by PRSA ID" do
+        result = execute_query(
+          query_with_include_types,
+          @teacher,
+          { id: @peer_review_sub_assignment.id.to_s, includeTypes: ["PEER_REVIEW_SUB_ASSIGNMENT"] }
+        )
+
+        assignment = result.dig("data", "assignment")
+        expect(assignment["_id"]).to eq @peer_review_sub_assignment.id.to_s
+        expect(assignment["assignmentType"]).to eq "PEER_REVIEW_SUB_ASSIGNMENT"
+        expect(assignment["parentAssignmentId"]).to eq @parent_assignment.id.to_s
+        expect(assignment.dig("parentAssignment", "_id")).to eq @parent_assignment.id.to_s
+      end
+
+      it "returns nil when queried by Assignment ID" do
+        result = execute_query(
+          query_with_include_types,
+          @teacher,
+          { id: @parent_assignment.id.to_s, includeTypes: ["PEER_REVIEW_SUB_ASSIGNMENT"] }
+        )
+
+        expect(result.dig("data", "assignment")).to be_nil
+      end
+    end
+
+    context "with includeTypes: [ASSIGNMENT, PEER_REVIEW_SUB_ASSIGNMENT]" do
+      it "returns Assignment when queried by Assignment ID" do
+        result = execute_query(
+          query_with_include_types,
+          @teacher,
+          { id: @parent_assignment.id.to_s, includeTypes: %w[ASSIGNMENT PEER_REVIEW_SUB_ASSIGNMENT] }
+        )
+
+        assignment = result.dig("data", "assignment")
+        expect(assignment["_id"]).to eq @parent_assignment.id.to_s
+        expect(assignment["assignmentType"]).to eq "ASSIGNMENT"
+        expect(assignment["parentAssignmentId"]).to be_nil
+        expect(assignment["parentAssignment"]).to be_nil
+      end
+
+      it "returns PRSA when queried by PRSA ID" do
+        result = execute_query(
+          query_with_include_types,
+          @teacher,
+          { id: @peer_review_sub_assignment.id.to_s, includeTypes: %w[ASSIGNMENT PEER_REVIEW_SUB_ASSIGNMENT] }
+        )
+
+        assignment = result.dig("data", "assignment")
+        expect(assignment["_id"]).to eq @peer_review_sub_assignment.id.to_s
+        expect(assignment["assignmentType"]).to eq "PEER_REVIEW_SUB_ASSIGNMENT"
+        expect(assignment["parentAssignmentId"]).to eq @parent_assignment.id.to_s
+      end
+    end
+
+    context "when feature flag is disabled" do
+      before do
+        @course.disable_feature!(:peer_review_allocation_and_grading)
+      end
+
+      it "returns nil for PRSA even with includeTypes" do
+        result = execute_query(
+          query_with_include_types,
+          @teacher,
+          { id: @peer_review_sub_assignment.id.to_s, includeTypes: ["PEER_REVIEW_SUB_ASSIGNMENT"] }
+        )
+
+        expect(result.dig("data", "assignment")).to be_nil
+      end
+
+      it "still returns Assignment normally" do
+        result = execute_query(base_query, @teacher, { id: @parent_assignment.id.to_s })
+
+        assignment = result.dig("data", "assignment")
+        expect(assignment["_id"]).to eq @parent_assignment.id.to_s
+      end
+    end
+
+    context "with invalid permissions" do
+      before(:once) do
+        @other_course = Course.create!(name: "Other Course")
+        @other_teacher = teacher_in_course(course: @other_course, active_all: true).user
+      end
+
+      it "returns nil for user without access" do
+        result = execute_query(
+          query_with_include_types,
+          @other_teacher,
+          { id: @peer_review_sub_assignment.id.to_s, includeTypes: ["PEER_REVIEW_SUB_ASSIGNMENT"] }
+        )
+
+        expect(result.dig("data", "assignment")).to be_nil
+      end
+    end
+
+    context "with sisId parameter" do
+      before(:once) do
+        @parent_assignment.update!(sis_source_id: "SIS_ASSIGNMENT_123")
+      end
+
+      it "returns assignment by sisId (ignores includeTypes for SIS lookup)" do
+        query = <<~GQL
+          query($sisId: String!) {
+            assignment(sisId: $sisId, includeTypes: [ASSIGNMENT, PEER_REVIEW_SUB_ASSIGNMENT]) {
+              _id
+              name
+              assignmentType
+            }
+          }
+        GQL
+
+        result = execute_query(query, @teacher, { sisId: "SIS_ASSIGNMENT_123" })
+
+        assignment = result.dig("data", "assignment")
+        expect(assignment["_id"]).to eq @parent_assignment.id.to_s
+        expect(assignment["assignmentType"]).to eq "ASSIGNMENT"
+      end
+    end
+
+    context "with non-existent ID" do
+      it "returns nil for non-existent assignment ID" do
+        result = execute_query(base_query, @teacher, { id: "999999999" })
+
+        expect(result.dig("data", "assignment")).to be_nil
+      end
+
+      it "returns nil for non-existent PRSA ID with includeTypes" do
+        result = execute_query(
+          query_with_include_types,
+          @teacher,
+          { id: "999999999", includeTypes: ["PEER_REVIEW_SUB_ASSIGNMENT"] }
+        )
+
+        expect(result.dig("data", "assignment")).to be_nil
+      end
+    end
+
+    context "with student user" do
+      before(:once) do
+        @student = student_in_course(course: @course, active_all: true).user
+      end
+
+      it "allows students to query Assignment" do
+        result = execute_query(base_query, @student, { id: @parent_assignment.id.to_s })
+
+        assignment = result.dig("data", "assignment")
+        expect(assignment["_id"]).to eq @parent_assignment.id.to_s
+        expect(assignment["assignmentType"]).to eq "ASSIGNMENT"
+      end
+
+      it "allows students to query PRSA with includeTypes" do
+        result = execute_query(
+          query_with_include_types,
+          @student,
+          { id: @peer_review_sub_assignment.id.to_s, includeTypes: ["PEER_REVIEW_SUB_ASSIGNMENT"] }
+        )
+
+        assignment = result.dig("data", "assignment")
+        expect(assignment["_id"]).to eq @peer_review_sub_assignment.id.to_s
+        expect(assignment["assignmentType"]).to eq "PEER_REVIEW_SUB_ASSIGNMENT"
+      end
+    end
+
+    context "with Relay global ID format" do
+      it "accepts Relay global ID for Assignment" do
+        relay_id = CanvasSchema.id_from_object(@parent_assignment, Types::AssignmentType, nil)
+
+        result = execute_query(base_query, @teacher, { id: relay_id })
+
+        assignment = result.dig("data", "assignment")
+        expect(assignment["_id"]).to eq @parent_assignment.id.to_s
+      end
+
+      it "accepts Relay global ID for PRSA with includeTypes" do
+        relay_id = CanvasSchema.id_from_object(@peer_review_sub_assignment, Types::AssignmentType, nil)
+
+        result = execute_query(
+          query_with_include_types,
+          @teacher,
+          { id: relay_id, includeTypes: ["PEER_REVIEW_SUB_ASSIGNMENT"] }
+        )
+
+        assignment = result.dig("data", "assignment")
+        expect(assignment["_id"]).to eq @peer_review_sub_assignment.id.to_s
+        expect(assignment["assignmentType"]).to eq "PEER_REVIEW_SUB_ASSIGNMENT"
       end
     end
   end

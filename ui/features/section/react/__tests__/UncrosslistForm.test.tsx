@@ -17,17 +17,22 @@
  */
 
 import React from 'react'
-import {render, waitFor} from '@testing-library/react'
+import {cleanup, render, waitFor} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import {setupServer} from 'msw/node'
 import {http, HttpResponse} from 'msw'
+import {type MockedFunction} from 'vitest'
 import UncrosslistForm from '../UncrosslistForm'
 import {FetchApiError} from '@canvas/do-fetch-api-effect'
-import {showFlashError} from '@canvas/alerts/react/FlashAlert'
+import {showFlashError} from '@instructure/platform-alerts'
 
-jest.mock('@canvas/alerts/react/FlashAlert', () => ({
-  showFlashError: jest.fn(() => jest.fn()),
-}))
+vi.mock('@instructure/platform-alerts', async () => {
+  const actual = await vi.importActual('@instructure/platform-alerts')
+  return {
+    ...actual,
+    showFlashError: vi.fn(() => vi.fn()),
+  }
+})
 
 const server = setupServer()
 
@@ -43,12 +48,13 @@ describe('UncrosslistForm', () => {
   beforeAll(() => server.listen())
 
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   afterEach(() => {
+    cleanup()
     server.resetHandlers()
-    jest.restoreAllMocks()
+    vi.restoreAllMocks()
   })
 
   afterAll(() => server.close())
@@ -181,8 +187,8 @@ describe('UncrosslistForm', () => {
       ),
     )
 
-    const mockShowFlashError = showFlashError as jest.MockedFunction<typeof showFlashError>
-    const mockFlashErrorCall = jest.fn()
+    const mockShowFlashError = showFlashError as MockedFunction<typeof showFlashError>
+    const mockFlashErrorCall = vi.fn()
     mockShowFlashError.mockReturnValue(mockFlashErrorCall)
 
     const {getByTestId} = render(<UncrosslistForm {...defaultProps} />)

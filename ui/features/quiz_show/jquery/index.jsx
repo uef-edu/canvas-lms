@@ -19,7 +19,7 @@
 import {useScope as createI18nScope} from '@canvas/i18n'
 import $ from 'jquery'
 import React from 'react'
-import {createRoot} from 'react-dom/client'
+import {render, rerender} from '@canvas/react'
 import MessageStudentsDialog from '@canvas/message-students-dialog'
 import QuizArrowApplicator from '@canvas/quizzes/jquery/quiz_arrows'
 import inputMethods from '@canvas/quizzes/jquery/quiz_inputs'
@@ -29,7 +29,6 @@ import QuizLogAuditingEventDumper from '@canvas/quiz-log-auditing/jquery/dump_ev
 import CyoeStats from '@canvas/conditional-release-stats/react/index'
 import {renderDatetimeField} from '@canvas/datetime/jquery/DatetimeField'
 import 'jqueryui/dialog'
-import '@canvas/util/jquery/fixDialogButtons'
 import '@canvas/rails-flash-notifications'
 import '@canvas/jquery/jquery.instructure_misc_plugins' /* ifExists, confirmDelete */
 import '@canvas/jquery/jquery.disableWhileLoading'
@@ -57,10 +56,11 @@ function createOrUpdateRoot(elementId, component) {
 
   let root = roots.get(elementId)
   if (!root) {
-    root = createRoot(container)
+    root = render(component, container)
     roots.set(elementId, root)
+  } else {
+    rerender(root, component)
   }
-  root.render(component)
 }
 
 function unmountRoot(elementId) {
@@ -95,18 +95,14 @@ function renderRubric() {
         assignmentRubricAssociation={assignmentRubricAssociation}
         assignmentPointsPossible={ENV.ASSIGNMENT_POINTS}
         canManageRubrics={ENV.PERMISSIONS?.manage_rubrics}
+        canUseForGrading={false}
         courseId={ENV.COURSE_ID}
         currentUserId={ENV.current_user_id}
-        rubricSelfAssessmentFFEnabled={ENV.rubric_self_assessment_ff_enabled}
+        rubricSelfAssessmentFFEnabled={false}
         aiRubricsEnabled={ENV.ai_rubrics_enabled}
       />,
     )
   }
-
-  createOrUpdateRoot(
-    'enhanced-rubric-self-assessment-edit',
-    <RubricSelfAssessmentSettingsWrapper assignmentId={ENV.ASSIGNMENT_ID} />,
-  )
 }
 
 $(document).ready(function () {
@@ -249,8 +245,7 @@ $(document).ready(function () {
     if (event) event.preventDefault()
 
     const container = document.getElementById('direct-share-mount-point')
-    const root = createRoot(container)
-    root.render(
+    const root = render(
       <DirectShareUserModal
         open={open}
         sourceCourseId={ENV.COURSE_ID}
@@ -261,6 +256,7 @@ $(document).ready(function () {
           $('.al-trigger').focus()
         }}
       />,
+      container,
     )
   }
 
@@ -270,8 +266,7 @@ $(document).ready(function () {
     if (event) event.preventDefault()
 
     const container = document.getElementById('direct-share-mount-point')
-    const root = createRoot(container)
-    root.render(
+    const root = render(
       <DirectShareCourseTray
         open={open}
         sourceCourseId={ENV.COURSE_ID}
@@ -282,6 +277,7 @@ $(document).ready(function () {
           $('.al-trigger').focus()
         }}
       />,
+      container,
     )
   }
 

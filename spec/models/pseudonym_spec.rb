@@ -23,7 +23,7 @@ describe Pseudonym do
     delegate :normalize, to: :Pseudonym
 
     it "normalizes according to RFC4518" do
-      # Ⅳ ligature gets decomposed to IV (and downcased)
+      # Ⅳ ligature gets decomposed to IV (and dowercased)
       expect(normalize("Ⅳ")).to eql "iv"
       expect(normalize("interior  spaces")).to eql "interior spaces"
       expect(normalize("  leading")).to eql "leading"
@@ -35,6 +35,27 @@ describe Pseudonym do
       expect(normalize("cody\u200f")).to eql "cody"
       expect(normalize("\u202a\u202a\u202acody\u202c\u202c\u202c")).to eql "cody"
       expect(normalize("\u200f\u202acody\u202c\u200f")).to eql "cody"
+    end
+
+    it "self-heals corrupted unique_id_normalized on save" do
+      user = user_model
+      pseudonym = Pseudonym.create!(valid_pseudonym_attributes.merge(user:))
+
+      # Corrupt unique_id_normalized by bypassing validations
+      # This simulates what might happen from old migration code or manual database updates
+      pseudonym.update_column(:unique_id_normalized, "corrupted@example.com")
+      pseudonym.reload
+
+      # Verify corruption exists
+      expect(pseudonym.unique_id_normalized).to eq("corrupted@example.com")
+      expect(pseudonym.unique_id_normalized).not_to eq(normalize(pseudonym.unique_id))
+
+      # Save the pseudonym (without changing unique_id)
+      pseudonym.save!
+      pseudonym.reload
+
+      # Verify self-healing: unique_id_normalized should now match normalized unique_id
+      expect(pseudonym.unique_id_normalized).to eq(normalize(pseudonym.unique_id))
     end
   end
 
@@ -192,16 +213,10 @@ describe Pseudonym do
       expect(Pseudonym.active.by_unique_id("c①dy@instructure.com")).to eq [p4]
 
       scope = Pseudonym.active
-      shard = instance_double(Shard)
-      allow(shard).to receive(:settings).and_return({})
+      shard = instance_double(Shard, settings: {})
       allow(shard).to receive(:is_a?).with(Shard).and_return(true)
       allow(shard).to receive(:is_a?).with(Switchman::DefaultShard).and_return(false)
       # return our double once for the named scope, then the real thing for the query
-      allow(scope).to receive(:primary_shard).and_return(shard, Shard.default)
-      expect(scope.by_unique_id("c1dy@instructure.com")).not_to exist
-
-      # mark the migration as complete, and it will start doing a normalized lookup
-      allow(shard).to receive(:settings).and_return({ "pseudonyms_normalized" => true })
       allow(scope).to receive(:primary_shard).and_return(shard, Shard.default)
       expect(scope.by_unique_id("c1dy@instructure.com")).to eq [p4]
     end
@@ -322,6 +337,27 @@ describe Pseudonym do
 
         pseudonym.destroy(custom_deleted_at: Time.now.utc, validate: false)
       end
+    end
+  end
+
+  describe "suspend auditing" do
+    it "audits suspension" do
+      pseudonym_model
+      @pseudonym.suspend!
+      expect(@pseudonym.auditor_records.where(action: "suspended")).to exist
+    end
+
+    it "audits unsuspension" do
+      pseudonym_model(workflow_state: "suspended")
+      @pseudonym.unsuspend!
+      expect(@pseudonym.auditor_records.where(action: "unsuspended")).to exist
+    end
+
+    it "logs deletion in preference to unsuspension" do
+      pseudonym_model(workflow_state: "suspended")
+      @pseudonym.destroy
+      expect(@pseudonym.auditor_records.where(action: "deleted")).to exist
+      expect(@pseudonym.auditor_records.where(action: "unsuspended")).not_to exist
     end
   end
 
@@ -463,12 +499,12 @@ describe Pseudonym do
     ap = p.account.authentication_providers.create!(auth_type: "ldap")
     expect(p).to be_passwordable
     p.authentication_provider = ap
-    expect(p).to_not be_passwordable
+    expect(p).not_to be_passwordable
     p.account.canvas_authentication_provider.destroy
     p.authentication_provider = nil
     p.save!
     p.reload
-    expect(p).to_not be_passwordable
+    expect(p).not_to be_passwordable
   end
 
   context "login assertions" do
@@ -973,26 +1009,26 @@ describe Pseudonym do
     aac = Account.default.authentication_providers.create!(auth_type: "facebook")
     u.pseudonyms.create!(unique_id: "a", account: Account.default)
     p2 = u.pseudonyms.new(unique_id: "a", account: Account.default)
-    expect(p2).to_not be_valid
+    expect(p2).not_to be_valid
     expect(p2.errors.details[:unique_id].first[:error]).to eq :taken
     p2.authentication_provider = aac
     expect(p2).to be_valid
   end
 
-  describe ".find_all_by_arbtrary_credentials" do
-    let_once(:p) do
+  describe ".find_all_by_arbitrary_credentials" do
+    let_once(:pseudonym) do
       u = User.create!
       u.pseudonyms.create!(unique_id: "a", account: Account.default, password: "abcdefgh", password_confirmation: "abcdefgh")
     end
 
     it "finds a valid pseudonym" do
-      expect(Pseudonym.find_all_by_arbitrary_credentials({ unique_id: "a", password: "abcdefgh" }, [Account.default.id])).to eq [p]
+      expect(Pseudonym.find_all_by_arbitrary_credentials({ unique_id: "a", password: "abcdefgh" }, [Account.default.id])).to eq [pseudonym]
     end
 
     it "doesn't choke on if global lookups is down" do
       expect(GlobalLookups).to receive(:enabled?).and_return(true)
       expect(Pseudonym).to receive(:associated_shards).and_raise("an error")
-      expect(Pseudonym.find_all_by_arbitrary_credentials({ unique_id: "a", password: "abcdefgh" }, [Account.default.id])).to eq [p]
+      expect(Pseudonym.find_all_by_arbitrary_credentials({ unique_id: "a", password: "abcdefgh" }, [Account.default.id])).to eq [pseudonym]
     end
 
     it "throws an error if your credentials are absurd" do
@@ -1003,12 +1039,12 @@ describe Pseudonym do
     end
 
     it "doesn't find deleted pseudonyms" do
-      p.update!(workflow_state: "deleted")
+      pseudonym.update!(workflow_state: "deleted")
       expect(Pseudonym.find_all_by_arbitrary_credentials({ unique_id: "a", password: "abcdefgh" }, [Account.default.id])).to eq []
     end
 
     it "doesn't find suspended pseudonyms" do
-      p.update!(workflow_state: "suspended")
+      pseudonym.update!(workflow_state: "suspended")
       expect(Pseudonym.find_all_by_arbitrary_credentials({ unique_id: "a", password: "abcdefgh" }, [Account.default.id])).to eq []
     end
   end

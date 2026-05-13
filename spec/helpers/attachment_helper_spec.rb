@@ -246,4 +246,183 @@ describe AttachmentHelper do
       end
     end
   end
+
+  describe "render_or_redirect_to_stored_file" do
+    before :once do
+      course_with_teacher(active_all: true)
+      @attachment = attachment_model(context: @course)
+    end
+
+    before do
+      allow(self).to receive_messages(
+        cancel_cache_buster: nil,
+        set_cache_header: nil,
+        safer_domain_available?: false,
+        csp_enforced?: false,
+        file_location_mode?: false
+      )
+    end
+
+    context "with Kaltura media files" do
+      before do
+        kaltura_config = {
+          "domain" => "www.instructuremedia.com",
+          "partner_id" => "100"
+        }
+        allow(CanvasKaltura::ClientV3).to receive_messages(config: kaltura_config)
+        @media_object = @course.media_objects.create!(
+          media_id: "0_feedbeef",
+          attachment: attachment_model(context: @course)
+        )
+        @kaltura_attachment = attachment_model(
+          context: @course,
+          media_entry_id: @media_object.media_id,
+          display_name: "test_video.mp4"
+        )
+
+        kaltura_client = instance_double(CanvasKaltura::ClientV3)
+        allow(CanvasKaltura::ClientV3).to receive_messages(new: kaltura_client)
+        allow(kaltura_client).to receive(:media_download_url)
+          .with("0_feedbeef")
+          .and_return("https://kaltura.example.com/download/asset1")
+        allow(@kaltura_attachment).to receive(:kaltura_manifest_file?).and_return(true)
+      end
+
+      it "redirects to Kaltura URL when downloading Kaltura media" do
+        expect(self).to receive(:redirect_to)
+          .with(a_string_including("https://kaltura.example.com/download/asset1"))
+        render_or_redirect_to_stored_file(attachment: @kaltura_attachment, inline: false)
+      end
+
+      it "does not redirect for inline viewing of Kaltura media" do
+        allow(@kaltura_attachment).to receive(:stored_locally?).and_return(true)
+        expect(self).not_to receive(:redirect_to)
+          .with(a_string_including("kaltura.example.com"))
+        expect(self).to receive(:send_file)
+        render_or_redirect_to_stored_file(attachment: @kaltura_attachment, inline: true)
+      end
+
+      it "does not redirect to Kaltura URL when file is not a manifest" do
+        allow(@kaltura_attachment).to receive_messages(
+          kaltura_manifest_file?: false,
+          stored_locally?: true
+        )
+        expect(self).not_to receive(:redirect_to)
+          .with(a_string_including("kaltura.example.com"))
+        expect(self).to receive(:send_file)
+        render_or_redirect_to_stored_file(attachment: @kaltura_attachment, inline: false)
+      end
+    end
+
+    context "with non-Kaltura files" do
+      before do
+        allow(@attachment).to receive(:stored_locally?).and_return(true)
+      end
+
+      it "does not redirect to Kaltura for regular files" do
+        expect(self).not_to receive(:redirect_to)
+          .with(a_string_including("kaltura"))
+        expect(self).to receive(:send_file)
+        render_or_redirect_to_stored_file(attachment: @attachment, inline: false)
+      end
+
+      it "handles regular file downloads normally" do
+        expect(self).to receive(:send_file).with(
+          @attachment.full_filename,
+          type: @attachment.content_type_with_encoding,
+          disposition: "attachment",
+          filename: @attachment.display_name
+        )
+        render_or_redirect_to_stored_file(attachment: @attachment, inline: false)
+      end
+    end
+
+    context "with InstFS files" do
+      before do
+        allow(@attachment).to receive(:instfs_hosted?).and_return(true)
+        allow(self).to receive_messages(
+          file_location_mode?: true,
+          authenticated_download_url: "https://instfs.example.com/download"
+        )
+      end
+
+      it "handles InstFS files correctly without Kaltura redirect" do
+        expect(self).not_to receive(:redirect_to)
+          .with(a_string_including("kaltura"))
+        expect(self).to receive(:render_file_location)
+        render_or_redirect_to_stored_file(attachment: @attachment, inline: false)
+      end
+    end
+  end
+
+  describe "#access_allowed" do
+    before :once do
+      course_with_student(active_all: true)
+      @attachment = attachment_model(context: @course)
+    end
+
+    context "when location parameter is present" do
+      let(:user) { @student }
+
+      before do
+        @domain_root_account = @course.root_account
+      end
+
+      it "skips UUID verifier validation and uses location-based access instead" do
+        allow(self).to receive_messages(params: {
+                                          location: "course_syllabus_#{@course.id}",
+                                          verifier: @attachment.uuid
+                                        },
+                                        access_via_location?: true)
+
+        result = access_allowed(
+          attachment: @attachment,
+          user:,
+          access_type: :read,
+          no_error_on_failure: true
+        )
+
+        expect(result).to be_truthy
+      end
+
+      it "does not validate verifier when location is present" do
+        allow(self).to receive_messages(params: {
+                                          location: "course_syllabus_#{@course.id}",
+                                          verifier: @attachment.uuid
+                                        },
+                                        access_via_location?: false)
+
+        expect(Attachments::Verification).not_to receive(:new)
+
+        access_allowed(
+          attachment: @attachment,
+          user:,
+          access_type: :read,
+          no_error_on_failure: true
+        )
+      end
+    end
+
+    context "when location parameter is not present but verifier is" do
+      let(:user) { user_factory }
+
+      before do
+        @domain_root_account = @course.root_account
+        @course.root_account.disable_feature!(:disable_adding_uuid_verifier_in_api)
+      end
+
+      it "validates verifier when location is not present" do
+        allow(self).to receive_messages(params: { verifier: @attachment.uuid }, access_via_location?: false)
+
+        result = access_allowed(
+          attachment: @attachment,
+          user:,
+          access_type: :read,
+          no_error_on_failure: true
+        )
+
+        expect(result).to be_truthy
+      end
+    end
+  end
 end

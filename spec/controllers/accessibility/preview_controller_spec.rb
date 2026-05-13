@@ -17,8 +17,6 @@
 # You should have received a copy of the GNU Affero General Public License along
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
-require "spec_helper"
-
 RSpec.describe Accessibility::PreviewController do
   include Factories
 
@@ -202,7 +200,7 @@ RSpec.describe Accessibility::PreviewController do
         )
 
         get :show, params:, format: :json
-        expect(response).to have_http_status(:unprocessable_entity)
+        expect(response).to have_http_status(:unprocessable_content)
         expect(response.parsed_body["error"]).to include("Unsupported resource type")
       end
     end
@@ -278,7 +276,7 @@ RSpec.describe Accessibility::PreviewController do
       context "with rule_id parameter" do
         let!(:wiki_page) { course.wiki_pages.create!(title: "Test Page", body: "<div><h1>Test Header</h1></div>") }
         let!(:issue) { accessibility_issue_model(course:, context: wiki_page, rule_type: "img-alt", node_path: ".//h1") }
-        let(:mock_rule_instance) { double("RuleInstance") }
+        let(:mock_rule_instance) { instance_double(Accessibility::Rule) }
         let(:mock_rule_registry) { { "img-alt" => mock_rule_instance } }
         let(:params) do
           {
@@ -318,6 +316,67 @@ RSpec.describe Accessibility::PreviewController do
           expect(response).to have_http_status(:ok)
           expect(response.parsed_body).to eq({ "content" => "<h1>Title</h1>" })
         end
+      end
+
+      context "with rule that provides metadata" do
+        let!(:wiki_page) do
+          course.wiki_pages.create!(
+            title: "Test Page",
+            body: '<div><span style="color: #FF0000; background-color: #FFFFFF;">Low contrast text</span></div>'
+          )
+        end
+        let!(:issue) { accessibility_issue_model(course:, context: wiki_page, rule_type: "small-text-contrast", node_path: ".//span") }
+        let(:mock_rule_instance) { instance_double(Accessibility::Rules::SmallTextContrastRule) }
+        let(:mock_rule_registry) { { "small-text-contrast" => mock_rule_instance } }
+        let(:params) do
+          {
+            course_id: course.id,
+            issue_id: issue.id.to_s
+          }
+        end
+
+        before do
+          allow(Accessibility::Rule).to receive(:registry).and_return(mock_rule_registry)
+          allow(mock_rule_instance).to receive_messages(
+            issue_preview: '<span style="color: #FF0000; background-color: #FFFFFF;">Low contrast text</span>',
+            issue_metadata: { foreground: "#FF0000", background: "#FFFFFF" }
+          )
+        end
+
+        it "includes metadata in the response" do
+          get :show, params:, format: :json
+          expect(response).to have_http_status(:ok)
+          expect(response.parsed_body).to eq({
+                                               "content" => '<span style="color: #FF0000; background-color: #FFFFFF;">Low contrast text</span>',
+                                               "foreground" => "#FF0000",
+                                               "background" => "#FFFFFF"
+                                             })
+        end
+      end
+    end
+
+    context "when the resource has been updated since the issue was detected" do
+      let!(:wiki_page) { course.wiki_pages.create!(title: "Stale Page", body: "Original body") }
+      let!(:issue) { accessibility_issue_model(course:, context: wiki_page, node_path: nil) }
+      let(:params) do
+        {
+          course_id: course.id,
+          issue_id: issue.id.to_s
+        }
+      end
+
+      before do
+        allow_any_instance_of(Accessibility::ContentLoader).to receive(:resource_updated_since_issue?).and_return(true)
+      end
+
+      it "returns conflict status" do
+        get :show, params:, format: :json
+        expect(response).to have_http_status(:conflict)
+      end
+
+      it "returns a stale resource error message" do
+        get :show, params:, format: :json
+        expect(response.parsed_body["error"]).to include("Resource has been updated since this issue was detected")
       end
     end
   end

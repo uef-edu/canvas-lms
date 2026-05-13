@@ -113,7 +113,7 @@ describe Api::V1::User do
                                                                                   "sortable_name" => "User",
                                                                                   "sis_import_id" => nil,
                                                                                   "id" => @user.id,
-                                                                                  "created_at" => @user.created_at.iso8601,
+                                                                                  "created_at" => @user.created_at,
                                                                                   "short_name" => "User",
                                                                                   "sis_user_id" => "xyz",
                                                                                   "integration_id" => nil,
@@ -140,7 +140,7 @@ describe Api::V1::User do
                                                                               "name" => "User",
                                                                               "sortable_name" => "User",
                                                                               "id" => student.id,
-                                                                              "created_at" => student.created_at.iso8601,
+                                                                              "created_at" => student.created_at,
                                                                               "short_name" => "User",
                                                                               "sis_user_id" => "xyz",
                                                                               "integration_id" => nil,
@@ -162,7 +162,7 @@ describe Api::V1::User do
                                                                              "name" => "User",
                                                                              "sortable_name" => "User",
                                                                              "id" => student.id,
-                                                                             "created_at" => student.created_at.iso8601,
+                                                                             "created_at" => student.created_at,
                                                                              "short_name" => "User",
                                                                              "sis_user_id" => "xyz",
                                                                              "integration_id" => nil,
@@ -173,7 +173,7 @@ describe Api::V1::User do
                                                                              "name" => "User",
                                                                              "sortable_name" => "User",
                                                                              "id" => student.id,
-                                                                             "created_at" => student.created_at.iso8601,
+                                                                             "created_at" => student.created_at,
                                                                              "short_name" => "User"
                                                                            })
     end
@@ -194,7 +194,7 @@ describe Api::V1::User do
                                                                             "name" => "User",
                                                                             "sortable_name" => "User",
                                                                             "id" => student.id,
-                                                                            "created_at" => student.created_at.iso8601,
+                                                                            "created_at" => student.created_at,
                                                                             "short_name" => "User",
                                                                             "sis_user_id" => "xyz",
                                                                             "integration_id" => nil,
@@ -205,7 +205,7 @@ describe Api::V1::User do
                                                                             "name" => "User",
                                                                             "sortable_name" => "User",
                                                                             "id" => student.id,
-                                                                            "created_at" => student.created_at.iso8601,
+                                                                            "created_at" => student.created_at,
                                                                             "short_name" => "User"
                                                                           })
     end
@@ -223,7 +223,7 @@ describe Api::V1::User do
                                                                                   "sortable_name" => "User",
                                                                                   "sis_import_id" => sis_batch.id,
                                                                                   "id" => @user.id,
-                                                                                  "created_at" => @user.created_at.iso8601,
+                                                                                  "created_at" => @user.created_at,
                                                                                   "short_name" => "User",
                                                                                   "sis_user_id" => "xyz",
                                                                                   "integration_id" => nil,
@@ -236,7 +236,9 @@ describe Api::V1::User do
       @account2 = Account.create!
       @user.pseudonyms.destroy_all
       p = @user.pseudonyms.create!(unique_id: "abc", account: @account2, sis_user_id: "a")
-      allow(p).to receive(:works_for_account?).with(Account.default, true).and_return(true)
+      allow(p).to receive(:works_for_account?)
+        .with(Account.default, allow_implicit: true)
+        .and_return(true)
       allow_any_instantiation_of(Account.default).to receive(:trust_exists?).and_return(true)
       allow_any_instantiation_of(Account.default).to receive(:trusted_account_ids).and_return([@account2.id])
       expect(HostUrl).to receive(:context_host).with(@account2).and_return("school1")
@@ -244,7 +246,7 @@ describe Api::V1::User do
                                                                                   "name" => "User",
                                                                                   "sortable_name" => "User",
                                                                                   "id" => @user.id,
-                                                                                  "created_at" => @user.created_at.iso8601,
+                                                                                  "created_at" => @user.created_at,
                                                                                   "short_name" => "User",
                                                                                   "login_id" => "abc",
                                                                                   "sis_user_id" => "a",
@@ -259,12 +261,12 @@ describe Api::V1::User do
       @account2 = Account.create!
       @user.pseudonyms.create!(unique_id: "abc", account: @account2)
       @pseudonym = @user.pseudonyms.create!(unique_id: "xyz", account: Account.default)
-      allow(SisPseudonym).to receive(:for).with(@user, Account.default, type: :implicit, require_sis: false, root_account: Account.default, in_region: true).and_return(@pseudonym)
+      allow(SisPseudonym).to receive(:for).with(@user, Account.default, type: :implicit, require_sis: false, root_account: Account.default, in_region: true, current_user: @admin).and_return(@pseudonym)
       expect(@test_api.user_json(@user, @admin, {}, [], Account.default)).to eq({
                                                                                   "name" => "User",
                                                                                   "sortable_name" => "User",
                                                                                   "id" => @user.id,
-                                                                                  "created_at" => @user.created_at.iso8601,
+                                                                                  "created_at" => @user.created_at,
                                                                                   "short_name" => "User",
                                                                                   "integration_id" => nil,
                                                                                   "sis_import_id" => nil,
@@ -369,7 +371,7 @@ describe Api::V1::User do
                            "name" => "Sheldon Cooper",
                            "sortable_name" => "Cooper, Sheldon",
                            "id" => @student.id,
-                           "created_at" => @student.created_at.iso8601,
+                           "created_at" => @student.created_at,
                            "short_name" => "Sheldon Cooper",
                            "sis_user_id" => "sis-user-id",
                            "integration_id" => nil,
@@ -685,6 +687,11 @@ describe Api::V1::User do
           enrollment_json = @test_api.enrollment_json(temp_enrollment.reload, subject, nil)
           expect(enrollment_json).to include("temporary_enrollment_source_user_id")
         end
+
+        it "includes temporary_enrollment_display_state attribute" do
+          enrollment_json = @test_api.enrollment_json(temp_enrollment.reload, subject, nil)
+          expect(enrollment_json).to have_key(:temporary_enrollment_display_state)
+        end
       end
 
       context "when feature flag is disabled" do
@@ -695,6 +702,11 @@ describe Api::V1::User do
         it "excludes temporary_enrollment_source_user_id attribute" do
           enrollment_json = @test_api.enrollment_json(temp_enrollment.reload, subject, nil)
           expect(enrollment_json).not_to include("temporary_enrollment_source_user_id")
+        end
+
+        it "excludes temporary_enrollment_display_state attribute" do
+          enrollment_json = @test_api.enrollment_json(temp_enrollment.reload, subject, nil)
+          expect(enrollment_json).not_to have_key(:temporary_enrollment_display_state)
         end
       end
     end
@@ -777,7 +789,7 @@ describe "Users API", type: :request do
     end
 
     it "returns page view history" do
-      stub_const("Api::MAX_PER_PAGE", 2)
+      stub_const("PageViewsController::PAGE_VIEWS_MAX_PER_PAGE", 2)
       json = api_call(:get,
                       "/api/v1/users/#{@student.id}/page_views?per_page=1000",
                       { controller: "page_views", action: "index", user_id: @student.to_param, format: "json", per_page: "1000" })
@@ -801,7 +813,7 @@ describe "Users API", type: :request do
     end
 
     it "recognizes start_time parameter" do
-      stub_const("Api::MAX_PER_PAGE", 3)
+      stub_const("PageViewsController::PAGE_VIEWS_MAX_PER_PAGE", 3)
       start_time = @timestamp.iso8601
       json = api_call(:get,
                       "/api/v1/users/#{@student.id}/page_views?start_time=#{start_time}",
@@ -811,7 +823,7 @@ describe "Users API", type: :request do
     end
 
     it "recognizes end_time parameter" do
-      stub_const("Api::MAX_PER_PAGE", 3)
+      stub_const("PageViewsController::PAGE_VIEWS_MAX_PER_PAGE", 3)
       end_time = @timestamp.iso8601
       json = api_call(:get,
                       "/api/v1/users/#{@student.id}/page_views?end_time=#{end_time}",
@@ -868,7 +880,7 @@ describe "Users API", type: :request do
                              "sortable_name" => @other_user.sortable_name,
                              "sis_import_id" => nil,
                              "id" => @other_user.id,
-                             "created_at" => @other_user.created_at.iso8601,
+                             "created_at" => @other_user.created_at.as_json,
                              "first_name" => @other_user.first_name,
                              "last_name" => @other_user.last_name,
                              "short_name" => @other_user.short_name,
@@ -894,7 +906,7 @@ describe "Users API", type: :request do
                              "name" => @other_user.name,
                              "sortable_name" => @other_user.sortable_name,
                              "id" => @other_user.id,
-                             "created_at" => @other_user.created_at.iso8601,
+                             "created_at" => @other_user.created_at.as_json,
                              "first_name" => @other_user.first_name,
                              "last_name" => @other_user.last_name,
                              "short_name" => @other_user.short_name,
@@ -1118,7 +1130,7 @@ describe "Users API", type: :request do
           "sortable_name" => user.sortable_name,
           "sis_import_id" => nil,
           "id" => user.id,
-          "created_at" => user.created_at.iso8601,
+          "created_at" => user.created_at.as_json,
           "short_name" => user.short_name,
           "sis_user_id" => user.pseudonym.sis_user_id,
           "integration_id" => nil,
@@ -1294,6 +1306,15 @@ describe "Users API", type: :request do
         expect(response.headers["Link"]).to include("last")
       end
 
+      it "sets pagination totals/last page link with include[]=ui_invoked" do
+        api_call(:get,
+                 "/api/v1/accounts/#{root_account.id}/users",
+                 { controller: "users", action: "api_index", format: "json", account_id: root_account.id.to_param, per_page: 1 },
+                 { role_filter_id: student_role.id.to_s, include: %w[ui_invoked] })
+        expect(response).to be_successful
+        expect(response.headers["Link"]).to include("last")
+      end
+
       it "includes context account and sub-accounts when filtering by role" do
         subaccount = Account.create!(parent_account: root_account)
         course_with_student(account: subaccount, active_all: true)
@@ -1327,6 +1348,16 @@ describe "Users API", type: :request do
       it "includes last login for a specific user" do
         json = api_call(:get, "/api/v1/users/#{@u.id}", { controller: "users", action: "api_show", format: "json", id: @u.id }, { include: ["last_login"] })
         expect(json.fetch("last_login")).to eq @p.current_login_at.iso8601
+      end
+
+      # This test ensures that the current_user is properly passed through to the SisPseudonym extension, which is
+      # necessary for correct filtering of instructure identity pseudonyms for the multiple_root_accounts plugin.
+      it "passes current_user to SisPseudonym.for when including last_login" do
+        allow(SisPseudonym).to receive(:for).and_call_original
+        expect(SisPseudonym).to receive(:for)
+          .with(@u, anything, hash_including(current_user: @user))
+          .and_call_original
+        api_call(:get, "/api/v1/users/#{@u.id}", { controller: "users", action: "api_show", format: "json", id: @u.id }, { include: ["last_login"] })
       end
 
       it "sorts too" do
@@ -1512,7 +1543,7 @@ describe "Users API", type: :request do
       expect(response.headers["Link"]).to include("rel=\"next\"")
       json = api_call(:get, "/api/v1/accounts/#{@account.id}/users", { controller: "users", action: "api_index", format: "json", account_id: @account.id.to_param }, { search_term: u.id.to_s, per_page: "1", page: "2" })
       expect(json).to be_empty
-      expect(response.headers["Link"]).to_not include("rel=\"next\"")
+      expect(response.headers["Link"]).not_to include("rel=\"next\"")
     end
 
     it "does not return a next-page link on the last page for session-authenticated requests" do
@@ -1528,7 +1559,7 @@ describe "Users API", type: :request do
                       {},
                       { skip_token_auth: true, expected_status: 200 })
       expect(json.length).to eq 1
-      expect(response.headers["Link"]).to_not include("rel=\"next\"")
+      expect(response.headers["Link"]).not_to include("rel=\"next\"")
     end
 
     it "does bookmarked pagination when sorting by id" do
@@ -1604,12 +1635,17 @@ describe "Users API", type: :request do
                            }] })
     end
 
-    context "user profile preloading" do
+    context "preloading" do
       before(:once) do
         @account = Account.default
+        @ap1 = @account.authentication_providers.create!(auth_type: "ldap")
+        @ap2 = @account.authentication_providers.create!(auth_type: "saml")
         @user1 = user_with_pseudonym(active_all: true, account: @account, name: "User One")
+        @user1.pseudonym.update!(authentication_provider: @ap1)
         @user2 = user_with_pseudonym(active_all: true, account: @account, name: "User Two")
+        @user2.pseudonym.update!(authentication_provider: @ap2)
         @user3 = user_with_pseudonym(active_all: true, account: @account, name: "User Three")
+        @user3.pseudonym.update!(authentication_provider: @ap1)
       end
 
       before do
@@ -1626,7 +1662,6 @@ describe "Users API", type: :request do
           user.profile.update!(bio: "Bio for #{user.name}", title: "Title for #{user.name}")
         end
 
-        # Since profiles are preloaded, we expect 0 individual user_profile queries
         expect do
           api_call(:get,
                    "/api/v1/accounts/#{@account.id}/users",
@@ -1636,6 +1671,18 @@ describe "Users API", type: :request do
         expect(response).to be_successful
         json = JSON.parse(response.body)
         expect(json).to be_an(Array)
+        expect(json.length).to be >= 3
+      end
+
+      it "avoids N+1 queries for authentication_providers on pseudonyms" do
+        expect do
+          api_call(:get,
+                   "/api/v1/accounts/#{@account.id}/users",
+                   { controller: "users", action: "api_index", format: "json", account_id: @account.id.to_param })
+        end.not_to make_database_queries(matching: /SELECT.*authentication_providers.*WHERE.*authentication_providers.*"id" = \d/)
+
+        expect(response).to be_successful
+        json = JSON.parse(response.body)
         expect(json.length).to be >= 3
       end
     end
@@ -1722,7 +1769,7 @@ describe "Users API", type: :request do
 
           expect(json).to eq({
                                "id" => user.id,
-                               "created_at" => user.created_at.iso8601,
+                               "created_at" => user.created_at.as_json,
                                "integration_id" => nil,
                                "name" => "",
                                "sortable_name" => "",
@@ -1786,7 +1833,7 @@ describe "Users API", type: :request do
           "short_name" => "Test",
           "sortable_name" => "User, T.",
           "id" => user.id,
-          "created_at" => user.created_at.iso8601,
+          "created_at" => user.created_at.as_json,
           "sis_user_id" => "12345",
           "sis_import_id" => user.pseudonym.sis_batch_id,
           "login_id" => "test@example.com",
@@ -1872,7 +1919,7 @@ describe "Users API", type: :request do
           other_user.reload
           @pseudonym.reload
           expect(other_user).to be_registered
-          expect(other_user.user_account_associations.where(account_id: Account.default).first).to_not be_nil
+          expect(other_user.user_account_associations.where(account_id: Account.default).first).not_to be_nil
           expect(@pseudonym).to be_active
           expect(other_user.communication_channel).to be_present
           expect(other_user.communication_channel.workflow_state).to eq("active")
@@ -2237,7 +2284,7 @@ describe "Users API", type: :request do
                              "sis_user_id" => "sis-user-id",
                              "sis_import_id" => nil,
                              "id" => user.id,
-                             "created_at" => user.created_at.iso8601,
+                             "created_at" => user.created_at.as_json,
                              "short_name" => "Tobias",
                              "integration_id" => nil,
                              "login_id" => "student@example.com",
@@ -2263,6 +2310,16 @@ describe "Users API", type: :request do
             expect(user.email).to eq new_email
           end
         end
+      end
+
+      it "does not persist any changes when part of the update is invalid" do
+        original_name = @student.name
+        raw_api_call(:put, @path, @path_options, {
+                       user: { name: "New Name", email: "invalid@" }
+                     })
+        expect(response).to have_http_status :bad_request
+        expect(@student.reload.name).to eq original_name
+        expect(CommunicationChannel.where(path: "invalid@")).not_to exist
       end
 
       context "pronouns" do
@@ -2579,12 +2636,20 @@ describe "Users API", type: :request do
       it "can suspend all pseudonyms" do
         api_call(:put, @path, @path_options, { user: { event: "suspend" } })
         expect(@student.pseudonym.reload).to be_suspended
+
+        audit_record = @student.pseudonym.auditor_records.last
+        expect(audit_record.action).to eq "suspended"
+        expect(audit_record.performing_user_id).to eq @admin.id
       end
 
       it "can unsuspend all pseudonyms" do
         @student.pseudonym.update!(workflow_state: "suspended")
         api_call(:put, @path, @path_options, { user: { event: "unsuspend" } })
         expect(@student.pseudonym.reload).to be_active
+
+        audit_record = @student.pseudonym.auditor_records.last
+        expect(audit_record.action).to eq "unsuspended"
+        expect(audit_record.performing_user_id).to eq @admin.id
       end
     end
 
@@ -2660,7 +2725,7 @@ describe "Users API", type: :request do
       it "cannot see avatar_state" do
         raw_api_call(:put, "/api/v1/users/#{@user.id}", @path_options.merge(id: @user.id), { email: "test@example.com" })
         expect(response).to have_http_status :ok
-        expect(JSON.parse(response.body)).to_not have_key("avatar_state")
+        expect(JSON.parse(response.body)).not_to have_key("avatar_state")
       end
     end
 
@@ -2954,8 +3019,8 @@ describe "Users API", type: :request do
       @context = @user
     end
 
-    include_examples "file uploads api with folders"
-    include_examples "file uploads api with quotas"
+    it_behaves_like "file uploads api with folders"
+    it_behaves_like "file uploads api with quotas"
 
     def preflight(preflight_params, opts = {})
       api_call(:post,
@@ -3867,13 +3932,15 @@ describe "Users API", type: :request do
         assert_forbidden
       end
 
-      it "renders forbidden if the observer isn't observing the student in a passed course" do
+      it "filters to valid courses when observer isn't linked to student in all passed courses" do
         course1 = @course
         course2 = course_factory(active_all: true)
         course2.enroll_student(@student, enrollment_state: "active")
         course2.enroll_user(@observer, "ObserverEnrollment")
-        api_call(:get, @path, @params.merge(observed_user_id: @student.id, course_ids: [course1.id, course2.id]))
-        assert_forbidden
+        course2.assignments.create!(name: "A2", due_at: 3.days.ago, workflow_state: "published", submission_types: "online_text_entry")
+        json = api_call(:get, @path, @params.merge(observed_user_id: @student.id, course_ids: [course1.id, course2.id]))
+        expect(response).to be_successful
+        expect(json.pluck("course_id").uniq).to eq([course1.id])
       end
 
       it "returns missing assignments for all courses provided" do

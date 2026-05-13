@@ -22,6 +22,8 @@ module LinkedAttachmentHandler
   def self.included(klass)
     klass.send(:attr_accessor, :saving_user)
     klass.send(:attr_writer, :updating_user)
+    klass.send(:attr_writer, :current_user)
+    klass.send(:attr_accessor, :importing)
     klass.send(:attr_accessor, :skip_attachment_association_update)
 
     klass.after_save :update_attachment_associations
@@ -34,6 +36,7 @@ module LinkedAttachmentHandler
 
   def update_attachment_associations(migration: nil)
     return if skip_attachment_association_update
+    return if importing && !migration
     return unless attachment_associations_creation_enabled?
 
     self.class.html_fields.each do |field|
@@ -71,7 +74,7 @@ module LinkedAttachmentHandler
   end
 
   def keep_associations?(attachment, session, user)
-    instance_of?(::WikiPage) || !attachment.grants_right?(user, session, :delete)
+    instance_of?(Submission) || instance_of?(Quizzes::QuizSubmission) || !attachment.grants_right?(user, session, :delete)
   end
 
   # NB: context_concern is a virtual subdivision of context.
@@ -94,8 +97,19 @@ module LinkedAttachmentHandler
 
     return if to_process.none?
     return unless attachment_associations_creation_enabled?
+
     unless user.present? || skip_user_verification || migration
-      raise "User is required to update attachment links for #{self.class}:#{try(:id)}"
+      error = "User is required to update attachment links for #{self.class}:#{try(:id)}"
+      Sentry.with_scope do |scope|
+        scope.set_context("attachment_associations", {
+                            class_name: self.class.name,
+                            context_id: try(:id)
+                          })
+        Sentry.capture_message(error, level: :warning)
+      end
+      raise error if Rails.env.local?
+
+      return
     end
 
     to_process.each_slice(1000) do |att_ids|
@@ -106,11 +120,13 @@ module LinkedAttachmentHandler
           to_delete.delete(Shard.global_id_for(attachment.id)) if keep_associations?(attachment, session, user)
         else
           next if exclude_cross_course_attachment_association?(attachment)
-          next unless skip_user_verification || migration || attachment.grants_right?(user, session, :update)
+          next unless skip_user_verification ||
+                      migration&.add_association_for_migration?(html, attachment) ||
+                      (user && attachment.grants_right?(user, session, :update))
 
           shard.activate do
             all_attachment_associations << {
-              context_type: class_name,
+              context_type: self.class.polymorphic_name,
               context_id: id,
               attachment_id: attachment.id,
               user_id: user&.id,
@@ -132,7 +148,7 @@ module LinkedAttachmentHandler
   end
 
   def copy_attachment_associations_from(other)
-    return unless attachment_associations_enabled?
+    return unless attachment_associations_creation_enabled?
 
     AttachmentAssociation.copy_associations(other, [self])
   end

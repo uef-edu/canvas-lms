@@ -20,7 +20,6 @@
 
 class Announcement < DiscussionTopic
   belongs_to :context, polymorphic: [:course, :group]
-  has_many :attachment_associations, -> { where(context_type: "Announcement") }, foreign_key: :context_id, inverse_of: :context
 
   has_a_broadcast_policy
   include HasContentTags
@@ -296,7 +295,7 @@ class Announcement < DiscussionTopic
   end
 
   def new_announcement_recipients
-    potential_recipients = active_participants_include_tas_and_teachers(true).without(user)
+    potential_recipients = active_participants_include_tas_and_teachers(include_observers: true).without(user)
     recipients = users_with_permissions(potential_recipients)
 
     # users_with_permissions checks :read_announcement permission
@@ -306,5 +305,13 @@ class Announcement < DiscussionTopic
     else
       recipients
     end
+  end
+
+  def a11y_scannable_attributes
+    %i[title message workflow_state]
+  end
+
+  def excluded_from_accessibility_scan?
+    !context.try(:a11y_checker_additional_resources?)
   end
 end

@@ -17,8 +17,6 @@
 # You should have received a copy of the GNU Affero General Public License along
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
-require_relative "../../spec_helper"
-
 module Services
   describe NewQuizzes do
     before do
@@ -30,18 +28,57 @@ module Services
         .with(tree: :private)
         .and_return(DynamicSettings::FallbackProxy.new({
                                                          "new_quizzes.yml" => {
-                                                           "launch_url" => "https://test.instructure.com/quizzes",
-                                                           "backend_url" => "https://api.test.instructure.com/quizzes"
+                                                           NewQuizzes::NEW_QUIZZES_CLOUDFRONT_HOST_PRODUCTION_KEY => "https://example.cloudfront.net"
                                                          }.to_yaml
                                                        }))
+      allow(ApplicationController).to receive(:region).and_return("us-west-2")
+      allow(ENV).to receive(:fetch).and_call_original
+      allow(ENV).to receive(:fetch).with("CANVAS_ENVIRONMENT").and_return("production")
     end
 
     describe ".launch_url" do
-      it "returns the launch URL from the dynamic settings" do
-        expect(NewQuizzes.launch_url).to eq("https://test.instructure.com/quizzes")
+      context "in development environment" do
+        it "returns edge_cloudfront_host/none/remoteEntry.js" do
+          allow(Rails.env).to receive(:development?).and_return(true)
+          allow(DynamicSettings).to receive(:find)
+            .with(tree: :private)
+            .and_return(DynamicSettings::FallbackProxy.new({
+                                                             "new_quizzes.yml" => {
+                                                               NewQuizzes::NEW_QUIZZES_CLOUDFRONT_HOST_EDGE_KEY => "https://edge.cloudfront.net"
+                                                             }.to_yaml
+                                                           }))
+          expect(NewQuizzes.launch_url).to eq("https://edge.cloudfront.net/none/remoteEntry.js")
+        end
+      end
+
+      context "in non-development environment" do
+        before do
+          allow(Rails.env).to receive(:development?).and_return(false)
+        end
+
+        it "constructs URL with region" do
+          expect(NewQuizzes.launch_url).to eq("https://example.cloudfront.net/us-west-2/remoteEntry.js")
+        end
+
+        it "returns nil cloudfront host when config is blank" do
+          NewQuizzes.instance_variable_set(:@config, nil)
+          allow(DynamicSettings).to receive(:find)
+            .with(tree: :private)
+            .and_return(DynamicSettings::FallbackProxy.new({
+                                                             "new_quizzes.yml" => {}.to_yaml
+                                                           }))
+          expect(NewQuizzes.launch_url).to eq("/us-west-2/remoteEntry.js")
+        end
+
+        it "defaults to us-east-1 and warns when region is nil" do
+          allow(ApplicationController).to receive(:region).and_return(nil)
+          expect(Rails.logger).to receive(:warn).with(/ApplicationController.region is not set/)
+          expect(NewQuizzes.launch_url).to eq("https://example.cloudfront.net/us-east-1/remoteEntry.js")
+        end
       end
 
       it "caches the config" do
+        allow(Rails.env).to receive(:development?).and_return(false)
         # Call once to cache
         NewQuizzes.launch_url
 
@@ -51,30 +88,84 @@ module Services
       end
     end
 
-    describe ".backend_url" do
-      it "returns the backend URL from the dynamic settings" do
-        expect(NewQuizzes.backend_url).to eq("https://api.test.instructure.com/quizzes")
+    describe ".importing_timeout_in_minutes" do
+      context "when config has a valid integer value" do
+        before do
+          allow(DynamicSettings).to receive(:find)
+            .with(tree: :private)
+            .and_return(DynamicSettings::FallbackProxy.new({
+                                                             "new_quizzes.yml" => {
+                                                               NewQuizzes::NEW_QUIZZES_IMPORTING_TIMEOUT_IN_MINUTES_KEY => "120"
+                                                             }.to_yaml
+                                                           }))
+        end
+
+        it "returns the configured value as minutes" do
+          expect(NewQuizzes.importing_timeout_in_minutes).to eq(120.minutes)
+        end
+      end
+
+      context "when config value is nil (key not set)" do
+        it "logs an error, captures to Sentry, and returns 30 minutes" do
+          expect(Rails.logger).to receive(:error).twice
+          expect(Sentry).to receive(:capture_exception)
+          expect(NewQuizzes.importing_timeout_in_minutes).to eq(30.minutes)
+        end
+      end
+
+      context "when config value is not a valid integer string" do
+        before do
+          allow(DynamicSettings).to receive(:find)
+            .with(tree: :private)
+            .and_return(DynamicSettings::FallbackProxy.new({
+                                                             "new_quizzes.yml" => {
+                                                               NewQuizzes::NEW_QUIZZES_IMPORTING_TIMEOUT_IN_MINUTES_KEY => "not_a_number"
+                                                             }.to_yaml
+                                                           }))
+        end
+
+        it "logs an error, captures to Sentry, and returns 30 minutes" do
+          expect(Rails.logger).to receive(:error).twice
+          expect(Sentry).to receive(:capture_exception)
+          expect(NewQuizzes.importing_timeout_in_minutes).to eq(30.minutes)
+        end
       end
     end
 
-    context "when dynamic settings are not available" do
-      before do
-        # Reset the cached config for this context
-        NewQuizzes.instance_variable_set(:@config, nil)
+    describe ".ui_version" do
+      it "returns region" do
+        expect(NewQuizzes.ui_version).to eq("us-west-2")
+      end
 
+      it "returns none in development" do
+        allow(Rails.env).to receive(:development?).and_return(true)
+        expect(NewQuizzes.ui_version).to eq("none")
+      end
+    end
+
+    describe ".api_gateway_host" do
+      before do
+        NewQuizzes.instance_variable_set(:@config, nil)
+      end
+
+      it "returns the gateway host from config" do
         allow(DynamicSettings).to receive(:find)
           .with(tree: :private)
           .and_return(DynamicSettings::FallbackProxy.new({
-                                                           "new_quizzes.yml" => nil
+                                                           "new_quizzes.yml" => {
+                                                             NewQuizzes::NEW_QUIZZES_API_GATEWAY_HOST_KEY => "https://gateway.example.com"
+                                                           }.to_yaml
                                                          }))
+        expect(NewQuizzes.api_gateway_host).to eq("https://gateway.example.com")
       end
 
-      it "returns nil for launch_url" do
-        expect(NewQuizzes.launch_url).to be_nil
-      end
-
-      it "returns nil for backend_url" do
-        expect(NewQuizzes.backend_url).to be_nil
+      it "returns nil when gateway host is not configured" do
+        allow(DynamicSettings).to receive(:find)
+          .with(tree: :private)
+          .and_return(DynamicSettings::FallbackProxy.new({
+                                                           "new_quizzes.yml" => {}.to_yaml
+                                                         }))
+        expect(NewQuizzes.api_gateway_host).to be_nil
       end
     end
   end

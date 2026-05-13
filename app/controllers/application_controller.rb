@@ -33,7 +33,6 @@ class ApplicationController < ActionController::Base
   include Api::V1::WikiPage
   include LegalInformationHelper
   include ObserverEnrollmentsHelper
-  include NewQuizzesHelper
 
   helper :all
 
@@ -69,6 +68,7 @@ class ApplicationController < ActionController::Base
   before_action :clear_idle_connections
   before_action :set_normalized_route
   before_action :set_sentry_trace
+  before_action :set_pre_response_headers
   before_action :annotate_apm
   before_action :annotate_sentry
   before_action :check_pending_otp
@@ -84,6 +84,7 @@ class ApplicationController < ActionController::Base
   before_action :manage_robots_meta
   # multiple actions might be called on a single controller instance in specs
   before_action :clear_js_env if Rails.env.test?
+  before_action :require_user, except: :rescue_action_dispatch_exception
 
   after_action :log_page_view
   after_action :discard_flash_if_xhr
@@ -128,20 +129,20 @@ class ApplicationController < ActionController::Base
   end
 
   def flamegraph_requested_and_permitted?
-    return false unless @current_user
+    return false unless logged_in_user
 
     flamegraph_requested = value_to_boolean(params.fetch(:flamegraph, false))
-    flamegraph_requested && Account.site_admin.grants_right?(@current_user, :update)
+    flamegraph_requested && Account.site_admin.grants_right?(logged_in_user, :update)
   end
   private :flamegraph_requested_and_permitted?
 
   def enable_n_plus_one_detection?
-    if flamegraph_requested_and_permitted? || @current_user.blank?
+    if flamegraph_requested_and_permitted? || logged_in_user.blank?
       false
     elsif Rails.env.local?
       !Canvas::Plugin.value_to_boolean(ENV["DISABLE_N_PLUS_ONE_DETECTION"])
     else
-      value_to_boolean(params.fetch(:n_plus_one_detection, false)) && Account.site_admin.grants_right?(@current_user, :update)
+      value_to_boolean(params.fetch(:n_plus_one_detection, false)) && Account.site_admin.grants_right?(logged_in_user, :update)
     end
   end
   private :enable_n_plus_one_detection?
@@ -156,7 +157,7 @@ class ApplicationController < ActionController::Base
       end
     else
       NPlusOneDetection::NPlusOneDetectionService.call(
-        user: @current_user,
+        user: logged_in_user, # if masquerading, save generated files to the masquerader's — not masqueradee's — canvas files
         source_name: "#{controller_name}##{action_name}",
         custom_name: params[:n_plus_one_name],
         &
@@ -166,7 +167,7 @@ class ApplicationController < ActionController::Base
 
   def generate_flamegraph(&)
     Flamegraphs::FlamegraphService.call(
-      user: @current_user,
+      user: logged_in_user, # if masquerading, save generated files to the masquerader's — not masqueradee's — canvas files
       source_name: "#{controller_name}##{action_name}",
       custom_name: params[:flamename],
       &
@@ -179,14 +180,9 @@ class ApplicationController < ActionController::Base
 
   add_crumb(proc do
     title = I18n.t("links.dashboard", "My Dashboard")
-    crumb = <<~HTML
-      <i class="icon-home"
-         title="#{title}">
-        <span class="screenreader-only">#{title}</span>
-      </i>
-    HTML
-
-    crumb.html_safe
+    helpers.tag.i(class: "icon-home", title:) do
+      helpers.tag.span title, class: "screenreader-only"
+    end
   end,
             :root_path,
             class: "home")
@@ -200,7 +196,7 @@ class ApplicationController < ActionController::Base
 
     yield if block_given?
     @instui_topnav = true
-    js_env breadcrumbs: crumbs[1..]&.map { |crumb| { name: crumb[0], url: crumb[1] } }
+    js_env({ breadcrumbs: crumbs[1..]&.map { |crumb| { name: crumb[0], url: crumb[1] } } })
   end
 
   def set_normalized_route
@@ -234,17 +230,17 @@ class ApplicationController < ActionController::Base
   # example:
   #
   #     # ruby
-  #     js_env :FOO_BAR => [1,2,3], :COURSE => @course
+  #     js_env({ :FOO_BAR => [1,2,3], :COURSE => @course })
   #
   #     # coffeescript
   #     require ['ENV'], (ENV) ->
   #       ENV.FOO_BAR #> [1,2,3]
   #
-  def js_env(hash = {}, overwrite = false)
+  def js_env(hash = {}, overwrite: false)
     return {} unless request.format.html? || request.format == "*/*" || @include_js_env
 
     if hash.present? && @js_env_has_been_rendered
-      add_to_js_env(hash, @js_env_data_we_need_to_render_later, overwrite)
+      add_to_js_env(hash, @js_env_data_we_need_to_render_later, overwrite:)
       return
     end
 
@@ -275,6 +271,7 @@ class ApplicationController < ActionController::Base
           captcha_site_key:,
           current_user_id: @current_user&.id,
           current_user_global_id: @current_user&.global_id,
+          current_user_uuid: @current_user&.uuid,
           current_user_usage_metrics_id: @current_user&.usage_metrics_id,
           current_user_roles: @current_user&.roles(@domain_root_account),
           current_user_is_student: @context.respond_to?(:user_is_student?) && @context.user_is_student?(@current_user),
@@ -291,6 +288,7 @@ class ApplicationController < ActionController::Base
           k12: k12?,
           help_link_name:,
           help_link_icon:,
+          ADA_CHATBOT_ENABLED: @domain_root_account&.feature_enabled?(:ada_chatbot),
           use_high_contrast: @current_user&.prefers_high_contrast?,
           auto_show_cc: @current_user&.auto_show_cc?,
           disable_celebrations: @current_user&.prefers_no_celebrations?,
@@ -311,7 +309,7 @@ class ApplicationController < ActionController::Base
         }
         @js_env[:use_dyslexic_font] = @current_user&.prefers_dyslexic_font? if @current_user&.can_see_dyslexic_font_feature_flag?(session) && !mobile_device?
         widget_dashboard_flag = @domain_root_account&.lookup_feature_flag(:widget_dashboard)
-        @js_env[:widget_dashboard_overridable] = @current_user&.prefers_widget_dashboard?(@domain_root_account, widget_dashboard_flag) if @current_user && widget_dashboard_flag&.enabled? && widget_dashboard_flag.can_override? && !mobile_device?
+        @js_env[:widget_dashboard_overridable] = @current_user&.prefers_widget_dashboard?(@domain_root_account, widget_dashboard_flag) if @current_user && widget_dashboard_flag&.enabled? && !mobile_device? && widget_dashboard_eligible?
         if @domain_root_account&.feature_enabled?(:restrict_student_access)
           @js_env[:current_user_has_teacher_enrollment] = @current_user&.teacher_enrollment?
         end
@@ -348,7 +346,59 @@ class ApplicationController < ActionController::Base
           canvas_k6_theme: @context.try(:feature_enabled?, :canvas_k6_theme),
           lti_asset_processor_course: @context.try(:feature_enabled?, :lti_asset_processor_course)
         )
-        @js_env[:PENDO_APP_ID] = usage_metrics_api_key if load_usage_metrics?
+
+        @js_env[:PRE_COOKIE_CONSENT] = "null"
+
+        classic_usage_metrics = load_usage_metrics?
+        consented_usage_metrics = load_consented_usage_metrics?
+        cookie_consent_necessary = cached_features[:cookie_consent_necessary]
+        potentially_underage = potentially_underage_user?
+
+        @js_env[:EXPECTED_USAGE_METRICS_BEHAVIOR] = should_track_usage(
+          classic_usage_metrics:,
+          consented_usage_metrics:,
+          cookie_consent_necessary:,
+          potentially_underage:
+        )
+
+        if potentially_underage
+          @js_env[:PRE_COOKIE_CONSENT] = "false"
+        end
+
+        if classic_usage_metrics
+          @js_env[:PENDO_APP_ID] = usage_metrics_api_key
+          @js_env[:PENDO_APP_ENV] = "io"
+          @js_env[:PRE_COOKIE_CONSENT] = (!potentially_underage).to_s
+        elsif consented_usage_metrics
+          @js_env[:PENDO_APP_ID] = usage_metrics_regional_api_key
+          @js_env[:PENDO_APP_ENV] = usage_metrics_regional_api_env
+
+          if cookie_consent_necessary && !potentially_underage
+            mobile_webview = session&.dig(:is_mobile_webview)
+            mobile_consent = session&.dig(:mobile_cookie_consent)
+
+            if !mobile_webview && !native_app?
+              domain_lookup_key = if request.host.end_with?(".beta.instructure.com")
+                                    :beta_domain_id
+                                  elsif request.host.end_with?(".instructure.com")
+                                    :domain_id
+                                  else
+                                    :vanity_domain_id
+                                  end
+              onetrust_domain_id = @domain_root_account&.settings&.[](:onetrust_consent_domain_id) || DynamicSettings.find("onetrust-cookie-consent")[domain_lookup_key]
+              @js_env[:ONETRUST_CONSENT_DOMAIN_ID] = onetrust_domain_id unless onetrust_domain_id.blank? || onetrust_domain_id == "-"
+            end
+
+            if mobile_webview == true
+              @js_env[:PRE_COOKIE_CONSENT] = mobile_consent.to_s
+              # we could fall back to @current_user.custom_data like this:
+              # @current_user.custom_data.where(namespace: "MOBILE_CANVAS_COOKIE_CONSENT").first
+            end
+          else
+            @js_env[:PRE_COOKIE_CONSENT] = (!potentially_underage).to_s
+          end
+        end
+
         @js_env[:current_user] = @current_user ? Rails.cache.fetch(["user_display_json", @current_user].cache_key, expires_in: 1.hour) { user_display_json(@current_user, :profile, [:avatar_is_fallback, :email]) } : {}
         @js_env[:current_user_is_admin] = @context.account_membership_allows(@current_user) if @context.is_a?(Course)
         @js_env[:page_view_update_url] = page_view_path(@page_view.id, page_view_token: @page_view.token) if @page_view
@@ -379,7 +429,7 @@ class ApplicationController < ActionController::Base
         @js_env[:K5_HOMEROOM_COURSE] = @context.is_a?(Course) && @context.elementary_homeroom_course?
         @js_env[:K5_SUBJECT_COURSE] = @context.is_a?(Course) && @context.elementary_subject_course?
         @js_env[:LOCALE_TRANSLATION_FILE] = helpers.path_to_asset("javascripts/translations/#{@js_env[:LOCALES].first}.json")
-        @js_env[:ACCOUNT_ID] = effective_account_id(@context)
+        @js_env[:ACCOUNT_ID] = effective_account_attribute(@context, :id)
         @js_env[:user_cache_key] = CanvasSecurity.hmac_sha512(@current_user.uuid) if @current_user.present?
         @js_env[:top_navigation_tools] = external_tools_display_hashes(:top_navigation) if !!@domain_root_account&.feature_enabled?(:top_navigation_placement)
         @js_env[:horizon_course] = @context.is_a?(Course) && @context.horizon_course?
@@ -390,9 +440,61 @@ class ApplicationController < ActionController::Base
                                     elsif @context.is_a?(Course)
                                       @context.account.horizon_account?
                                     end
+        if load_usage_metrics? && @domain_root_account&.feature_enabled?(:pendo_extended)
+          @js_env[:USAGE_METRICS_METADATA] ||= {}
+          @js_env[:USAGE_METRICS_METADATA][:instance_domain] = HostUrl.context_host(@domain_root_account, request.host)
+          @js_env[:USAGE_METRICS_METADATA][:sub_account_id] = effective_account_attribute(@context, :id)
+          @js_env[:USAGE_METRICS_METADATA][:sub_account_name] = effective_account_attribute(@context, :name)
+          @js_env[:USAGE_METRICS_METADATA][:sub_account_sis_id] = effective_account_attribute(@context, :sis_source_id)
+          @js_env[:USAGE_METRICS_METADATA][:user_id] = @current_user&.id
+          @js_env[:USAGE_METRICS_METADATA][:user_uuid] = @current_user&.uuid
+          @js_env[:USAGE_METRICS_METADATA][:user_sis_id] = @current_pseudonym&.sis_user_id
+          @js_env[:USAGE_METRICS_METADATA][:user_display_name] = @current_user&.short_name
+          @js_env[:USAGE_METRICS_METADATA][:user_email] = @current_user&.email
+          @js_env[:USAGE_METRICS_METADATA][:user_time_zone] = @current_user&.time_zone
+          # Calculate oem_account_id based on the current account's setting
+          # Root account can have 'account' or 'consortium', subaccount can have 'account' or 'subaccount' value independently
+          current_account = if @context.is_a?(Account)
+                              @context
+                            elsif @context.respond_to?(:account)
+                              @context.account
+                            else
+                              @domain_root_account
+                            end
+          oem_account_type = current_account.settings[:impact_account_type]
+          case oem_account_type
+          when "consortium"
+            @js_env[:USAGE_METRICS_METADATA][:oem_account_id] = @js_env[:DOMAIN_ROOT_ACCOUNT_SFID]
+          when "subaccount"
+            @js_env[:USAGE_METRICS_METADATA][:oem_account_id] = "#{@domain_root_account&.uuid}-#{current_account.shard.id}-#{current_account.id}"
+          end
+          # If 'account' or nil, don't set oem_account_id (leave it as nil/undefined)
+
+          if @context.is_a?(Course)
+            @js_env[:USAGE_METRICS_METADATA][:course_id] = @context.id
+            @js_env[:USAGE_METRICS_METADATA][:course_long_name] = "#{@context.name} - #{@context.short_name}"
+            @js_env[:USAGE_METRICS_METADATA][:course_status] = @context.workflow_state
+            @js_env[:USAGE_METRICS_METADATA][:course_is_blueprint] = MasterCourses::MasterTemplate.is_master_course?(@context)
+            @js_env[:USAGE_METRICS_METADATA][:course_is_k5] = @context.elementary_subject_course?
+            @js_env[:USAGE_METRICS_METADATA][:course_has_no_students] = !@context.student_enrollments.exists?
+            @js_env[:USAGE_METRICS_METADATA][:course_sis_source_id] = @context.sis_source_id
+            @js_env[:USAGE_METRICS_METADATA][:course_sis_batch_id] = @context.sis_batch_id
+            @js_env[:USAGE_METRICS_METADATA][:course_enrollment_term_id] = @context.enrollment_term_id
+            @js_env[:USAGE_METRICS_METADATA][:course_enrollment_term_name] = @context.enrollment_term&.name
+            @js_env[:USAGE_METRICS_METADATA][:course_enrollment_term_sis_id] = @context.enrollment_term&.sis_source_id
+            @js_env[:USAGE_METRICS_METADATA][:course_enrollment_term_start_at] = @context.enrollment_term&.start_at
+            @js_env[:USAGE_METRICS_METADATA][:course_enrollment_term_end_at] = @context.enrollment_term&.end_at
+          end
+        end
+
         if @context.is_a?(Course)
           @js_env[:FEATURES][:youtube_overlay] = @context.account.feature_enabled?(:youtube_overlay)
           @js_env[:FEATURES][:rce_studio_embed_improvements] = @context.feature_enabled?(:rce_studio_embed_improvements)
+          @js_env[:FEATURES][:a11y_checker_ai_table_caption_generation] = @context.a11y_checker_ai_table_caption_generation?
+          @js_env[:FEATURES][:a11y_checker_ai_alt_text_generation] = @context.a11y_checker_ai_alt_text_generation?
+          @js_env[:FEATURES][:a11y_checker_close_issues] = @context.a11y_checker_close_issues?
+          @js_env[:FEATURES][:a11y_checker_additional_resources] = @context.a11y_checker_additional_resources?
+          @js_env[:FEATURES][:peer_review_allocation_and_grading] = @context.feature_enabled?(:peer_review_allocation_and_grading)
         end
 
         # partner context data
@@ -405,9 +507,10 @@ class ApplicationController < ActionController::Base
           }
         end
       end
+      preload_translation_file
     end
 
-    add_to_js_env(hash, @js_env, overwrite)
+    add_to_js_env(hash, @js_env, overwrite:)
 
     @js_env
   end
@@ -438,11 +541,9 @@ class ApplicationController < ActionController::Base
   JS_ENV_SITE_ADMIN_FEATURES = %i[
     account_level_blackout_dates
     assignment_edit_placement_not_on_announcements
-    accessibility_issues_in_full_page
-    a11y_checker_ai_generation
+    a11y_checker_ga2_features
     block_content_editor_toolbar_reorder
     commons_new_quizzes
-    consolidated_media_player
     courses_popout_sisid
     create_external_apps_side_tray_overrides
     dashboard_graphql_integration
@@ -457,6 +558,7 @@ class ApplicationController < ActionController::Base
     feature_flag_ui_sorting
     files_a11y_rewrite
     files_a11y_rewrite_toggle
+    files_a11y_folder_duplicates
     horizon_course_setting
     instui_for_import_page
     instui_header
@@ -464,26 +566,24 @@ class ApplicationController < ActionController::Base
     multiselect_gradebook_filters
     new_quizzes_media_type
     new_quizzes_navigation_updates
-    new_quizzes_surveys
     permanent_page_links
     rce_a11y_resize
     rce_find_replace
     render_both_to_do_lists
     scheduled_feedback_releases
     speedgrader_studio_media_capture
-    student_access_token_management
-    top_navigation_placement_a11y_fixes
     validate_call_to_action
     block_content_editor_ai_alt_text
     ux_list_concluded_courses_in_bp
-    assign_to_in_edit_pages_rewrite
   ].freeze
   JS_ENV_ROOT_ACCOUNT_FEATURES = %i[
+    accessibility_automatic_scanning
     account_level_mastery_scales
     ams_root_account_integration
-    ams_enhanced_rubrics
-    api_rate_limits
+    ams_advanced_content_organization
     buttons_and_icons_root_account
+    canvas_apps_sub_account_access
+    cookie_consent_necessary
     course_pace_allow_bulk_pace_assign
     course_pace_download_document
     course_pace_draft_state
@@ -496,27 +596,31 @@ class ApplicationController < ActionController::Base
     disable_iframe_sandbox_file_show
     extended_submission_state
     file_verifiers_for_quiz_links
-    increased_top_nav_pane_size
+    grading_rubrics_pagination
+    institutional_tags
     instui_nav
     login_registration_ui_identity
-    lti_apps_page_ai_translation
+    lock_lti_registrations
     lti_apps_page_instructors
     lti_asset_processor
     lti_asset_processor_discussions
+    lti_deactivate_registrations
     lti_link_to_apps_from_developer_keys
-    lti_registrations_discover_page
     lti_registrations_next
-    lti_registrations_page
+    lti_registrations_templates
     lti_registrations_usage_data
     lti_registrations_usage_data_dev
     lti_registrations_usage_data_low_usage
     lti_registrations_usage_tab
     lti_toggle_placements
+    substitution_variable_display
     mobile_offline_mode
     modules_requirements_allow_percentage
+    nav_menu_links
     non_scoring_rubrics
-    open_tools_in_new_tab
+    pendo_extended
     product_tours
+    rce_asr_captioning_improvements
     rce_lite_enabled_speedgrader_comments
     rce_transform_loaded_content
     react_discussions_post
@@ -524,9 +628,13 @@ class ApplicationController < ActionController::Base
     rubric_criterion_range
     scheduled_page_publication
     send_usage_metrics
+    send_usage_metrics_after_consent
     top_navigation_placement
     youtube_migration
+    educator_dashboard
     widget_dashboard
+    default_discussion_options
+    course_navigation_and_feature_options_permissions
   ].freeze
   JS_ENV_ROOT_ACCOUNT_SERVICES = %i[account_survey_notifications].freeze
   JS_ENV_BRAND_ACCOUNT_FEATURES = %i[
@@ -599,7 +707,7 @@ class ApplicationController < ActionController::Base
     end
   end
 
-  def add_to_js_env(hash, jsenv, overwrite)
+  def add_to_js_env(hash, jsenv, overwrite:)
     hash.each do |k, v|
       if jsenv[k] && jsenv[k] != v && !overwrite
         raise "js_env key #{k} is already taken"
@@ -616,15 +724,15 @@ class ApplicationController < ActionController::Base
   end
   helper_method :render_js_env
 
-  def effective_account_id(context)
+  def effective_account_attribute(context, attribute)
     if context.is_a?(Account)
-      context.id
+      context.send(attribute)
     elsif context.is_a?(Course)
-      context.account_id
+      (attribute == :id) ? context.account_id : context.account.send(attribute)
     elsif context.respond_to?(:context)
-      effective_account_id(context.context)
+      effective_account_attribute(context.context, attribute)
     else
-      @domain_root_account&.id
+      @domain_root_account&.send(attribute)
     end
   end
 
@@ -646,8 +754,7 @@ class ApplicationController < ActionController::Base
     end
     account = Context.get_account(@context)
     rce_env_hash[:RICH_CONTENT_INST_RECORD_TAB_DISABLED] = account ? account.disable_rce_media_uploads? : false
-    rce_env_hash[:RICH_CONTENT_AI_TEXT_TOOLS] = account ? account.feature_enabled?(:ai_text_tools) : false
-    js_env(rce_env_hash, true) # Allow overriding in case this gets called more than once
+    js_env(rce_env_hash, overwrite: true) # Allow overriding in case this gets called more than once
   end
   helper_method :rce_js_env
 
@@ -670,10 +777,10 @@ class ApplicationController < ActionController::Base
   helper_method :conditional_release_js_env
 
   def set_student_context_cards_js_env
-    js_env(
-      STUDENT_CONTEXT_CARDS_ENABLED: true,
-      student_context_card_tools: external_tools_display_hashes(:student_context_card)
-    )
+    js_env({
+             STUDENT_CONTEXT_CARDS_ENABLED: true,
+             student_context_card_tools: external_tools_display_hashes(:student_context_card)
+           })
   end
 
   def external_tools_display_hashes(type, context = @context, custom_settings = [], tool_ids: nil)
@@ -790,7 +897,7 @@ class ApplicationController < ActionController::Base
     if status == :master
       data[:default_restrictions] = MasterCourses::MasterTemplate.full_template_for(course).default_restrictions_for(object)
     end
-    js_env(MASTER_COURSE_DATA: data)
+    js_env({ MASTER_COURSE_DATA: data })
   end
   helper_method :set_master_course_js_env_data
 
@@ -830,7 +937,7 @@ class ApplicationController < ActionController::Base
       )
     end
 
-    js_env BLUEPRINT_COURSES_DATA: bc_data
+    js_env({ BLUEPRINT_COURSES_DATA: bc_data })
     if is_master && js_env.key?(:NEW_USER_TUTORIALS)
       js_env[:NEW_USER_TUTORIALS][:is_enabled] = false
     end
@@ -841,15 +948,17 @@ class ApplicationController < ActionController::Base
     if @context.respond_to?(:content_notices)
       notices = @context.content_notices(@current_user)
       if notices.any?
-        js_env CONTENT_NOTICES: notices.map { |notice|
-          {
-            tag: notice.tag,
-            variant: notice.variant || "info",
-            text: notice.text.is_a?(Proc) ? notice.text.call : notice.text,
-            link_text: notice.link_text.is_a?(Proc) ? notice.link_text.call : notice.link_text,
-            link_target: notice.link_target.is_a?(Proc) ? notice.link_target.call(@context) : notice.link_target
-          }
-        }
+        js_env({
+                 CONTENT_NOTICES: notices.map do |notice|
+                   {
+                     tag: notice.tag,
+                     variant: notice.variant || "info",
+                     text: notice.text.is_a?(Proc) ? notice.text.call : notice.text,
+                     link_text: notice.link_text.is_a?(Proc) ? notice.link_text.call : notice.link_text,
+                     link_target: notice.link_target.is_a?(Proc) ? notice.link_target.call(@context) : notice.link_target
+                   }
+                 end
+               })
         js_bundle :content_notices
         return true
       end
@@ -1118,6 +1227,12 @@ class ApplicationController < ActionController::Base
     end
   end
 
+  def set_pre_response_headers
+    RequestContext::Generator.store_request_meta(request, @sentry_trace)
+
+    true
+  end
+
   def set_response_headers
     # we can't block frames on the files domain, since files domain requests
     # are typically embedded in an iframe in canvas, but the hostname is
@@ -1127,7 +1242,7 @@ class ApplicationController < ActionController::Base
 
       append_to_header("Content-Security-Policy", directives)
     end
-    RequestContext::Generator.store_request_meta(request, @context, @sentry_trace)
+    RequestContext::Generator.store_context_meta(@context)
     true
   end
 
@@ -1320,7 +1435,7 @@ class ApplicationController < ActionController::Base
       end
       format.all do
         flash[:warning] = flash_message
-        redirect_to_referrer_or_default(root_url)
+        redirect_back_or_to root_url
       end
     end
     set_no_cache_headers
@@ -1582,7 +1697,7 @@ class ApplicationController < ActionController::Base
     return unless context.present? && user.present?
     return unless context.respond_to?(:content_participation_counts) # just Course and Group so far
 
-    js_env(badge_counts: badge_counts_for(context, user))
+    js_env({ badge_counts: badge_counts_for(context, user) })
   end
   helper_method :set_badge_counts_for
 
@@ -1765,12 +1880,12 @@ class ApplicationController < ActionController::Base
         pseudonym = Pseudonym.active.find_by(id: token.pseudonym_id)
 
         if pseudonym
-          unless pseudonym.works_for_account?(@domain_root_account, true)
+          unless pseudonym.works_for_account?(@domain_root_account, allow_implicit: true)
             # if the logged in pseudonym doesn't work, we can only switch to another pseudonym
             # that does work if it's the same password, and it's not a managed pseudonym
             alternates = pseudonym.user.all_active_pseudonyms.select do |p|
               !p.managed_password? &&
-                p.works_for_account?(@domain_root_account, true) &&
+                p.works_for_account?(@domain_root_account, allow_implicit: true) &&
                 p.password_salt == pseudonym.password_salt &&
                 p.crypted_password == pseudonym.crypted_password
             end
@@ -1794,6 +1909,10 @@ class ApplicationController < ActionController::Base
             target_user = User.find(token.current_user_id)
             session[:become_user_id] = token.current_user_id if target_user.can_masquerade?(pseudonym.user, @domain_root_account)
           end
+          unless token.consent_from_mobile.nil?
+            session[:is_mobile_webview] = true
+            session[:mobile_cookie_consent] = token.consent_from_mobile == true
+          end
         end
         return redirect_to return_to if return_to
 
@@ -1804,6 +1923,10 @@ class ApplicationController < ActionController::Base
 
         # do one final redirect to get the token out of the URL
         redirect_to remove_query_params(request.original_url, "session_token")
+      elsif token.nil?
+        SessionToken.report_error(reason: :parsing_error)
+      else
+        SessionToken.report_error(reason: :token_invalid)
       end
     end
   end
@@ -1953,7 +2076,7 @@ class ApplicationController < ActionController::Base
     return unless page_views_enabled?
 
     page_view_info = CanvasSecurity::PageViewJwt.decode(params[:page_view_token])
-    @page_view = PageView.find_for_update(page_view_info[:request_id])
+    @page_view = PageView.find_for_update(page_view_info[:request_id], page_view_info[:created_at])
     if @page_view
       if @page_view.id
         response.headers["X-Canvas-Page-View-Update-Url"] = page_view_path(
@@ -2129,7 +2252,7 @@ class ApplicationController < ActionController::Base
       reset_session
       nil
     else
-      js_env SENTRY_BOOT_MESSAGE: "Invalid authenticity token on post" if ActionController::InvalidAuthenticityToken
+      js_env({ SENTRY_BOOT_MESSAGE: "Invalid authenticity token on post" }) if ActionController::InvalidAuthenticityToken
 
       request.format = :html
       template = exception.error_template if exception.respond_to?(:error_template)
@@ -2296,7 +2419,11 @@ class ApplicationController < ActionController::Base
         render "context_modules/lock_explanation"
       else
         tag.context_module_action(@current_user, :read)
-        render "context_modules/url_show"
+        if tag.new_tab && params[:follow_redirect] && Account.site_admin.feature_enabled?(:module_external_url_seamless_redirect)
+          redirect_to tag.url, allow_other_host: true
+        else
+          render "context_modules/url_show"
+        end
       end
     elsif tag.content_type == "ContextExternalTool"
       timing_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -2327,9 +2454,14 @@ class ApplicationController < ActionController::Base
 
       tag.context_module_action(@current_user, :read)
       if @tool
-        # Check if we should use native New Quizzes experience
+        # Redirect to dedicated New Quizzes controller for native experience
         if @tool.quiz_lti? && new_quizzes_native_experience_enabled?
-          return render_native_new_quizzes
+          redirect_params = request.query_parameters
+          return redirect_to Services::NewQuizzes::Routes::Redirects.assignment_launch(
+            context: @context,
+            assignment: @assignment,
+            **redirect_params
+          )
         end
 
         log_asset_access(@tool, "external_tools", "external_tools", overwrite: false)
@@ -2356,8 +2488,8 @@ class ApplicationController < ActionController::Base
                           external_content_success_url("external_tool_redirect")
                         end
           @redirect_return = true
-          js_env(redirect_return_success_url: success_url,
-                 redirect_return_cancel_url: success_url)
+          js_env({ redirect_return_success_url: success_url,
+                   redirect_return_cancel_url: success_url })
         end
 
         opts = {
@@ -2369,7 +2501,7 @@ class ApplicationController < ActionController::Base
         }
 
         @tool_form_id = random_lti_tool_form_id
-        js_env(LTI_TOOL_FORM_ID: @tool_form_id)
+        js_env({ LTI_TOOL_FORM_ID: @tool_form_id })
 
         variable_expander = Lti::VariableExpander.new(@domain_root_account, @context, self, {
                                                         current_user: @current_user,
@@ -2485,6 +2617,7 @@ class ApplicationController < ActionController::Base
     end
     named_context_url(@context, :context_external_content_success_url, "external_tool_redirect", include_host: true)
   end
+  public :set_return_url
 
   def lti_launch_params(adapter)
     adapter.generate_post_payload_for_assignment(@assignment, lti_grade_passback_api_url(@tool), blti_legacy_grade_passback_api_url(@tool), lti_turnitin_outcomes_placement_url(@tool.id))
@@ -2665,7 +2798,7 @@ class ApplicationController < ActionController::Base
   end
   helper_method :random_lti_tool_form_id
 
-  def temporary_user_code(generate = true)
+  def temporary_user_code(generate: true)
     if generate
       session[:temporary_user_code] ||= "tmp_#{Digest::SHA256.hexdigest("#{Time.now.to_i}_#{rand}")}"
     else
@@ -2673,7 +2806,7 @@ class ApplicationController < ActionController::Base
     end
   end
 
-  def require_account_management(on_root_account = false, permissions: [:manage_account_settings])
+  def require_account_management(on_root_account: false, permissions: [:manage_account_settings])
     if (!@context.root_account? && on_root_account) || !@context.is_a?(Account)
       redirect_to named_context_url(@context, :context_url)
       return false
@@ -2684,7 +2817,7 @@ class ApplicationController < ActionController::Base
   end
 
   def require_root_account_management
-    require_account_management(true)
+    require_account_management(on_root_account: true)
   end
 
   def require_site_admin_with_permission(permission)
@@ -2722,7 +2855,7 @@ class ApplicationController < ActionController::Base
 
   def check_incomplete_registration
     if @current_user
-      js_env INCOMPLETE_REGISTRATION: incomplete_registration?, USER_EMAIL: @current_user.email
+      js_env({ INCOMPLETE_REGISTRATION: incomplete_registration?, USER_EMAIL: @current_user.email })
     end
   end
 
@@ -2748,9 +2881,11 @@ class ApplicationController < ActionController::Base
   # please also note that if the html has any attachments, safe_html should be set to true!!!
   # since we neet to process the attachments in the html.
   def user_content(str, context: @context, user: @current_user, is_public: false, location: nil, safe_html: false)
+    # rubocop:todo Rails/OutputSafety
     return nil unless str
     return AttachmentLocationTagger.tag_url(str, location).html_safe if safe_html && !location.nil?
     return str.html_safe if safe_html
+    # rubocop:enable Rails/OutputSafety
 
     file_association_access_ff_enabled = if context.instance_of?(::User)
                                            context.associated_root_accounts.any? { |a| a.feature_enabled?(:file_association_access) }
@@ -2779,11 +2914,11 @@ class ApplicationController < ActionController::Base
     end
     rewriter.set_handler("files", &file_handler)
     rewriter.set_handler("media_attachments_iframe", &file_handler)
-    UserContent.escape(rewriter.translate_content(str), request.host_with_port, use_new_math_equation_handling?)
+    UserContent.escape(rewriter.translate_content(str), request.host_with_port, use_updated_math_rendering: use_new_math_equation_handling?)
   end
   helper_method :user_content
 
-  def find_bank(id, check_context_chain = true)
+  def find_bank(id, check_context_chain: true)
     bank = @context.assessment_question_banks.active.where(id:).first || @current_user.assessment_question_banks.active.where(id:).first
     if bank
       (if block_given?
@@ -2833,6 +2968,10 @@ class ApplicationController < ActionController::Base
     @embedded_view = params[:embedded]
     @headers = false if params[:no_headers]
     (@body_classes ||= []) << "embedded" if @embedded_view
+  end
+
+  def in_mobile_webview?
+    session&.dig(:is_mobile_webview) || params[:embedded] || params[:embed]
   end
 
   def stringify_json_ids?
@@ -3125,14 +3264,17 @@ class ApplicationController < ActionController::Base
     extend Api::V1::Group
 
     includes ||= []
+    profile_owner = profile.user
+    is_profile_owner = viewer == profile_owner
+    profile_permissions = profile_owner.details_editable_by_user
+    profile_permissions = profile_permissions.transform_values { false } unless is_profile_owner
+
     data = user_profile_json(profile, viewer, session, includes, profile)
-    data[:can_edit] = viewer == profile.user && profile.user.user_can_edit_profile?
-    data[:can_edit_channels] = viewer == profile.user && profile.user.user_can_edit_comm_channels?
-    data[:can_edit_name] = viewer == profile.user && profile.user.user_can_edit_name?
-    data[:can_edit_avatar] = data[:can_edit] && profile.user.avatar_state != :locked
-    data[:known_user] = viewer.address_book.known_user(profile.user)
-    if data[:known_user] && viewer != profile.user
-      common_courses = viewer.address_book.common_courses(profile.user)
+    data = data.merge(profile_permissions)
+    data[:can_edit_avatar] = data[:can_edit] && profile_owner.avatar_state != :locked
+    data[:known_user] = viewer.address_book.known_user(profile_owner)
+    if data[:known_user] && viewer != profile_owner
+      common_courses = viewer.address_book.common_courses(profile_owner)
       # address book can return a fake record in common courses with course_id
       # 0 which represents an admin -> user commonality.
       common_courses.delete(0)
@@ -3200,7 +3342,7 @@ class ApplicationController < ActionController::Base
         mc_status = setup_master_course_restrictions(@page, @context, user_can_edit: true)
       end
 
-      hash[:WIKI_PAGE] = wiki_page_json(@page, @current_user, session, true, deep_check_if_needed: true, master_course_status: mc_status)
+      hash[:WIKI_PAGE] = wiki_page_json(@page, @current_user, session, include_body: true, deep_check_if_needed: true, master_course_status: mc_status)
       version_number = Rails.cache.fetch(["page_version", @page].cache_key) { @page.versions.maximum(:number) }
       hash[:WIKI_PAGE_REVISION] = version_number && StringifyIds.stringify_id(version_number)
       hash[:WIKI_PAGE_SHOW_PATH] = named_context_url(@context, :context_wiki_page_path, @page)
@@ -3238,7 +3380,7 @@ class ApplicationController < ActionController::Base
     # 2. courses_controller (context of this will be Account)
     # discussion_checkpoints_enabled? works for either context
     account_has_discussion_checkpoints_enabled = @context.discussion_checkpoints_enabled?
-
+    course_has_peer_reviews_enabled = @context.is_a?(Course) && @context.feature_enabled?(:peer_review_allocation_and_grading)
     prefetch_xhr(api_v1_course_assignment_groups_url(
                    @context,
                    include: [
@@ -3247,7 +3389,8 @@ class ApplicationController < ActionController::Base
                      account_has_discussion_checkpoints_enabled && "checkpoints",
                      (permissions[:manage] || current_user_has_been_observer_in_this_course) && "all_dates",
                      permissions[:manage] && "module_ids",
-                     peer_reviews_for_a2_enabled? && "assessment_requests"
+                     peer_reviews_for_a2_enabled? && "assessment_requests",
+                     course_has_peer_reviews_enabled && "peer_review"
                    ].compact_blank,
                    exclude_response_fields: ["description", "rubric"],
                    exclude_assignment_submission_types: ["wiki_page"],
@@ -3285,7 +3428,7 @@ class ApplicationController < ActionController::Base
     conditional_release_js_env(includes: :active_rules)
 
     if @context.grading_periods?
-      js_env(active_grading_periods: GradingPeriod.json_for(@context, @current_user))
+      js_env({ active_grading_periods: GradingPeriod.json_for(@context, @current_user) })
     end
   end
 
@@ -3305,7 +3448,7 @@ class ApplicationController < ActionController::Base
              DUE_DATE_REQUIRED_FOR_ACCOUNT: AssignmentUtil.due_date_required_for_account?(@context),
              DISCUSSION_CHECKPOINTS_ENABLED: @context.discussion_checkpoints_enabled?,
            })
-    js_env(active_grading_periods: GradingPeriod.json_for(@context, @current_user)) if @context.grading_periods?
+    js_env({ active_grading_periods: GradingPeriod.json_for(@context, @current_user) }) if @context.grading_periods?
   end
 
   def google_drive_connection
@@ -3343,9 +3486,13 @@ class ApplicationController < ActionController::Base
         ctx = Canvas::LiveEvents.base_context_attributes(@context, @domain_root_account)
 
         if @current_pseudonym
-          ctx[:user_login] = @current_pseudonym.unique_id
+          ctx[:user_login] = AuthenticationMethods::FederatedPseudonymAttributes.unique_id ||
+                             @current_pseudonym.unique_id
+
           ctx[:user_account_id] = @current_pseudonym.global_account_id
-          ctx[:user_sis_id] = @current_pseudonym.sis_user_id
+
+          ctx[:user_sis_id] = AuthenticationMethods::FederatedPseudonymAttributes.sis_user_id ||
+                              @current_pseudonym.sis_user_id
         end
 
         ctx[:user_id] = @current_user.global_id if @current_user
@@ -3391,6 +3538,21 @@ class ApplicationController < ActionController::Base
     (@xhrs_to_prefetch_from_controller ||= []) << [args, kwargs]
   end
 
+  def preload_translation_file
+    return unless (file = @js_env && @js_env[:LOCALE_TRANSLATION_FILE])
+
+    locale = @js_env[:LOCALES]&.first
+    return if locale == "en"
+
+    (@content_for_head ||= []) << helpers.preload_link_tag(
+      file,
+      as: "fetch",
+      type: "application/json",
+      crossorigin: "anonymous"
+    )
+  end
+  helper_method :preload_translation_file
+
   def manage_live_events_context
     setup_live_events_context
     yield
@@ -3418,7 +3580,7 @@ class ApplicationController < ActionController::Base
 
   def peer_reviews_for_a2_enabled?
     current_user_is_student = @context.respond_to?(:user_is_student?) && @context.user_is_student?(@current_user)
-    current_user_is_student && @context.respond_to?(:feature_enabled?) && @context.feature_enabled?(:peer_reviews_for_a2)
+    current_user_is_student && @context.respond_to?(:feature_enabled?) && @context.feature_enabled?(:assignments_2_student)
   end
 
   # Show Student View button on the following controller/action pages, as long as defined tabs are not hidden
@@ -3445,6 +3607,19 @@ class ApplicationController < ActionController::Base
     "quizzes/quizzes#show" => nil
   }.freeze
 
+  def show_learning_agent_button?
+    return false unless @context.is_a?(Course)
+    return false unless @context_enrollment.is_a?(StudentEnrollment)
+
+    @context.feature_enabled?(:athena_learning_agent_button)
+  end
+  helper_method :show_learning_agent_button?
+
+  def load_learning_agent_env
+    js_env({ ATHENA: Services::Athena.public_app_config(@current_user) })
+  end
+  helper_method :load_learning_agent_env
+
   def show_student_view_button?
     return false unless @context.is_a?(Course) && can_do(@context, @current_user, :use_student_view)
 
@@ -3464,29 +3639,9 @@ class ApplicationController < ActionController::Base
   end
 
   def new_quizzes_native_experience_enabled?
-    return false unless @context.respond_to?(:root_account)
+    return false unless @context.respond_to?(:feature_enabled?)
 
-    @context.root_account.feature_enabled?(:new_quizzes_native_experience)
-  end
-  helper_method :new_quizzes_native_experience_enabled?
-
-  def render_native_new_quizzes
-    add_new_quizzes_bundle
-
-    # Build launch data with HMAC signature for tamper protection
-    signed_launch_data = ::NewQuizzes::LaunchDataBuilder.new(
-      context: @context,
-      assignment: @assignment,
-      tool: @tool,
-      current_user: @current_user,
-      request:
-    ).build_with_signature
-
-    js_env(NEW_QUIZZES: signed_launch_data)
-
-    add_body_class("native-new-quizzes full-width")
-
-    render "assignments/native_new_quizzes", layout: "application"
+    @context.feature_enabled?(:new_quizzes_native_experience)
   end
 
   def show_blueprint_button?
@@ -3523,6 +3678,31 @@ class ApplicationController < ActionController::Base
   end
   helper_method :k5_user?
 
+  def potentially_underage_user?
+    @current_user&.underage? || k12? || @domain_root_account&.settings&.dig(:has_underage_users) || k5_user?
+  end
+
+  def should_track_usage(classic_usage_metrics: nil, consented_usage_metrics: nil, cookie_consent_necessary: nil, potentially_underage: nil)
+    classic_usage_metrics ||= @domain_root_account&.feature_enabled?(:send_usage_metrics) && usage_metrics_api_key.present?
+    consented_usage_metrics ||= @domain_root_account&.feature_enabled?(:send_usage_metrics_after_consent) && usage_metrics_regional_api_key.present? && usage_metrics_regional_api_env.present?
+    cookie_consent_necessary ||= @domain_root_account&.feature_enabled?(:cookie_consent_necessary)
+    potentially_underage ||= potentially_underage_user?
+
+    if !@current_user || potentially_underage || (!consented_usage_metrics && !classic_usage_metrics)
+      "no_track_usage"
+    elsif classic_usage_metrics || (consented_usage_metrics && !cookie_consent_necessary)
+      "track_usage"
+    elsif consented_usage_metrics && cookie_consent_necessary
+      "ask_for_consent"
+    end
+  end
+
+  def widget_dashboard_eligible?
+    return false unless @current_user
+
+    @current_user.observer_enrollments.active_or_pending.any? || (!@current_user.active_non_student_enrollment? && !@current_user.account_membership?)
+  end
+
   def use_classic_font?
     observed_users(@current_user, session) if @current_user&.roles(@domain_root_account)&.include?("observer")
     K5::UserService.new(@current_user, @domain_root_account, @selected_observed_user).use_classic_font?
@@ -3556,19 +3736,8 @@ class ApplicationController < ActionController::Base
   end
 
   def inject_ai_feedback_link
-    js_env(AI_FEEDBACK_LINK: Setting.get("ai_feedback_link", "https://inst.bid/ai/feedback"))
+    js_env({ AI_FEEDBACK_LINK: Setting.get("ai_feedback_link", "https://inst.bid/ai/feedback") })
   end
-
-  def add_ignite_agent_bundle?
-    return false if params[:preview] == "true"
-    return false if controller_name == "oauth2_provider"
-    return false unless @domain_root_account&.feature_enabled?(:ignite_agent_enabled)
-    return true if @domain_root_account&.grants_right?(@current_user, session, :manage_account_settings)
-    return false unless @current_user&.feature_enabled?(:ignite_agent_enabled_for_user)
-
-    true
-  end
-  helper_method :add_ignite_agent_bundle?
 
   private
 
@@ -3583,5 +3752,13 @@ class ApplicationController < ActionController::Base
     else
       obj.respond_to?(:as_json) ? obj.as_json : obj
     end
+  end
+
+  def study_assist_enabled_tools
+    tools = []
+    tools << "Summarize" if @context.feature_enabled?(:study_assist_summarize)
+    tools << "Quiz me" if @context.feature_enabled?(:study_assist_quiz_me)
+    tools << "Flashcards" if @context.feature_enabled?(:study_assist_flashcards)
+    tools
   end
 end

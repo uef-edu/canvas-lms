@@ -17,8 +17,6 @@
 # You should have received a copy of the GNU Affero General Public License along
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
-require "spec_helper"
-
 RSpec.describe PeerReview::DateOverrider do
   let(:test_class) do
     Class.new do
@@ -27,7 +25,7 @@ RSpec.describe PeerReview::DateOverrider do
   end
 
   let(:test_instance) { test_class.new }
-  let(:mock_override) { double("override") }
+  let(:mock_override) { instance_double(AssignmentOverride) }
 
   describe "#apply_overridden_dates" do
     context "with all date fields present in override_params" do

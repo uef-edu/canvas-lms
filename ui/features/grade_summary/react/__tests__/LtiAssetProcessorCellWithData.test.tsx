@@ -18,7 +18,7 @@
 
 import React from 'react'
 import {render, screen} from '@testing-library/react'
-import {queryClient} from '@canvas/query'
+import {queryClient} from '@instructure/platform-query'
 import {MockedQueryProvider} from '@canvas/test-utils/query'
 import {
   LtiAssetProcessorCellWithData,
@@ -28,6 +28,21 @@ import {
   defaultGetCourseAssignmentsAssetReportsResult,
   emptyGetCourseAssignmentsAssetReportsResult,
 } from '@canvas/lti-asset-processor/queries/__fixtures__/GetCourseAssignmentsAssetReports'
+
+// Use fake timers to prevent InstUI transition animations from
+// accessing document after test environment teardown
+beforeAll(() => {
+  vi.useFakeTimers()
+})
+
+afterAll(() => {
+  vi.useRealTimers()
+})
+
+afterEach(() => {
+  // Run all pending timers to complete any InstUI transitions
+  vi.runAllTimers()
+})
 
 describe('LtiAssetProcessorCellWithData', () => {
   beforeEach(() => {

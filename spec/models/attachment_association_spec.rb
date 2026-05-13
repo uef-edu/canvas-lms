@@ -74,6 +74,24 @@ describe AttachmentAssociation do
       expect(AttachmentAssociation.verify_access("course_syllabus_#{course.id}", course_attachment, teacher)).to be_falsey
     end
 
+    it "grants access to hidden files" do
+      course_attachment.update!(file_state: "hidden")
+      make_associations
+      expect(AttachmentAssociation.verify_access("course_syllabus_#{course.id}", course_attachment, teacher)).to be_truthy
+    end
+
+    it "doesn't grant access to files locked by date" do
+      course_attachment.update!(unlock_at: 1.day.from_now, lock_at: 2.days.from_now)
+      make_associations
+      expect(AttachmentAssociation.verify_access("course_syllabus_#{course.id}", course_attachment, teacher)).to be_falsey
+    end
+
+    it "does grant access to files unlocked by date" do
+      course_attachment.update!(unlock_at: 1.day.ago, lock_at: 1.day.from_now)
+      make_associations
+      expect(AttachmentAssociation.verify_access("course_syllabus_#{course.id}", course_attachment, teacher)).to be_truthy
+    end
+
     it "returns false if the attachment is not associated with the context" do
       make_associations
       expect(AttachmentAssociation.verify_access("course_syllabus_#{course.id}", course_attachment2, teacher)).to be_falsey
@@ -187,7 +205,7 @@ describe AttachmentAssociation do
           instance_variable_set(:"@aq_attachment#{i}", aq_a)
         end
 
-        course_quiz(true)
+        course_quiz(active: true)
         @quiz_desc_att = attachment_with_context(@teacher)
         @quiz.description = "<p>Quiz description <a href=\"/users/#{@teacher.id}/files/#{@quiz_desc_att.id}/download\">Download</a></p>"
         @quiz.updating_user = @teacher

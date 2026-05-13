@@ -18,7 +18,7 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
-class ContentMigration < ActiveRecord::Base
+class ContentMigration < ApplicationRecord
   include Workflow
   include HtmlTextHelper
   include Rails.application.routes.url_helpers
@@ -70,7 +70,7 @@ class ContentMigration < ActiveRecord::Base
     state :failed
   end
 
-  def self.migration_plugins(exclude_hidden = false)
+  def self.migration_plugins(exclude_hidden: false)
     plugins = Canvas::Plugin.all_for_tag(:export_system)
     exclude_hidden ? plugins.reject { |p| p.meta[:hide_from_users] } : plugins
   end
@@ -634,7 +634,7 @@ class ContentMigration < ActiveRecord::Base
         end
         # sync the existing folders first in case someone did something weird like deleted and replaced a folder in the same sync
         MasterCourses::FolderHelper.update_folder_names_and_states(context, source_export)
-        copy_attachments_from_course(source_export)
+        copy_attachments_for_migration(source_export)
         MasterCourses::FolderHelper.recalculate_locked_folders(context)
       elsif for_course_template?
         data = JSON.parse(exported_attachment.open, max_nesting: 50)
@@ -747,7 +747,7 @@ class ContentMigration < ActiveRecord::Base
 
   def prepare_data(data)
     data = data.with_indifferent_access if data.is_a? Hash
-    Utf8Cleaner.recursively_strip_invalid_utf8!(data, true)
+    Utf8Cleaner.recursively_strip_invalid_utf8!(data, force_utf8: true)
     data["all_files_export"] ||= {}
     data
   end
@@ -892,6 +892,19 @@ class ContentMigration < ActiveRecord::Base
     return @merge_mappings[old_item] if old_item.is_a?(String)
 
     @merge_mappings[old_item.asset_string]
+  end
+
+  def copy_attachments_for_migration(source_export)
+    copy_attachments_from_course(source_export)
+
+    destination_media_folder = Folder.media_folder(context)
+    bp_user_files = Attachment.where(id: source_export.settings["referenced_user_file_ids"]) if source_export.settings["referenced_user_file_ids"].present?
+    (source_export.referenced_files.values + bp_user_files.to_a).each do |att|
+      next unless att.context_type == "User"
+
+      export_path = "#{destination_media_folder.name}/#{att.display_name}"
+      copy_attachment_to_destination_course(source_export, att, export_path, destination_media_folder.id)
+    end
   end
 
   def copy_attachments_from_course(source_export)
@@ -1177,6 +1190,35 @@ class ContentMigration < ActiveRecord::Base
     elsif block["type"]["resolvedName"] == "RCETextBlock" && (html = block["props"]["text"])
       block["props"]["text"] = convert_html(html, context, migration_id, :block_editor_text)
     end
+  end
+
+  def user_file_link_matches_uuid?(html, attachment)
+    # TODO: We changed how user files are exported into export packages in
+    # 600e3abd10eb6f4e2746d866dd8f757659ff884a and 21e87b373408165938e73e2bf7aad097e7d0f582
+    # This whole method should be removed in a few years once content migrations are less
+    # likely to have user files directly linked in them.
+    return false if html.blank? || attachment.context_type != "User"
+
+    Nokogiri::HTML5.fragment(html, max_tree_depth: 10_000).search("*").each do |node|
+      CanvasLinkMigrator::LinkParser::LINK_ATTRS.each do |attr|
+        next unless node[attr]&.include?(attachment.id.to_s)
+
+        url = begin
+          Rails.application.routes.recognize_path(node[attr])
+        rescue ActionController::RoutingError
+          next
+        end
+        next if Shard.integral_id_for(url[:attachment_id] || url[:file_id] || url[:id]) != attachment.id
+
+        query_values = Addressable::URI.parse(node[attr]).query_values || {}
+        return true if query_values["verifier"] == attachment.uuid
+      end
+    end
+    false
+  end
+
+  def add_association_for_migration?(html, attachment)
+    context == attachment.context || context.shard.activate { user_file_link_matches_uuid?(html, attachment) }
   end
 
   def convert_block_editor_blocks(blocks_json, migration_id, context)
@@ -1505,8 +1547,8 @@ class ContentMigration < ActiveRecord::Base
         srcs = {}
         if source_course.present?
           source_course.shard.activate do
-            srcs = klass.where(context: source_course).select(*src_fields).each_with_object({}) do |src, by_mig_id|
-              by_mig_id[CC::CCHelper.create_key(src.asset_string, global: global_ids)] = src.attributes.with_indifferent_access.slice(*src_fields)
+            srcs = klass.where(context: source_course).select(*src_fields).to_h do |src|
+              [CC::CCHelper.create_key(src.asset_string, global: global_ids), src.attributes.with_indifferent_access.slice(*src_fields)]
             end
           end
         end

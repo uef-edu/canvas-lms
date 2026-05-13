@@ -18,8 +18,6 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
 module PeerReview::Validations
-  require_relative "peer_review_error"
-
   def validate_parent_assignment(assignment)
     unless assignment.present? && assignment.is_a?(Assignment) && assignment.persisted?
       raise PeerReview::InvalidParentAssignmentError, I18n.t("Invalid parent assignment")
@@ -36,6 +34,10 @@ module PeerReview::Validations
     unless assignment.context.feature_enabled?(:peer_review_allocation_and_grading)
       raise PeerReview::FeatureDisabledError, I18n.t("Peer Review Allocation and Grading feature flag is disabled")
     end
+  end
+
+  def validate_grading_type(grading_type)
+    raise PeerReview::InvalidGradingTypeError, I18n.t("Peer review sub assignments cannot have a not_graded grading type") if grading_type == "not_graded"
   end
 
   def validate_assignment_submission_types(assignment)
@@ -86,27 +88,29 @@ module PeerReview::Validations
     lock_at = parsed_dates[:lock_at]
 
     if due_at && unlock_at && due_at < unlock_at
-      raise PeerReview::InvalidDatesError, I18n.t("Due date cannot be before unlock date")
+      raise PeerReview::InvalidDatesError, I18n.t("Due date cannot be before available from date")
     end
 
     if due_at && lock_at && due_at > lock_at
-      raise PeerReview::InvalidDatesError, I18n.t("Due date cannot be after lock date")
+      raise PeerReview::InvalidDatesError, I18n.t("Due date cannot be after until date")
     end
 
     if unlock_at && lock_at && unlock_at > lock_at
-      raise PeerReview::InvalidDatesError, I18n.t("Unlock date cannot be after lock date")
+      raise PeerReview::InvalidDatesError, I18n.t("Available from date cannot be after until date")
     end
   end
 
   # Validates that peer review override dates fall within parent assignment override dates
-  # assignment unlock_at <= peer review unlock_at < peer review due_at <= peer review lock_at <= assignment lock_at
+  # assignment available from date <= assignment due date <= peer review available from date <= peer review due date <= peer review until date <= assignment until date
   def validate_override_dates_against_parent_override(peer_review_override, parent_override)
     parent_unlock_at = parent_override.unlock_at_overridden ? parent_override.unlock_at : nil
+    parent_due_at = parent_override.due_at_overridden ? parent_override.due_at : nil
     parent_lock_at = parent_override.lock_at_overridden ? parent_override.lock_at : nil
 
     validate_dates_within_parent_boundaries(
       child_dates: peer_review_override,
       parent_unlock_at:,
+      parent_due_at:,
       parent_lock_at:,
       is_override: true
     )
@@ -118,6 +122,7 @@ module PeerReview::Validations
     validate_dates_within_parent_boundaries(
       child_dates: peer_review_dates,
       parent_unlock_at: parent_assignment.unlock_at,
+      parent_due_at: parent_assignment.due_at,
       parent_lock_at: parent_assignment.lock_at,
       is_override: false
     )
@@ -139,29 +144,50 @@ module PeerReview::Validations
     end
   end
 
-  def validate_dates_within_parent_boundaries(child_dates:, parent_unlock_at:, parent_lock_at:, is_override: false)
+  def validate_dates_within_parent_boundaries(child_dates:, parent_unlock_at:, parent_due_at:, parent_lock_at:, is_override: false)
     child_unlock_at = parse_date(child_dates, :unlock_at)
     child_due_at = parse_date(child_dates, :due_at)
     child_lock_at = parse_date(child_dates, :lock_at)
 
-    if parent_unlock_at && child_unlock_at && parent_unlock_at > child_unlock_at
+    # Validate: parent unlock_at <= parent due_at
+    if parent_unlock_at && parent_due_at && parent_unlock_at > parent_due_at
       raise PeerReview::InvalidDatesError,
-            is_override ? I18n.t("Peer review override unlock date cannot be before parent override unlock date") : I18n.t("Peer review unlock date cannot be before assignment unlock date")
+            is_override ? I18n.t("Parent override due date cannot be before parent override available from date") : I18n.t("Assignment due date cannot be before assignment available from date")
     end
 
+    # Validate: child unlock_at constraint
+    # If parent_due_at is present, validate: parent due_at <= child unlock_at
+    # Otherwise, fall back to: parent unlock_at <= child unlock_at
+    if parent_due_at && child_unlock_at && parent_due_at > child_unlock_at
+      raise PeerReview::InvalidDatesError,
+            is_override ? I18n.t("Peer review override available from date cannot be before parent override due date") : I18n.t("Peer review available from date cannot be before assignment due date")
+    elsif !parent_due_at && parent_unlock_at && child_unlock_at && parent_unlock_at > child_unlock_at
+      raise PeerReview::InvalidDatesError,
+            is_override ? I18n.t("Peer review override available from date cannot be before parent override available from date") : I18n.t("Peer review available from date cannot be before assignment available from date")
+    end
+
+    # Validate: parent unlock_at <= child due_at (for backward compatibility)
     if parent_unlock_at && child_due_at && parent_unlock_at > child_due_at
       raise PeerReview::InvalidDatesError,
-            is_override ? I18n.t("Peer review override due date cannot be before parent override unlock date") : I18n.t("Peer review due date cannot be before assignment unlock date")
+            is_override ? I18n.t("Peer review override due date cannot be before parent override available from date") : I18n.t("Peer review due date cannot be before assignment available from date")
     end
 
+    # Validate: parent due_at <= child due_at
+    if parent_due_at && child_due_at && parent_due_at > child_due_at
+      raise PeerReview::InvalidDatesError,
+            is_override ? I18n.t("Peer review override due date cannot be before parent override due date") : I18n.t("Peer review due date cannot be before assignment due date")
+    end
+
+    # Validate: child due_at <= parent lock_at
     if child_due_at && parent_lock_at && child_due_at > parent_lock_at
       raise PeerReview::InvalidDatesError,
-            is_override ? I18n.t("Peer review override due date cannot be after parent override lock date") : I18n.t("Peer review due date cannot be after assignment lock date")
+            is_override ? I18n.t("Peer review override due date cannot be after parent override until date") : I18n.t("Peer review due date cannot be after assignment until date")
     end
 
+    # Validate: child lock_at <= parent lock_at
     if child_lock_at && parent_lock_at && child_lock_at > parent_lock_at
       raise PeerReview::InvalidDatesError,
-            is_override ? I18n.t("Peer review override lock date cannot be after parent override lock date") : I18n.t("Peer review lock date cannot be after assignment lock date")
+            is_override ? I18n.t("Peer review override until date cannot be after parent override until date") : I18n.t("Peer review until date cannot be after assignment until date")
     end
   end
 

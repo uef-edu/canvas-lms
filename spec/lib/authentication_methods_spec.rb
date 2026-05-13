@@ -17,8 +17,6 @@
 # You should have received a copy of the GNU Affero General Public License along
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
-require_relative "../spec_helper"
-
 # FIXME: these tests should all exist in a controller test,
 # since that's the context required to run any of them
 describe AuthenticationMethods do
@@ -80,7 +78,7 @@ describe AuthenticationMethods do
 
   describe "#render_json_unauthorized" do
     before do
-      @controller = mock_controller_class.new(request: double)
+      @controller = mock_controller_class.new(request: instance_double(ActionDispatch::Request))
       allow(@controller).to receive(:api_request?).and_return(false)
     end
 
@@ -136,14 +134,15 @@ describe AuthenticationMethods do
   describe "#load_user" do
     context "with active session" do
       before do
-        @request = double(env: { "encrypted_cookie_store.session_refreshed_at" => 5.minutes.ago },
-                          format: double(json?: false),
-                          host_with_port: "")
+        @request = instance_double(ActionDispatch::Request,
+                                   env: { "encrypted_cookie_store.session_refreshed_at" => 5.minutes.ago },
+                                   format: Mime[:html],
+                                   host_with_port: "")
         @controller = mock_controller_class.new(request: @request)
         allow(@controller).to receive(:load_pseudonym_from_access_token)
         allow(@controller).to receive(:api_request?).and_return(false)
         user_with_pseudonym
-        @pseudonym_session = double(record: @pseudonym)
+        @pseudonym_session = instance_double(PseudonymSession, record: @pseudonym)
         allow(PseudonymSession).to receive(:find_with_validation).and_return(@pseudonym_session)
       end
 
@@ -201,7 +200,7 @@ describe AuthenticationMethods do
       def build_encoded_token(user_id, real_user_id: nil)
         payload = { sub: user_id }
         payload[:masq_sub] = real_user_id if real_user_id
-        crypted_token = CanvasSecurity::ServicesJwt.generate(payload, false, symmetric: true)
+        crypted_token = CanvasSecurity::ServicesJwt.generate(payload, base64: false, symmetric: true)
         payload = {
           iss: "some other service",
           user_token: crypted_token
@@ -211,11 +210,12 @@ describe AuthenticationMethods do
       end
 
       def setup_with_jwt(token)
-        request = double(authorization: "Bearer #{token}",
-                         format: double(json?: true),
-                         host_with_port: "",
-                         url: "",
-                         method: "GET")
+        request = instance_double(ActionDispatch::Request,
+                                  authorization: "Bearer #{token}",
+                                  format: Mime[:json],
+                                  host_with_port: "",
+                                  url: "",
+                                  method: "GET")
         controller = mock_controller_class.new(request:)
         allow(controller).to receive(:api_request?).and_return(true)
         controller
@@ -236,6 +236,7 @@ describe AuthenticationMethods do
         expect(controller.send(:load_user)).to eq @user
         expect(controller.instance_variable_get(:@current_user)).to eq @user
         expect(controller.instance_variable_get(:@real_current_user)).to eq @real_user
+        expect(controller.instance_variable_get(:@current_user).impersonated).to be true
       end
 
       it "sets current_pseudonym" do
@@ -245,6 +246,7 @@ describe AuthenticationMethods do
         expect(controller.send(:load_user)).to eq @user
         expect(controller.instance_variable_get(:@current_pseudonym)).to eq @user.pseudonym
         expect(controller.instance_variable_get(:@real_current_pseudonym)).to be_nil
+        expect(controller.instance_variable_get(:@current_user).impersonated).to be false
       end
 
       it "sets real current_pseudonym if masquerading user id present" do
@@ -254,6 +256,7 @@ describe AuthenticationMethods do
         expect(controller.send(:load_user)).to eq @user
         expect(controller.instance_variable_get(:@current_pseudonym)).to eq @user.pseudonym
         expect(controller.instance_variable_get(:@real_current_pseudonym)).to eq @real_user.pseudonym
+        expect(controller.instance_variable_get(:@current_user).impersonated).to be true
       end
     end
 
@@ -267,11 +270,12 @@ describe AuthenticationMethods do
       end
 
       def setup_with_token(token)
-        request = double(authorization: "Bearer #{token.full_token}",
-                         format: double(json?: true),
-                         host_with_port: "",
-                         url: "",
-                         method: "GET")
+        request = instance_double(ActionDispatch::Request,
+                                  authorization: "Bearer #{token.full_token}",
+                                  format: Mime[:json],
+                                  host_with_port: "",
+                                  url: "",
+                                  method: "GET")
         controller = mock_controller_class.new(request:)
         allow(controller).to receive(:api_request?).and_return(true)
         controller
@@ -292,6 +296,7 @@ describe AuthenticationMethods do
         expect(controller.send(:load_user)).to eq @user
         expect(controller.instance_variable_get(:@current_user)).to eq @user
         expect(controller.instance_variable_get(:@real_current_user)).to eq @real_user
+        expect(controller.instance_variable_get(:@current_user).impersonated).to be true
       end
 
       it "sets current_pseudonym" do
@@ -350,6 +355,7 @@ describe AuthenticationMethods do
         expect(controller.send(:load_user)).to eq @user
         expect(controller.instance_variable_get(:@current_user)).to eq @user
         expect(controller.instance_variable_get(:@real_current_user)).to eq @real_user
+        expect(controller.instance_variable_get(:@current_user).impersonated).to be true
       end
 
       it "rejects as_user_id on a masquerading token if masquerade does not match" do
@@ -371,13 +377,12 @@ describe AuthenticationMethods do
       let(:user) { user_with_pseudonym(active_all: true, account:) }
 
       def setup_with_inst_access_token(token)
-        request = double(
-          authorization: "Bearer #{token.to_unencrypted_token_string}",
-          format: double(json?: true),
-          host_with_port: "",
-          url: "",
-          method: "GET"
-        )
+        request = instance_double(ActionDispatch::Request,
+                                  authorization: "Bearer #{token.to_unencrypted_token_string}",
+                                  format: Mime[:json],
+                                  host_with_port: "",
+                                  url: "",
+                                  method: "GET")
         controller = mock_controller_class.new(request:, root_account: account)
         allow(controller).to receive(:api_request?).and_return(true)
         controller
@@ -418,6 +423,11 @@ describe AuthenticationMethods do
           context "with feature flag DISABLED (shadow mode)" do
             before do
               Account.site_admin.feature_flags.where(feature: :enforce_service_token_tenant_matching).destroy_all
+              AuthenticationMethods::InstAccessToken.reload
+            end
+
+            after do
+              AuthenticationMethods::InstAccessToken.reload
             end
 
             it "allows authentication" do
@@ -430,9 +440,19 @@ describe AuthenticationMethods do
               controller.send(:load_user)
               expect(controller.instance_variable_get(:@current_user)).to eq user
               expect(controller.instance_variable_get(:@current_pseudonym)).to eq @pseudonym
+              expect(controller.instance_variable_get(:@current_user).impersonated).to be false
             end
 
             it "sends an InstStatsd event for monitoring" do
+              allow(DynamicSettings).to receive(:find).and_call_original
+              allow(DynamicSettings).to receive(:find)
+                .with(tree: :private)
+                .and_return(DynamicSettings::FallbackProxy.new({
+                                                                 "inst_access_token.yml" => {
+                                                                   "log_tenant_mismatches" => true
+                                                                 }.to_yaml
+                                                               }))
+
               expect(InstStatsd::Statsd).to receive(:event).with(
                 "Service user authorization tenant mismatch",
                 anything,
@@ -496,9 +516,45 @@ describe AuthenticationMethods do
     end
   end
 
+  describe "#load_user with FederatedPseudonymAttributes" do
+    let(:user) { user_with_pseudonym }
+    let(:test_pseudonym) { @pseudonym }
+
+    before do
+      user
+      @request = instance_double(ActionDispatch::Request,
+                                 env: { "encrypted_cookie_store.session_refreshed_at" => 5.minutes.ago },
+                                 format: Mime[:html],
+                                 host_with_port: "")
+      @controller = mock_controller_class.new(request: @request)
+      allow(@controller).to receive_messages(load_pseudonym_from_access_token: test_pseudonym, api_request?: false)
+      @controller.instance_variable_set(:@current_pseudonym, test_pseudonym)
+      @pseudonym_session = instance_double(PseudonymSession, record: @pseudonym)
+      allow(PseudonymSession).to receive(:find_with_validation).and_return(@pseudonym_session)
+    end
+
+    it "calls FederatedPseudonymAttributes.load_from with session" do
+      expect(AuthenticationMethods::FederatedPseudonymAttributes).to receive(:load_from).with(@controller.session)
+      @controller.send(:load_user)
+    end
+
+    context "when current_pseudonym is nil" do
+      before do
+        @controller.instance_variable_set(:@current_pseudonym, nil)
+        allow(@controller).to receive(:load_pseudonym_from_access_token).and_return(nil)
+        allow(PseudonymSession).to receive(:find_with_validation).and_return(nil)
+      end
+
+      it "does not call FederatedPseudonymAttributes.load_from" do
+        expect(AuthenticationMethods::FederatedPseudonymAttributes).not_to receive(:load_from)
+        @controller.send(:load_user)
+      end
+    end
+  end
+
   describe "#masked_authenticity_token" do
     before do
-      @request = double(host_with_port: "")
+      @request = instance_double(ActionDispatch::Request, host_with_port: "")
       @controller = mock_controller_class.new(request: @request)
       @session_options = {}
       expect(CanvasRails::Application.config).to receive(:session_options).at_least(:once).and_return(@session_options)
@@ -542,7 +598,7 @@ describe AuthenticationMethods do
     let(:account) { Account.create! }
     let(:dev_key) { DeveloperKey.create!(account:, name: "Test Developer Key") }
     let(:access_token) { AccessToken.create!(developer_key: dev_key) }
-    let(:request) { double(format: double(json?: false), host_with_port: "") }
+    let(:request) { instance_double(ActionDispatch::Request, format: Mime[:html], host_with_port: "") }
     let(:controller) { mock_controller_class.new(request:, root_account: account) }
 
     it "doesn't call '#get_context' if the Dev key is owned by the domain root account" do

@@ -18,7 +18,7 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
-class CustomData < ActiveRecord::Base
+class CustomData < ApplicationRecord
   class WriteConflict < RuntimeError
     attr_accessor :conflict_scope, :type_at_conflict, :value_at_conflict
 
@@ -39,7 +39,6 @@ class CustomData < ActiveRecord::Base
   end
 
   self.table_name = "custom_data"
-  self.ignored_columns += ["data"]
 
   belongs_to :user
 

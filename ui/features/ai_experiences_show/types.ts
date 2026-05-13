@@ -16,6 +16,8 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+import {ContextFile} from '@canvas/canvas-file-upload/react/types'
+
 export interface AIExperience {
   id?: string
   course_id?: string | number
@@ -24,9 +26,15 @@ export interface AIExperience {
   facts: string
   learning_objective: string
   pedagogical_guidance: string
+  workflow_state: 'published' | 'unpublished'
+  can_manage: boolean
+  can_unpublish?: boolean
+  context_files?: ContextFile[]
+  context_ready?: boolean
+  context_index_status?: 'not_started' | 'in_progress' | 'completed' | 'failed'
+  failed_context_file_names?: string[]
 }
 
 export interface AIExperienceShowProps {
-  aiExperience: AIExperience
   navbarHeight?: number
 }

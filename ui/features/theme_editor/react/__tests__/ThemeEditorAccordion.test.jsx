@@ -16,6 +16,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+import React from 'react'
 import {render} from '@testing-library/react'
 import ThemeEditorAccordion from '../ThemeEditorAccordion'
 
@@ -162,6 +163,11 @@ describe('ThemeEditorAccordion', () => {
 
     it('renders percentage rows', () => {
       const {getByLabelText} = render(<ThemeEditorAccordion {...generateProps('percentage')} />)
+      expect(getByLabelText('Friendly Foo')).toBeInTheDocument()
+    })
+
+    it('renders textarea rows', () => {
+      const {getByLabelText} = render(<ThemeEditorAccordion {...generateProps('textarea')} />)
       expect(getByLabelText('Friendly Foo')).toBeInTheDocument()
     })
   })

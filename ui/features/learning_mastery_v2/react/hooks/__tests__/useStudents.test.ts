@@ -19,9 +19,9 @@
 import {renderHook} from '@testing-library/react-hooks'
 import {useStudents} from '../useStudents'
 import * as apiClient from '../../apiClient'
-import {Student} from '../../types/rollup'
+import {Student} from '@canvas/outcomes/react/types/rollup'
 
-jest.mock('../../apiClient')
+vi.mock('../../apiClient')
 
 describe('useStudents', () => {
   const courseId = '123'
@@ -48,15 +48,15 @@ describe('useStudents', () => {
   ]
 
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   afterEach(() => {
-    jest.restoreAllMocks()
+    vi.restoreAllMocks()
   })
 
   it('returns initial loading state with empty students', () => {
-    jest.spyOn(apiClient, 'loadCourseUsers').mockReturnValue(new Promise(() => {}))
+    vi.spyOn(apiClient, 'loadCourseUsers').mockReturnValue(new Promise(() => {}))
 
     const {result} = renderHook(() => useStudents(courseId))
 
@@ -66,11 +66,11 @@ describe('useStudents', () => {
   })
 
   it('loads students successfully', async () => {
-    jest.spyOn(apiClient, 'loadCourseUsers').mockResolvedValue({
+    vi.spyOn(apiClient, 'loadCourseUsers').mockResolvedValue({
       status: 200,
       statusText: 'OK',
       headers: {},
-      config: {},
+      config: {headers: {} as any},
       data: mockStudents,
     })
 
@@ -83,11 +83,11 @@ describe('useStudents', () => {
   })
 
   it('calls loadCourseUsers with correct courseId', async () => {
-    const loadCourseUsersSpy = jest.spyOn(apiClient, 'loadCourseUsers').mockResolvedValue({
+    const loadCourseUsersSpy = vi.spyOn(apiClient, 'loadCourseUsers').mockResolvedValue({
       status: 200,
       statusText: 'OK',
       headers: {},
-      config: {},
+      config: {headers: {} as any},
       data: mockStudents,
     })
 
@@ -99,7 +99,7 @@ describe('useStudents', () => {
   })
 
   it('sets error state on failed request', async () => {
-    jest.spyOn(apiClient, 'loadCourseUsers').mockRejectedValue(new Error('Network error'))
+    vi.spyOn(apiClient, 'loadCourseUsers').mockRejectedValue(new Error('Network error'))
 
     const {result, waitForNextUpdate} = renderHook(() => useStudents(courseId))
     await waitForNextUpdate()
@@ -110,7 +110,7 @@ describe('useStudents', () => {
   })
 
   it('clears students array on error', async () => {
-    jest.spyOn(apiClient, 'loadCourseUsers').mockRejectedValue(new Error('API error'))
+    vi.spyOn(apiClient, 'loadCourseUsers').mockRejectedValue(new Error('API error'))
 
     const {result, waitForNextUpdate} = renderHook(() => useStudents(courseId))
     await waitForNextUpdate()
@@ -120,11 +120,11 @@ describe('useStudents', () => {
   })
 
   it('handles empty students array response', async () => {
-    jest.spyOn(apiClient, 'loadCourseUsers').mockResolvedValue({
+    vi.spyOn(apiClient, 'loadCourseUsers').mockResolvedValue({
       status: 200,
       statusText: 'OK',
       headers: {},
-      config: {},
+      config: {headers: {} as any},
       data: [],
     })
 
@@ -137,11 +137,11 @@ describe('useStudents', () => {
   })
 
   it('refetches students when courseId changes', async () => {
-    const loadCourseUsersSpy = jest.spyOn(apiClient, 'loadCourseUsers').mockResolvedValue({
+    const loadCourseUsersSpy = vi.spyOn(apiClient, 'loadCourseUsers').mockResolvedValue({
       status: 200,
       statusText: 'OK',
       headers: {},
-      config: {},
+      config: {headers: {} as any},
       data: mockStudents,
     })
 
@@ -161,11 +161,11 @@ describe('useStudents', () => {
   })
 
   it('sets loading to true when refetching after courseId change', async () => {
-    jest.spyOn(apiClient, 'loadCourseUsers').mockResolvedValue({
+    vi.spyOn(apiClient, 'loadCourseUsers').mockResolvedValue({
       status: 200,
       statusText: 'OK',
       headers: {},
-      config: {},
+      config: {headers: {} as any},
       data: mockStudents,
     })
 
@@ -181,14 +181,13 @@ describe('useStudents', () => {
   })
 
   it('clears previous error on new request', async () => {
-    jest
-      .spyOn(apiClient, 'loadCourseUsers')
+    vi.spyOn(apiClient, 'loadCourseUsers')
       .mockRejectedValueOnce(new Error('First error'))
       .mockResolvedValueOnce({
         status: 200,
         statusText: 'OK',
         headers: {},
-        config: {},
+        config: {headers: {} as any},
         data: mockStudents,
       })
 
@@ -207,11 +206,11 @@ describe('useStudents', () => {
   })
 
   it('handles non-200 status code response', async () => {
-    jest.spyOn(apiClient, 'loadCourseUsers').mockResolvedValue({
+    vi.spyOn(apiClient, 'loadCourseUsers').mockResolvedValue({
       status: 404,
       statusText: 'Not Found',
       headers: {},
-      config: {},
+      config: {headers: {} as any},
       data: [],
     })
 
@@ -224,11 +223,11 @@ describe('useStudents', () => {
   })
 
   it('handles response without data field', async () => {
-    jest.spyOn(apiClient, 'loadCourseUsers').mockResolvedValue({
+    vi.spyOn(apiClient, 'loadCourseUsers').mockResolvedValue({
       status: 200,
       statusText: 'OK',
       headers: {},
-      config: {},
+      config: {headers: {} as any},
       data: [],
     })
 
@@ -241,11 +240,11 @@ describe('useStudents', () => {
   })
 
   it('works with numeric courseId', async () => {
-    const loadCourseUsersSpy = jest.spyOn(apiClient, 'loadCourseUsers').mockResolvedValue({
+    const loadCourseUsersSpy = vi.spyOn(apiClient, 'loadCourseUsers').mockResolvedValue({
       status: 200,
       statusText: 'OK',
       headers: {},
-      config: {},
+      config: {headers: {} as any},
       data: mockStudents,
     })
 
@@ -270,11 +269,11 @@ describe('useStudents', () => {
       },
     ]
 
-    jest.spyOn(apiClient, 'loadCourseUsers').mockResolvedValue({
+    vi.spyOn(apiClient, 'loadCourseUsers').mockResolvedValue({
       status: 200,
       statusText: 'OK',
       headers: {},
-      config: {},
+      config: {headers: {} as any},
       data: studentsWithAllFields,
     })
 

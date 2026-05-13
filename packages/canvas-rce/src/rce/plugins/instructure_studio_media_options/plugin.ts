@@ -16,9 +16,10 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-import tinymce, {Editor} from 'tinymce'
+import tinymce, {Editor, Events} from 'tinymce'
 import {
   isStudioEmbeddedMedia,
+  isImprovedStudioEmbed,
   handleBeforeObjectSelected,
   notifyStudioEmbedTypeChange,
   updateStudioIframeDimensions,
@@ -52,6 +53,16 @@ const handleStudioMessage = (e: MessageEvent) => {
   }
 }
 
+const isEmbedButtonActive = (buttonName: string, currentSelectedElement: Element) => {
+  return (currentSelectedElement.getAttribute('data-mce-p-src') || '').includes(buttonName)
+}
+
+const isImprovedStudioEmbeddedMedia = (element: Element): boolean =>
+  isStudioEmbeddedMedia(element) && isImprovedStudioEmbed(element)
+
+const isNonImprovedStudioEmbeddedMedia = (element: Element): boolean =>
+  isStudioEmbeddedMedia(element) && !isImprovedStudioEmbed(element)
+
 tinymce.PluginManager.add('instructure_studio_media_options', function (ed: Editor) {
   if (RCEGlobals.getFeatures().rce_studio_embed_improvements) {
     window.addEventListener('message', handleStudioMessage)
@@ -71,6 +82,16 @@ tinymce.PluginManager.add('instructure_studio_media_options', function (ed: Edit
           background-color: #2B7ABC;
           color: white;
         }
+
+        .tox .tox-pop .tox-tbtn.tox-tbtn--enabled {
+          background-color: #6A7883;
+          color: white;
+        }
+
+        .tox .tox-pop .tox-tbtn.tox-tbtn--enabled:hover {
+          background-color: #2B7ABC;
+          color: white;
+        }
       `
         document.head.appendChild(style)
       }
@@ -82,42 +103,71 @@ tinymce.PluginManager.add('instructure_studio_media_options', function (ed: Edit
     ed.ui.registry.addIcon('options-icon', optionsIcon)
     ed.ui.registry.addIcon('remove-icon', removeIcon)
 
-    ed.ui.registry.addButton('thumbnail-view', {
+    ed.ui.registry.addToggleButton('thumbnail-view', {
+      onSetup: buttonApi => {
+        buttonApi.setActive(isEmbedButtonActive('thumbnail_embed', ed.selection.getNode()))
+        const editorEventCallback = (eventApi: Events.NodeChangeEvent) => {
+          buttonApi.setActive(isEmbedButtonActive('thumbnail_embed', eventApi.element))
+        }
+        ed.on('NodeChange', editorEventCallback)
+        return () => ed.off('NodeChange', editorEventCallback)
+      },
       onAction() {
         notifyStudioEmbedTypeChange(ed, 'thumbnail_embed')
       },
       icon: 'thumbnail-view-icon',
       text: formatMessage('Thumbnail'),
-      tooltip: formatMessage('Thumbnail'),
     })
 
-    ed.ui.registry.addButton('learn-view', {
+    ed.ui.registry.addToggleButton('learn-view', {
+      onSetup: buttonApi => {
+        buttonApi.setActive(isEmbedButtonActive('learn_embed', ed.selection.getNode()))
+        const editorEventCallback = (eventApi: Events.NodeChangeEvent) => {
+          buttonApi.setActive(isEmbedButtonActive('learn_embed', eventApi.element))
+        }
+        ed.on('NodeChange', editorEventCallback)
+        return () => ed.off('NodeChange', editorEventCallback)
+      },
       onAction() {
         notifyStudioEmbedTypeChange(ed, 'learn_embed')
       },
       icon: 'learn-view-icon',
       text: formatMessage('Learn'),
-      tooltip: formatMessage('Learn'),
     })
 
-    ed.ui.registry.addButton('collab-view', {
+    ed.ui.registry.addToggleButton('collab-view', {
+      onSetup: buttonApi => {
+        buttonApi.setActive(isEmbedButtonActive('collaboration_embed', ed.selection.getNode()))
+        const editorEventCallback = (eventApi: Events.NodeChangeEvent) => {
+          buttonApi.setActive(isEmbedButtonActive('collaboration_embed', eventApi.element))
+        }
+        ed.on('NodeChange', editorEventCallback)
+        return () => ed.off('NodeChange', editorEventCallback)
+      },
       onAction() {
         notifyStudioEmbedTypeChange(ed, 'collaboration_embed')
       },
       icon: 'collab-view-icon',
       text: formatMessage('Collab'),
-      tooltip: formatMessage('Collab'),
     })
 
+    const openStudioTray = () => {
+      if (!studioTrayController.isOpen) {
+        studioTrayController.showTrayForEditor(ed)
+        ed.focus()
+      }
+    }
+
     ed.ui.registry.addButton('studio-media-options', {
-      onAction() {
-        if (!studioTrayController.isOpen) {
-          studioTrayController.showTrayForEditor(ed)
-        }
-      },
+      onAction: openStudioTray,
       icon: 'options-icon',
       text: formatMessage('Options'),
-      tooltip: formatMessage('Options'),
+    })
+
+    ed.ui.registry.addButton('studio-media-options-basic', {
+      onAction: openStudioTray,
+      icon: 'options-icon',
+      text: formatMessage('Studio Media Options'),
     })
 
     ed.ui.registry.addButton('remove-studio-media', {
@@ -139,15 +189,27 @@ tinymce.PluginManager.add('instructure_studio_media_options', function (ed: Edit
       },
       icon: 'remove-icon',
       text: formatMessage('Remove'),
-      tooltip: formatMessage('Remove Studio Media'),
     })
 
     ed.ui.registry.addContextToolbar('studio-extra-toolbar', {
       items:
         'thumbnail-view | learn-view | collab-view | studio-media-options | remove-studio-media',
       position: 'node',
-      predicate: isStudioEmbeddedMedia,
+      predicate: isImprovedStudioEmbeddedMedia,
       scope: 'node',
+    })
+
+    ed.ui.registry.addContextToolbar('studio-basic-toolbar', {
+      items: 'studio-media-options-basic | remove-studio-media',
+      position: 'node',
+      predicate: isNonImprovedStudioEmbeddedMedia,
+      scope: 'node',
+    })
+
+    ed.on('NodeChange', () => {
+      if (studioTrayController.isOpen) {
+        studioTrayController.hideTrayForEditor(ed, true)
+      }
     })
   } else {
     ed.ui.registry.addButton('studio-media-options', {
@@ -155,7 +217,6 @@ tinymce.PluginManager.add('instructure_studio_media_options', function (ed: Edit
         studioTrayController.showTrayForEditor(ed)
       },
       text: formatMessage('Studio Media Options'),
-      tooltip: formatMessage('Show Studio media options'),
     })
 
     ed.ui.registry.addContextToolbar('studio-media-options-toolbar', {

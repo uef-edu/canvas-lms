@@ -16,7 +16,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-import {showFlashError, showFlashSuccess} from '@canvas/alerts/react/FlashAlert'
+import {showFlashError, showFlashSuccess} from '@instructure/platform-alerts'
 import {useScope as createI18nScope} from '@canvas/i18n'
 import listFormatterPolyfill from '@canvas/util/listFormatter'
 import {Alert} from '@instructure/ui-alerts'
@@ -29,7 +29,7 @@ import {View} from '@instructure/ui-view'
 import {SimpleSelect} from '@instructure/ui-simple-select'
 import {Spinner} from '@instructure/ui-spinner'
 import {useMutation} from '@tanstack/react-query'
-import {useRef, useState} from 'react'
+import {useState} from 'react'
 import {isUnsuccessful} from '../../../../../common/lib/apiResult/ApiResult'
 import {toUndefined} from '../../../../../common/lib/toUndefined'
 import {UpdateContextControl} from '../../../../api/contextControls'
@@ -48,6 +48,7 @@ export type EditExceptionModalProps = {
   availableInParentContext: boolean | null
   onClose: () => void
   onSave: UpdateContextControl
+  onSettled?: () => void
 }
 
 export const EditExceptionModal = ({
@@ -55,14 +56,15 @@ export const EditExceptionModal = ({
   onSave,
   control,
   availableInParentContext,
+  onSettled,
 }: EditExceptionModalProps) => {
   const [available, setAvailable] = useState(!control.available)
-  const selectorRef = useRef<HTMLInputElement | null>(null)
 
   const updateMutation = useMutation({
     mutationKey: ['lti_registrations', 'update_exception_availability'],
     mutationFn: async (control: LtiContextControl) =>
       onSave(control.registration_id, control.id, available),
+    onSettled,
     // We don't need an onError handler here because ApiResult is meant to be a discriminated union
     // that indicates success or failure within the result object itself.
     onSuccess: result => {
@@ -85,7 +87,6 @@ export const EditExceptionModal = ({
       open={true}
       label={I18n.t('Edit Exception')}
       size="medium"
-      defaultFocusElement={() => selectorRef.current}
       shouldCloseOnDocumentClick={true}
       onDismiss={onClose}
     >
@@ -139,7 +140,6 @@ export const EditExceptionModal = ({
                   <Flex.Item>→</Flex.Item>
                   <Flex.Item shouldShrink shouldGrow={false}>
                     <SimpleSelect
-                      inputRef={ref => (selectorRef.current = ref)}
                       renderLabel={''}
                       value={available ? 'available' : 'unavailable'}
                       onChange={(_, {value}) => setAvailable(value === 'available')}

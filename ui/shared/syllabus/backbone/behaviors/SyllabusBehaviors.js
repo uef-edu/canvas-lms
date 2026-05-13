@@ -26,7 +26,7 @@ import 'jquery-scroll-to-visible/jquery.scrollTo'
 import '@canvas/datetime/jquery/datepicker'
 import easy_student_view from '@canvas/easy-student-view'
 import htmlEscape from '@instructure/html-escape'
-import {escape} from 'lodash'
+import {escape} from 'es-toolkit/compat'
 
 RichContentEditor.preloadRemoteModule()
 
@@ -401,7 +401,13 @@ const bindToEditSyllabus = function (course_summary_enabled) {
     $course_syllabus_details.hide()
     easy_student_view.hide()
     $course_syllabus_body = RichContentEditor.freshNode($course_syllabus_body)
-    $course_syllabus_body.val($course_syllabus.data('syllabus_body'))
+    const revisionPreview = $course_syllabus.data('revision_preview')
+    if (revisionPreview) {
+      $course_syllabus_body.val(revisionPreview)
+      $course_syllabus.removeData('revision_preview')
+    } else {
+      $course_syllabus_body.val($course_syllabus.data('syllabus_body'))
+    }
     RichContentEditor.loadNewEditor($course_syllabus_body, {
       focus: true,
       manageParent: true,

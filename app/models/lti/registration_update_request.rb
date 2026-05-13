@@ -17,7 +17,7 @@
 # You should have received a copy of the GNU Affero General Public License along
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
-class Lti::RegistrationUpdateRequest < ActiveRecord::Base
+class Lti::RegistrationUpdateRequest < ApplicationRecord
   belongs_to :lti_registration, class_name: "Lti::Registration"
   belongs_to :root_account, class_name: "Account"
   belongs_to :created_by, class_name: "User"
@@ -44,8 +44,25 @@ class Lti::RegistrationUpdateRequest < ActiveRecord::Base
     super({ include_root: false }.merge(options)).merge(
       {
         # TODO: switch this on type of underlying registration
-        internal_lti_configuration: Lti::IMS::Registration.to_internal_lti_configuration(lti_ims_registration)
+        internal_lti_configuration:
+          if lti_ims_registration
+            Lti::IMS::Registration.to_internal_lti_configuration(lti_ims_registration)
+          else
+            Schemas::InternalLtiConfiguration.from_lti_configuration(canvas_lti_configuration)
+          end
       }
     )
+  end
+
+  # Returns true if this is the most recent update request for the registration, false otherwise.
+  # This is used to determine whether or not to apply an update request when it is accepted,
+  # as well as whether or not to show an update request as pending in the UI.
+  def most_recent?
+    most_recent = Lti::RegistrationUpdateRequest
+                  .where(lti_registration_id:)
+                  .order(created_at: :desc)
+                  .first
+
+    most_recent&.id == id
   end
 end

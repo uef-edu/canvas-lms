@@ -17,8 +17,6 @@
 # You should have received a copy of the GNU Affero General Public License along
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
-require "spec_helper"
-
 describe Accessibility::Rule do
   describe ".registry" do
     it "returns a hash" do
@@ -115,7 +113,7 @@ describe Accessibility::Rule do
 
     context "when element is provided" do
       it "returns the element's HTML" do
-        element = double("Element", to_html: "<div>Test</div>")
+        element = instance_double(Nokogiri::XML::Element, to_html: "<div>Test</div>")
         expect(described_class.new.issue_preview(element)).to eq("<div>Test</div>")
       end
     end

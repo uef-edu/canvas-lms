@@ -47,7 +47,7 @@ describe FilesController do
   end
 
   def io
-    fixture_file_upload("docs/doc.doc", "application/msword", true)
+    fixture_file_upload("docs/doc.doc", "application/msword", binary: true)
   end
 
   def course_file
@@ -59,11 +59,11 @@ describe FilesController do
   end
 
   def user_html_file
-    @file = @user.attachments.create!(uploaded_data: fixture_file_upload("test.html", "text/html", false))
+    @file = @user.attachments.create!(uploaded_data: fixture_file_upload("test.html", "text/html"))
   end
 
   def account_js_file
-    @file = @account.attachments.create!(uploaded_data: fixture_file_upload("test.js", "text/javascript", false))
+    @file = @account.attachments.create!(uploaded_data: fixture_file_upload("test.js", "text/javascript"))
   end
 
   def folder_file
@@ -273,6 +273,66 @@ describe FilesController do
         expect(response).to be_successful
       end
     end
+
+    context "root folder permissions with files_a11y_rewrite" do
+      before do
+        Account.site_admin.enable_feature!(:files_a11y_rewrite)
+      end
+
+      it "excludes course context where Files tab is disabled for student" do
+        user_session(@student)
+        @course.update_attribute(:tab_configuration, [{ "id" => 11, "hidden" => true }])
+
+        get "index", params: { user_id: @student.id }
+        expect(response).to be_successful
+
+        files_contexts = assigns[:js_env][:FILES_CONTEXTS]
+        context_asset_strings = files_contexts.pluck(:asset_string)
+
+        expect(context_asset_strings).not_to include(@course.asset_string)
+        expect(context_asset_strings).to include(@student.asset_string)
+      end
+
+      it "includes course context where Files tab is enabled for teacher" do
+        user_session(@teacher)
+        get "index", params: { course_id: @course.id }
+        expect(response).to be_successful
+
+        files_contexts = assigns[:js_env][:FILES_CONTEXTS]
+        course_context = files_contexts.find { |c| c[:asset_string] == @course.asset_string }
+
+        expect(course_context).to be_present
+        expect(course_context[:root_folder_right]).to be true
+      end
+
+      it "includes root_folder_right field in context data when feature enabled" do
+        user_session(@teacher)
+        get "index", params: { course_id: @course.id }
+        expect(response).to be_successful
+
+        files_contexts = assigns[:js_env][:FILES_CONTEXTS]
+        expect(files_contexts).to all(have_key(:root_folder_right))
+      end
+
+      it "includes user context with accessible courses" do
+        user_session(@student)
+        get "index", params: { user_id: @student.id }
+        expect(response).to be_successful
+
+        files_contexts = assigns[:js_env][:FILES_CONTEXTS]
+        context_asset_strings = files_contexts.pluck(:asset_string)
+
+        expect(context_asset_strings).to include(@student.asset_string)
+      end
+
+      it "handles contexts with root folders gracefully" do
+        user_session(@teacher)
+        get "index", params: { course_id: @course.id }
+        expect(response).to be_successful
+
+        expect(assigns[:js_env][:FILES_CONTEXTS]).to be_present
+      end
+    end
   end
 
   describe "GET 'show'" do
@@ -318,7 +378,7 @@ describe FilesController do
         allow_any_instance_of(Attachment).to receive(:canvadoc_url).and_return "stubby"
         get "show", params: { course_id: @course.id, id: @file.id, verifier: @file.uuid }, format: "json"
         expect(response).to be_successful
-        expect(json_parse["attachment"]).to_not be_nil
+        expect(json_parse["attachment"]).not_to be_nil
         expect(json_parse["attachment"]["canvadoc_session_url"]).to eq "stubby"
         expect(json_parse["attachment"]["md5"]).to be_nil
       end
@@ -327,7 +387,7 @@ describe FilesController do
         verifier = Attachments::Verification.new(@file).verifier_for_user(nil)
         get "show", params: { course_id: @course.id, id: @file.id, verifier: }, format: "json"
         expect(response).to be_successful
-        expect(json_parse["attachment"]).to_not be_nil
+        expect(json_parse["attachment"]).not_to be_nil
         expect(json_parse["attachment"]["md5"]).to be_nil
       end
 
@@ -744,7 +804,7 @@ describe FilesController do
     it "forces download when download_frd is set" do
       user_session(@teacher)
       # this call should happen inside of FilesController#send_attachment
-      expect_any_instance_of(FilesController).to receive(:send_stored_file).with(@file, false)
+      expect_any_instance_of(FilesController).to receive(:send_stored_file).with(@file, inline: false)
       get "show", params: { course_id: @course.id, id: @file.id, download: 1, verifier: @file.uuid, download_frd: 1 }
     end
 
@@ -1235,6 +1295,72 @@ describe FilesController do
     end
   end
 
+  describe "GET 'show' study_assist feature" do
+    before :once do
+      course_file
+    end
+
+    before do
+      user_session(@student)
+    end
+
+    context "when enabled" do
+      before { @course.enable_feature!(:study_assist) }
+
+      it "sets study_assist in FEATURES" do
+        get "show", params: { course_id: @course.id, id: @file.id }
+        expect(assigns[:js_env][:FEATURES][:study_assist]).to be true
+      end
+
+      it "sets FILE_ID to the attachment id" do
+        get "show", params: { course_id: @course.id, id: @file.id }
+        expect(assigns[:js_env][:FILE_ID]).to eq @file.id.to_s
+      end
+
+      it "sets COURSE_ID to the course id" do
+        get "show", params: { course_id: @course.id, id: @file.id }
+        expect(assigns[:js_env][:COURSE_ID]).to eq @course.id.to_s
+      end
+
+      it "sets STUDY_ASSIST_TOOLS with all tools enabled by default" do
+        get "show", params: { course_id: @course.id, id: @file.id }
+        expect(assigns[:js_env][:STUDY_ASSIST_TOOLS]).to eq ["Summarize", "Quiz me", "Flashcards"]
+      end
+
+      it "excludes tools when their feature flag is disabled" do
+        @course.disable_feature!(:study_assist_quiz_me)
+        get "show", params: { course_id: @course.id, id: @file.id }
+        expect(assigns[:js_env][:STUDY_ASSIST_TOOLS]).to eq %w[Summarize Flashcards]
+      end
+
+      it "returns empty array when all tool flags are disabled" do
+        @course.disable_feature!(:study_assist_summarize)
+        @course.disable_feature!(:study_assist_quiz_me)
+        @course.disable_feature!(:study_assist_flashcards)
+        get "show", params: { course_id: @course.id, id: @file.id }
+        expect(assigns[:js_env][:STUDY_ASSIST_TOOLS]).to eq []
+      end
+
+      it "does not set study_assist for teachers" do
+        user_session(@teacher)
+        get "show", params: { course_id: @course.id, id: @file.id }
+        expect(assigns[:js_env].to_h.dig(:FEATURES, :study_assist)).to be_nil
+      end
+    end
+
+    context "when disabled" do
+      it "does not set FILE_ID" do
+        get "show", params: { course_id: @course.id, id: @file.id }
+        expect(assigns[:js_env].to_h).not_to have_key :FILE_ID
+      end
+
+      it "does not set STUDY_ASSIST_TOOLS" do
+        get "show", params: { course_id: @course.id, id: @file.id }
+        expect(assigns[:js_env].to_h).not_to have_key :STUDY_ASSIST_TOOLS
+      end
+    end
+  end
+
   describe "GET 'api_create_success'" do
     before do
       category = group_category
@@ -1266,6 +1392,22 @@ describe FilesController do
       attachment.update_attribute(:size, 51.megabytes)
       get "api_create_success", params: { id: attachment.id, uuid: attachment.uuid }, format: "json"
       expect(json_parse.fetch("message")).to eq "file size exceeds quota limits"
+    end
+
+    it "kicks off a SIS batch" do
+      account = Account.create!
+      batch = SisBatch.create!(account:,
+                               data: { import_type: "instructure_csv" },
+                               workflow_state: "initializing")
+      attachment = Attachment.create!(context: batch,
+                                      filename: "test.csv",
+                                      file_state: "deleted",
+                                      uploaded_data: StringIO.new("test"))
+
+      get "api_create_success", params: { id: attachment.id, uuid: attachment.uuid }, format: "json"
+
+      expect(response).to have_http_status(:ok)
+      expect(batch.reload).to be_created
     end
   end
 
@@ -1323,7 +1465,7 @@ describe FilesController do
         allow(HostUrl).to receive(:file_host).and_return("files.test")
         request.host = "files.test"
         @file.update_attribute(:content_type, "text/html")
-        handle = double(read: "hello")
+        handle = instance_double(StringIO, read: "hello")
         allow_any_instantiation_of(@file).to receive(:open).and_return(handle)
         get "show_relative", params: { file_id: @file.id, course_id: @course.id, file_path: @file.full_display_path, inline: 1, download: 1 }
         expect(response).to be_successful
@@ -1513,6 +1655,15 @@ describe FilesController do
         end
       end
     end
+
+    it "uses the secondary database for read queries" do
+      user_session(@student)
+      expect(Folder).to receive(:find_attachment_in_context_with_path).and_wrap_original do |original, *args|
+        expect(GuardRail.environment).to eq(:secondary)
+        original.call(*args)
+      end
+      get "show_relative", params: { course_id: @course.id, file_path: @file.full_display_path }
+    end
   end
 
   describe "PUT 'update'" do
@@ -1608,9 +1759,9 @@ describe FilesController do
       end
 
       it "requires authorization" do
-        delete "destroy", params: { course_id: @course.id, id: @file.id }
-        expect(response.body).to eql("{\"message\":\"Unauthorized to delete this file\"}")
-        expect(assigns[:attachment].file_state).to eq "available"
+        delete "destroy", params: { course_id: @course.id, id: @file.id }, format: :json
+        expect(response).to have_http_status :unauthorized
+        expect(@file.reload.file_state).to eq "available"
       end
 
       it "deletes file" do
@@ -1623,6 +1774,7 @@ describe FilesController do
     end
 
     it "refuses to delete a file in a submissions folder" do
+      user_session(@teacher)
       file = @student.attachments.create! display_name: "blah", uploaded_data: default_uploaded_data, folder: @student.submissions_folder
       delete "destroy", params: { user_id: @student.id, id: file.id }
       expect(response).to have_http_status :unauthorized
@@ -2338,6 +2490,30 @@ describe FilesController do
         expect(attachment.root_account_id).to eq account.global_id
       end
     end
+
+    it "accepts SisBatch as valid context and triggers callback" do
+      account = Account.create!
+      user = User.create!(name: "me")
+      batch = SisBatch.create!(account:, data: { import_type: "instructure_csv" }, workflow_state: "initializing")
+
+      expect_any_instantiation_of(batch).to receive(:file_upload_success_callback).and_call_original
+
+      post "api_capture", params: {
+        user_id: user.id,
+        context_type: "SisBatch",
+        context_id: batch.id,
+        token: @token,
+        name: "test.csv",
+        size: 1024,
+        quota_exempt: true,
+        content_type: "text/csv",
+        instfs_uuid: "test-uuid",
+        sha512: "test-hash"
+      }
+
+      expect(response).to have_http_status(:created)
+      expect(batch.reload).to be_created
+    end
   end
 
   describe "public_url" do
@@ -2365,9 +2541,9 @@ describe FilesController do
         user_session @teacher
       end
 
-      it "fails if no submission_id is given" do
+      it "allows a teacher to download an attachment if no submission_id is given" do
         get "public_url", params: { id: @attachment.id }
-        assert_unauthorized
+        expect(json_parse).to eq({ "public_url" => @attachment.public_url(secure: false) })
       end
 
       it "allows a teacher to download a student's submission" do
@@ -2587,22 +2763,31 @@ describe FilesController do
       user_session(@teacher)
       expect_any_instance_of(FilesController).to receive(:safe_send_file)
         .with(thumbnail.full_filename, content_type: thumbnail.content_type).and_return(nil)
-      expect { get :show_thumbnail, params: { id: thumbnail.id, location: "avatar_#{@teacher.id}" } }.not_to raise_error
+      expect { get :show_thumbnail, params: { id: thumbnail.id } }.not_to raise_error
     end
 
     it "returns unauthorized if not authorized" do
       local_storage!
-      allow_any_instance_of(FilesController).to receive(:authorized_action).and_return(false)
       user_session(user)
       get :show_thumbnail, params: { id: thumbnail.id }
       expect(response).to have_http_status(:unauthorized)
+    end
+
+    it "sends the thumbnail file is authorized by old UUID format" do
+      # TODO: remove when file_association_access FF is removed
+      local_storage!
+      @teacher.update(avatar_image_source: "attachment", avatar_image_url: "http://host.instructure.com/images/thumbnails/#{image.id}")
+      user_session(user)
+      expect_any_instance_of(FilesController).to receive(:safe_send_file)
+        .with(thumbnail.full_filename, content_type: thumbnail.content_type).and_return(nil)
+      expect { get :show_thumbnail, params: { id: thumbnail.id, uuid: thumbnail.uuid } }.not_to raise_error
     end
 
     it "sends the thumbnail file if authorized by location" do
       local_storage!
       @teacher.avatar_image_source = "attachment"
       @teacher.avatar_image_url =
-        "http://host.instructure.com/images/thumbnails/#{image.id}?location=avatar_#{@teacher.id}"
+        "http://host.instructure.com/images/thumbnails/#{image.id}"
       @teacher.save!
       user_session(user)
       expect_any_instance_of(FilesController).to receive(:safe_send_file)
@@ -2782,6 +2967,125 @@ describe FilesController do
         }
 
         expect(response).to have_http_status(:not_found)
+      end
+    end
+  end
+
+  describe "cross-domain file access monitoring" do
+    before :once do
+      course_with_student
+      @file = @course.attachments.create!(uploaded_data: io)
+      @root_account = @course.root_account
+      domain = @root_account.account_domains.build(host: "test.host")
+      domain.save!(validate: false)
+      other_account = Account.create!
+      other_domain = other_account.account_domains.build(host: "canvas.other.edu")
+      other_domain.save!(validate: false)
+    end
+
+    before do
+      user_session(@student)
+    end
+
+    context "when log_cross_domain_file_access is enabled" do
+      before do
+        Account.site_admin.enable_feature!(:log_cross_domain_file_access)
+        Account.site_admin.enable_feature!(:log_uuid_verifier_usage)
+      end
+
+      it "detects cross-domain referrer correctly" do
+        expect(InstStatsd::Statsd).to receive(:event).with(
+          "File accessed with UUID verifier",
+          anything,
+          hash_including(
+            type: "uuid_verifier_usage",
+            alert_type: :info
+          )
+        )
+        expect(InstStatsd::Statsd).to receive(:event).with(
+          "File accessed from different Canvas domain",
+          anything,
+          hash_including(
+            type: "cross_domain_file_access",
+            alert_type: :warning
+          )
+        )
+        request.env["HTTP_REFERER"] = "https://canvas.other.edu/path"
+        get :show, params: { id: @file.id, verifier: @file.uuid }
+      end
+
+      it "ignores same-domain referrers" do
+        expect(InstStatsd::Statsd).to receive(:event).with(
+          "File accessed with UUID verifier",
+          anything,
+          hash_including(
+            type: "uuid_verifier_usage",
+            alert_type: :info
+          )
+        )
+        expect(InstStatsd::Statsd).not_to receive(:event).with(
+          "File accessed from different Canvas domain",
+          anything,
+          anything
+        )
+
+        request.env["HTTP_REFERER"] = "http://test.host/courses/1"
+        get :show, params: { id: @file.id, verifier: @file.uuid }
+      end
+
+      it "handles missing referrer" do
+        expect(InstStatsd::Statsd).to receive(:event).with(
+          "File accessed with UUID verifier",
+          anything,
+          hash_including(
+            type: "uuid_verifier_usage",
+            alert_type: :info
+          )
+        )
+        expect(InstStatsd::Statsd).not_to receive(:event).with(
+          "File accessed from different Canvas domain",
+          anything,
+          anything
+        )
+
+        get :show, params: { id: @file.id, verifier: @file.uuid }
+      end
+
+      it "handles malformed referrer URIs gracefully" do
+        expect(InstStatsd::Statsd).not_to receive(:event)
+
+        request.env["HTTP_REFERER"] = "not a valid uri"
+        get :show, params: { id: @file.id, verifier: @file.uuid }
+      end
+    end
+
+    context "when log_cross_domain_file_access is disabled" do
+      it "does not emit a cross-domain event even with a foreign Canvas referrer" do
+        expect(InstStatsd::Statsd).not_to receive(:event).with(
+          "File accessed from different Canvas domain",
+          anything,
+          anything
+        )
+
+        request.env["HTTP_REFERER"] = "https://canvas.other.edu/path"
+        get :show, params: { id: @file.id, verifier: @file.uuid }
+      end
+    end
+
+    context "when log_uuid_verifier_usage is disabled" do
+      before do
+        Account.site_admin.enable_feature!(:log_cross_domain_file_access)
+      end
+
+      it "does not emit a uuid_verifier_usage event" do
+        expect(InstStatsd::Statsd).not_to receive(:event).with(
+          "File accessed with UUID verifier",
+          anything,
+          anything
+        )
+
+        request.env["HTTP_REFERER"] = "https://canvas.other.edu/path"
+        get :show, params: { id: @file.id, verifier: @file.uuid }
       end
     end
   end

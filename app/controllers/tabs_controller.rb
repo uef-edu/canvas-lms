@@ -96,10 +96,26 @@ class TabsController < ApplicationController
   #         "type": "external"
   #       },
   #       {
+  #         "html_url": "https://example.com/resource",
+  #         "id": "nav_menu_link_5",
+  #         "label": "External Resource",
+  #         "position": 3,
+  #         "visibility": "public",
+  #         "type": "external"
+  #       },
+  #       {
+  #         "html_url": "/courses/1/pages/some_wiki_page",
+  #         "id": "nav_menu_link_6",
+  #         "label": "Instructor-/Admin-added link to resource",
+  #         "position": 4,
+  #         "visibility": "public",
+  #         "type": "external"
+  #       },
+  #       {
   #         "html_url": "/courses/1/grades",
   #         "id": "grades",
   #         "label": "Grades",
-  #         "position": 3,
+  #         "position": 5,
   #         "hidden": true
   #         "visibility": "admins"
   #         "type": "internal"

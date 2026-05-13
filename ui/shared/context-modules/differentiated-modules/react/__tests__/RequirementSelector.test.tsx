@@ -32,9 +32,9 @@ describe('RequirementSelector', () => {
       {id: '1', name: 'Module 1', resource: 'page'},
       {id: '2', name: 'Module 2', resource: 'page'},
     ],
-    onDropRequirement: jest.fn(),
-    onUpdateRequirement: jest.fn(),
-    validatePointsInput: jest.fn(),
+    onDropRequirement: vi.fn(),
+    onUpdateRequirement: vi.fn(),
+    validatePointsInput: vi.fn(),
     pointsInputMessages: [],
     index: 0,
   }
@@ -44,7 +44,7 @@ describe('RequirementSelector', () => {
 
   beforeEach(() => {
     document.body.innerHTML = `<div id="flash_screenreader_holder" role="alert"></div>`
-    jest.resetAllMocks()
+    vi.resetAllMocks()
   })
 
   it('renders', () => {
@@ -86,6 +86,24 @@ describe('RequirementSelector', () => {
     const {getByText} = renderComponent()
     getByText('Remove Module 1 Content Requirement').click()
     expect(props.onDropRequirement).toHaveBeenCalledWith(0)
+  })
+
+  it('selects the correct item by id when two items share the same name', () => {
+    // file and assignment both named "New Assignment" — assignment must win
+    const {getByDisplayValue, getAllByText} = renderComponent({
+      requirement: {id: '1', name: 'New Assignment', resource: 'file', type: 'view'},
+      moduleItems: [
+        {id: '1', name: 'New Assignment', resource: 'file'},
+        {id: '2', name: 'New Assignment', resource: 'assignment'},
+      ],
+    })
+    getByDisplayValue('New Assignment').click()
+    // two options with the same label — click the second one (the assignment)
+    getAllByText('New Assignment')[1].click()
+    expect(props.onUpdateRequirement).toHaveBeenCalledWith(
+      {id: '2', name: 'New Assignment', resource: 'assignment', type: 'view'},
+      0,
+    )
   })
 
   const minScoreTests = () => {

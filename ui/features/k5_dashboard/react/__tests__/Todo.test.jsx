@@ -17,16 +17,25 @@
  */
 
 import React from 'react'
-import {act, render, waitForElementToBeRemoved} from '@testing-library/react'
+import {act, render, waitFor, waitForElementToBeRemoved} from '@testing-library/react'
 import moment from 'moment-timezone'
 import {ignoreTodo} from '@canvas/k5/react/utils'
-import {destroyContainer} from '@canvas/alerts/react/FlashAlert'
+import {destroyContainer, showFlashError} from '@instructure/platform-alerts'
+
+vi.mock('@instructure/platform-alerts', async () => {
+  const actual = await vi.importActual('@instructure/platform-alerts')
+  return {
+    ...actual,
+    destroyContainer: vi.fn(),
+    showFlashError: vi.fn().mockReturnValue(vi.fn()),
+  }
+})
 
 import {MOCK_TODOS} from './mocks'
 import Todo from '../Todo'
 
-jest.mock('moment-timezone')
-jest.mock('@canvas/k5/react/utils')
+vi.mock('moment-timezone')
+vi.mock('@canvas/k5/react/utils')
 
 const timeZone = 'Europe/Dublin'
 
@@ -44,7 +53,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  jest.resetAllMocks()
+  vi.resetAllMocks()
   // Clear flash alerts between tests
   destroyContainer()
 })
@@ -69,6 +78,13 @@ describe('Todo', () => {
     const props = {...defaultProps, assignment: {...defaultProps.assignment, points_possible: 1}}
     const singlePoint = render(<Todo {...props} />)
     expect(singlePoint.getByText('1 point')).toBeInTheDocument()
+  })
+
+  it('renders without crashing when points_possible is null', () => {
+    const props = {...defaultProps, assignment: {...defaultProps.assignment, points_possible: null}}
+    const {queryByText} = render(<Todo {...props} />)
+    expect(queryByText('Grade Plant a plant')).toBeInTheDocument()
+    expect(queryByText(/points/)).not.toBeInTheDocument()
   })
 
   it('renders the due date without the year if it is in the current year', () => {
@@ -160,7 +176,7 @@ describe('Todo', () => {
     expect(queryByText('Plant some plants')).not.toBeInTheDocument()
   })
   // Skip with LX-2092
-  it.skip('displays a button that ignores the associated todo and removes it from the rendered list', async () => {
+  it('displays a button that ignores the associated todo and removes it from the rendered list', async () => {
     ignoreTodo.mockResolvedValue({ignored: true})
 
     const {getByRole, queryByText} = render(<Todo {...defaultProps} />)
@@ -175,12 +191,18 @@ describe('Todo', () => {
   it('shows a flash error if ignoring a todo fails', async () => {
     ignoreTodo.mockRejectedValue(new Error('Uh oh'))
 
-    const {findAllByText, getByRole} = render(<Todo {...defaultProps} />)
+    const {getByRole} = render(<Todo {...defaultProps} />)
     const ignoreButton = getByRole('button', {name: 'Ignore Plant a plant until new submission'})
 
-    act(() => ignoreButton.click())
+    const handler = () => {}
+    process.prependListener('unhandledRejection', handler)
 
-    expect((await findAllByText('Failed to ignore assignment'))[0]).toBeInTheDocument()
+    ignoreButton.click()
+    await waitFor(() => {
+      expect(showFlashError).toHaveBeenCalledWith('Failed to ignore assignment')
+    })
+
+    process.removeListener('unhandledRejection', handler)
   })
 
   it('adds target attribute to link if openInNewTab is true', () => {

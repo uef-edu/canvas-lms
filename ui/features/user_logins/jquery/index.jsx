@@ -17,7 +17,7 @@
  */
 
 import {useScope as createI18nScope} from '@canvas/i18n'
-import {createRoot} from 'react-dom/client'
+import {render} from '@canvas/react'
 import SuspendedIcon from '../react/SuspendedIcon'
 import $ from 'jquery'
 import '@canvas/jquery/jquery.instructure_forms' /* formSubmit, fillFormData, formErrors */
@@ -87,9 +87,8 @@ ready(() => {
     const defaultPolicy = ENV.PASSWORD_POLICY
     const userId = ENV.USER_ID
     const isEdit = Boolean(pseudonym)
-    const root = createRoot(mountPoint)
 
-    root.render(
+    const root = render(
       <AddEditPseudonym
         pseudonym={pseudonym}
         canManageSis={canManageSis}
@@ -111,6 +110,7 @@ ready(() => {
           root.unmount()
         }}
       />,
+      mountPoint,
     )
   }
 
@@ -216,8 +216,7 @@ ready(() => {
       const innerDiv = document.createElement('div')
       icon.replaceChildren(innerDiv)
 
-      const root = createRoot(innerDiv)
-      root.render(<SuspendedIcon login={login} />)
+      render(<SuspendedIcon login={login} />, innerDiv)
     }
 
     function unsetSuspend(id) {

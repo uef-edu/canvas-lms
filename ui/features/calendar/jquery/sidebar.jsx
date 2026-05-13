@@ -17,9 +17,9 @@
  */
 
 import $ from 'jquery'
-import {intersection} from 'lodash'
+import {intersection} from 'es-toolkit/compat'
 import React from 'react'
-import ReactDOM from 'react-dom'
+import {legacyRender, legacyUnmountComponentAtNode} from '@canvas/react'
 import {useScope as createI18nScope} from '@canvas/i18n'
 import decodeFromHex from '@canvas/util/decodeFromHex'
 import userSettings from '@canvas/user-settings'
@@ -29,7 +29,7 @@ import 'jquery-kyle-menu'
 import '@canvas/jquery/jquery.instructure_misc_helpers'
 import 'jquery-tinypubsub'
 import AccountCalendarsModal from '../react/AccountCalendarsModal'
-import {showFlashAlert} from '@canvas/alerts/react/FlashAlert'
+import {showFlashAlert} from '@instructure/platform-alerts'
 import {CalendarColorPicker} from '../react/CalendarColorPicker'
 
 const I18n = createI18nScope('calendar_sidebar')
@@ -172,11 +172,9 @@ function generateEmptyState() {
 
 function setupCalendarFeedsWithSpecialAccessibilityConsiderationsForNVDA() {
   const $calendarFeedModalContent = $('#calendar_feed_box')
-  const $calendarFeedModalOpener = $('#calendar-feed .dialog_opener')
-  // We need to get the modal initialized early rather than wait for
-  // .dialog_opener to open it so we can attach the event to it the first
-  // time.  We extend so that we still get all the magic that .dialog_opener
-  // should give us.
+  const $calendarFeedModalOpener = $('#calendar-feed-button')
+  // We need to initialize the modal early so we can attach accessibility
+  // enhancements to it.
   $calendarFeedModalContent.dialog(
     $.extend(
       {
@@ -203,7 +201,7 @@ function setupCalendarFeedsWithSpecialAccessibilityConsiderationsForNVDA() {
         },
         close: () => {
           forceScreenreaderToReparse($('#application')[0])
-          $('#calendar-feed .dialog_opener').focus()
+          $('#calendar-feed-button').focus()
         },
       },
       $calendarFeedModalOpener.data('dialogOpts'),
@@ -216,9 +214,9 @@ function setupCalendarFeedsWithSpecialAccessibilityConsiderationsForNVDA() {
 }
 
 function setupAccountCalendarDialog(getSelectedOtherCalendars, onOtherCalendarsChange) {
-  ReactDOM.unmountComponentAtNode($(`#manage-accounts-btn`)[0])
+  legacyUnmountComponentAtNode($(`#manage-accounts-btn`)[0])
 
-  ReactDOM.render(
+  legacyRender(
     <AccountCalendarsModal
       getSelectedOtherCalendars={getSelectedOtherCalendars}
       onSave={onOtherCalendarsChange}
@@ -353,8 +351,8 @@ export default function sidebar(contexts, selectedContexts, dataSource, onContex
     const assetString = $(this).closest('li').data('context')
 
     // ensures previously picked color clears
-    ReactDOM.unmountComponentAtNode($(`#calendars_color_picker_holder`)[0])
-    ReactDOM.render(
+    legacyUnmountComponentAtNode($(`#calendars_color_picker_holder`)[0])
+    legacyRender(
       <CalendarColorPicker assetString={assetString} />,
       $(`#calendars_color_picker_holder`)[0],
     )

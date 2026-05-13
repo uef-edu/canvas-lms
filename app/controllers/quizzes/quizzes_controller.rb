@@ -39,7 +39,7 @@ class Quizzes::QuizzesController < ApplicationController
 
   before_action :load_canvas_career, only: [:index, :show]
 
-  before_action :rce_js_env, only: %i[show new edit]
+  before_action :rce_js_env, only: %i[index show new edit]
 
   include K5Mode
 
@@ -59,8 +59,9 @@ class Quizzes::QuizzesController < ApplicationController
                   submission_versions
                   submission_html
                 ],
-                unless: -> { ams_integration_enabled? }
+                unless: :ams_integration_enabled?
   before_action :set_download_submission_dialog_title, only: [:show, :statistics]
+  skip_before_action :require_user, only: %i[index show]
   after_action :lock_results, only: [:show, :submission_html]
   # The number of questions that can display "details". After this number, the "Show details" option is disabled
   # and the data is not even loaded.
@@ -98,17 +99,18 @@ class Quizzes::QuizzesController < ApplicationController
         if can_manage
           Quizzes::Quiz.preload_can_unpublish(scoped_quizzes_index)
         end
-        quiz_index.each_with_object({}) do |quiz, quiz_user_permissions|
-          quiz_user_permissions[quiz.id] = {
-            can_update: can_manage,
-            can_unpublish: can_manage && quiz.can_unpublish?
-          }
+        quiz_index.to_h do |quiz|
+          [quiz.id,
+           {
+             can_update: can_manage,
+             can_unpublish: can_manage && quiz.can_unpublish?
+           }]
         end
       end
 
       practice_quizzes   = scoped_quizzes_index.select { |q| q.quiz_type == QUIZ_TYPE_PRACTICE }
       surveys            = scoped_quizzes_index.select { |q| QUIZ_TYPE_SURVEYS.include?(q.quiz_type) }
-      if @context.root_account.feature_enabled?(:newquizzes_on_quiz_page) && Account.site_admin.feature_enabled?(:new_quizzes_surveys)
+      if @context.root_account.feature_enabled?(:newquizzes_on_quiz_page)
         surveys += scoped_new_quizzes_index.select do |q|
           Assignment::QUIZZES_NEXT_SURVEY_TYPES.include?(q.settings&.dig("new_quizzes", "type"))
         end
@@ -123,7 +125,9 @@ class Quizzes::QuizzesController < ApplicationController
                               permissions: quiz_options,
                               master_course_status: mc_status,
                               skip_date_overrides: true,
-                              skip_lock_tests: true
+                              skip_lock_tests: true,
+                              skip_description: true,
+                              skip_permissions: @context.user_is_student?(@current_user)
                             }]
       max_name_length = AssignmentUtil.assignment_max_name_length(@context)
       sis_name = AssignmentUtil.post_to_sis_friendly_name(@context)
@@ -163,7 +167,6 @@ class Quizzes::QuizzesController < ApplicationController
           # Will need to update consumers of this in the UI to bring down
           # this permissions check as well
           DIRECT_SHARE_ENABLED: @context.grants_right?(@current_user, session, :direct_share),
-          new_quizzes_surveys_enabled: Account.site_admin.feature_enabled?(:new_quizzes_surveys),
         },
         quiz_menu_tools: external_tools_display_hashes(:quiz_menu),
         quiz_index_menu_tools: external_tools_display_hashes(:quiz_index_menu),
@@ -259,7 +262,7 @@ class Quizzes::QuizzesController < ApplicationController
       @submission = get_submission
 
       @just_graded = false
-      if @submission&.needs_grading?(!!params[:take])
+      if @submission&.needs_grading?(strict: !!params[:take])
         GuardRail.activate(:primary) do
           Quizzes::SubmissionGrader.new(@submission).grade_submission(
             finished_at: @submission.finished_at_fallback
@@ -270,11 +273,11 @@ class Quizzes::QuizzesController < ApplicationController
       end
       if @submission
         upload_url = api_v1_quiz_submission_files_path(course_id: @context.id, quiz_id: @quiz.id)
-        js_env UPLOAD_URL: upload_url
-        js_env SUBMISSION_VERSIONS_URL: course_quiz_submission_versions_url(@context, @quiz) unless hide_quiz?
+        js_env({ UPLOAD_URL: upload_url })
+        js_env({ SUBMISSION_VERSIONS_URL: course_quiz_submission_versions_url(@context, @quiz) }) unless hide_quiz?
         if !@submission.preview? && (!@js_env || !@js_env[:QUIZ_SUBMISSION_EVENTS_URL])
           events_url = api_v1_course_quiz_submission_events_url(@context, @quiz, @submission)
-          js_env QUIZ_SUBMISSION_EVENTS_URL: events_url
+          js_env({ QUIZ_SUBMISSION_EVENTS_URL: events_url })
         end
       end
 
@@ -299,7 +302,7 @@ class Quizzes::QuizzesController < ApplicationController
         VALID_DATE_RANGE: CourseDateRange.new(@context),
         HAS_GRADING_PERIODS: @context.grading_periods?,
         DUE_DATE_REQUIRED_FOR_ACCOUNT: AssignmentUtil.due_date_required_for_account?(@context),
-        PERMISSIONS: { manage_rubrics: @context.grants_right?(@current_user, session, :manage_rubrics) },
+        PERMISSIONS: { manage_rubrics: @quiz.assignment&.can_manage_rubrics?(@current_user, session) || false },
       }
       set_section_list_js_env
       append_sis_data(hash)
@@ -383,7 +386,7 @@ class Quizzes::QuizzesController < ApplicationController
       assign_to_tags = @context.account.allow_assign_to_differentiation_tags?
 
       hash = {
-        ASSIGNMENT_ID: @assignment.present? ? @assignment.id : nil,
+        ASSIGNMENT_ID: @assignment.presence&.id,
         ASSIGNMENT_OVERRIDES: assignment_overrides_json(@quiz.overrides_for(@current_user,
                                                                             ensure_set_not_empty: true),
                                                         @current_user,
@@ -530,7 +533,7 @@ class Quizzes::QuizzesController < ApplicationController
       created_quiz = @quiz.created?
 
       Assignment.suspend_due_date_caching do
-        @quiz.with_versioning(false) do
+        @quiz.without_versioning do
           @quiz.did_edit if @quiz.created?
         end
       end
@@ -561,7 +564,7 @@ class Quizzes::QuizzesController < ApplicationController
 
             auto_publish = @quiz.published?
 
-            @quiz.with_versioning(auto_publish) do
+            @quiz.with_versioning(enabled: auto_publish) do
               # using attributes= here so we don't need to make an extra
               # database call to get the times right after save!
               @quiz.attributes = quiz_params
@@ -588,7 +591,7 @@ class Quizzes::QuizzesController < ApplicationController
             # quiz.rb restricts all assignment broadcasts if notify_of_update is
             # false, so we do the same here
             if @quiz.assignment.present? && old_assignment && (notify_of_update || old_assignment.due_at != @quiz.assignment.due_at)
-              @quiz.assignment.do_notifications!(old_assignment, notify_of_update)
+              @quiz.assignment.do_notifications!(old_assignment, notify: notify_of_update)
             end
             @quiz.reload
 
@@ -775,9 +778,9 @@ class Quizzes::QuizzesController < ApplicationController
         return
       end
       if params[:score_updated]
-        js_env SCORE_UPDATED: true
+        js_env({ SCORE_UPDATED: true })
       end
-      js_env GRADE_BY_QUESTION: @current_user&.preferences&.dig(:enable_speedgrader_grade_by_question)
+      js_env({ GRADE_BY_QUESTION: @current_user&.preferences&.dig(:enable_speedgrader_grade_by_question) })
       if authorized_action(@submission, @current_user, :read)
         if @current_user && !@quiz.visible_to_user?(@current_user)
           flash.now[:notice] = t "notices.submission_doesnt_count", "This quiz will no longer count towards your grade."
@@ -798,7 +801,9 @@ class Quizzes::QuizzesController < ApplicationController
           @version_number = params[:version].to_i
           @unversioned_submission = @submission
           @submission = @versions.detect { |s| s.version_number >= @version_number }
-          @submission ||= @unversioned_submission.versions.get(params[:version]).model
+          @submission ||= @unversioned_submission.versions.get(params[:version])&.model
+          raise ActiveRecord::RecordNotFound unless @submission
+
           @current_version = (@current_submission.version_number == @submission.version_number)
           @version_number = "current" if @current_version
         end
@@ -864,7 +869,7 @@ class Quizzes::QuizzesController < ApplicationController
       @banks_hash = get_banks(@quiz)
 
       add_crumb(@quiz.title, named_context_url(@context, :context_quiz_url, @quiz))
-      js_env(quiz_max_combination_count: QUIZ_MAX_COMBINATION_COUNT)
+      js_env({ quiz_max_combination_count: QUIZ_MAX_COMBINATION_COUNT })
       render
     end
   end
@@ -994,7 +999,7 @@ class Quizzes::QuizzesController < ApplicationController
       user_code = @current_user
       user_code = nil if preview
       user_code ||= temporary_user_code
-      @submission = @quiz.generate_submission(user_code, !!preview)
+      @submission = @quiz.generate_submission(user_code, preview: !!preview)
       log_asset_access(@quiz, "quizzes", "quizzes", "participate")
     end
     if quiz_submission_active?
@@ -1027,15 +1032,15 @@ class Quizzes::QuizzesController < ApplicationController
 
     if !@submission.preview? && (!@js_env || !@js_env[:QUIZ_SUBMISSION_EVENTS_URL])
       events_url = api_v1_course_quiz_submission_events_url(@context, @quiz, @submission)
-      js_env QUIZ_SUBMISSION_EVENTS_URL: events_url
+      js_env({ QUIZ_SUBMISSION_EVENTS_URL: events_url })
     end
 
-    js_env IS_PREVIEW: true if @submission.preview?
+    js_env({ IS_PREVIEW: true }) if @submission.preview?
 
     @quiz_presenter = Quizzes::TakeQuizPresenter.new(@quiz, @submission, params)
     if params[:persist_headless]
       add_meta_tag(name: "viewport", id: "vp", content: "initial-scale=1.0,user-scalable=yes,width=device-width")
-      js_env MOBILE_UI: true
+      js_env({ MOBILE_UI: true })
     end
     render :take_quiz
   end
@@ -1053,7 +1058,7 @@ class Quizzes::QuizzesController < ApplicationController
                                                      quiz: @quiz,
                                                      user: @current_user,
                                                      session:,
-                                                     remote_ip: request.remote_ip,
+                                                     remote_ip: quiz_client_ip,
                                                      access_code: params[:access_code])
 
     if params[:take]
@@ -1079,8 +1084,8 @@ class Quizzes::QuizzesController < ApplicationController
   end
 
   def set_download_submission_dialog_title
-    js_env SUBMISSION_DOWNLOAD_DIALOG_TITLE: I18n.t("#quizzes.download_all_quiz_file_upload_submissions",
-                                                    "Download All Quiz File Upload Submissions")
+    js_env({ SUBMISSION_DOWNLOAD_DIALOG_TITLE: I18n.t("#quizzes.download_all_quiz_file_upload_submissions",
+                                                      "Download All Quiz File Upload Submissions") })
   end
 
   # Handler for quiz option: one_time_results
@@ -1132,11 +1137,7 @@ class Quizzes::QuizzesController < ApplicationController
       return quizzes_json(old_quizzes, *serializer_options)
     end
 
-    new_quizzes = if Account.site_admin.feature_enabled?(:new_quizzes_surveys)
-                    scoped_new_quizzes_index.reject { |q| Assignment::QUIZZES_NEXT_SURVEY_TYPES.include?(q.settings&.dig("new_quizzes", "type")) }
-                  else
-                    scoped_new_quizzes_index
-                  end
+    new_quizzes = scoped_new_quizzes_index.reject { |q| Assignment::QUIZZES_NEXT_SURVEY_TYPES.include?(q.settings&.dig("new_quizzes", "type")) }
 
     quizzes_next_json(
       sort_quizzes(old_quizzes + new_quizzes),
@@ -1161,10 +1162,10 @@ class Quizzes::QuizzesController < ApplicationController
   end
 
   def render_ams_service
-    js_env(
-      context_url: context_url(@context, :context_quizzes_url),
-      PERMISSIONS: { manage_rubrics: @context.grants_right?(@current_user, session, :manage_rubrics) }
-    )
+    js_env({
+             context_url: named_context_url(@context, :context_quizzes_url),
+             PERMISSIONS: { manage_rubrics: @context.grants_right?(@current_user, session, :manage_assignments_edit) }
+           })
     enhanced_rubrics_context_js_env
     remote_env(ams:
       {
@@ -1173,6 +1174,7 @@ class Quizzes::QuizzesController < ApplicationController
       })
 
     css_bundle :enhanced_rubrics
+    @body_classes << "full-width padless-content"
     render html: '<div id="ams_container"></div>'.html_safe, layout: true
   end
 
@@ -1250,14 +1252,16 @@ class Quizzes::QuizzesController < ApplicationController
   end
 
   def set_section_list_js_env
-    js_env SECTION_LIST: @context.course_sections.active.map { |section|
-      {
-        id: section.id,
-        name: section.name,
-        start_at: section.start_at,
-        end_at: section.end_at,
-        override_course_and_term_dates: section.restrict_enrollments_to_section_dates
-      }
-    }
+    js_env({
+             SECTION_LIST: @context.course_sections.active.map do |section|
+               {
+                 id: section.id,
+                 name: section.name,
+                 start_at: section.start_at,
+                 end_at: section.end_at,
+                 override_course_and_term_dates: section.restrict_enrollments_to_section_dates
+               }
+             end
+           })
   end
 end

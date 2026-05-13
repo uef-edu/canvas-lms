@@ -17,9 +17,9 @@
  */
 
 import {useState, useCallback, useMemo, useEffect, useRef} from 'react'
-import {useQuery} from '@tanstack/react-query'
+import {useQuery, keepPreviousData} from '@tanstack/react-query'
 import {fetchPlannerItems, type FetchPlannerItemsParams} from '../api'
-import type {PlannerItem} from '../types'
+import type {PlannerItem, PlannerOverride} from '../types'
 import {widgetDashboardPersister} from '../../../../utils/persister'
 
 export const PLANNER_ITEMS_QUERY_KEY = 'plannerItems'
@@ -29,6 +29,13 @@ interface UsePlannerItemsOptions {
   startDate?: string
   endDate?: string
   order?: 'asc' | 'desc'
+  filter?:
+    | 'new_activity'
+    | 'ungraded_todo_items'
+    | 'all_ungraded_todo_items'
+    | 'incomplete_items'
+    | 'complete_items'
+  observedUserId?: string | null
 }
 
 interface UsePlannerItemsResult {
@@ -38,12 +45,18 @@ interface UsePlannerItemsResult {
   goToPage: (page: number) => void
   resetPagination: () => void
   isLoading: boolean
+  isPaginationLoading: boolean
   error: Error | null
   refetch: () => void
+  updateItemOverride: (
+    plannableId: string,
+    plannableType: string,
+    override: PlannerOverride,
+  ) => void
 }
 
 export function usePlannerItems(options: UsePlannerItemsOptions = {}): UsePlannerItemsResult {
-  const {perPage = 5, startDate, endDate, order = 'asc'} = options
+  const {perPage = 5, startDate, endDate, order = 'asc', filter, observedUserId} = options
   const [currentPageIndex, setCurrentPageIndex] = useState(0)
   const [allPages, setAllPages] = useState<PlannerItem[][]>([])
   const [nextUrls, setNextUrls] = useState<(string | null)[]>([])
@@ -58,13 +71,16 @@ export function usePlannerItems(options: UsePlannerItemsOptions = {}): UsePlanne
 
     if (startDate) params.start_date = startDate
     if (endDate) params.end_date = endDate
+    if (filter) params.filter = filter
+    if (observedUserId) params.observed_user_id = observedUserId
 
     return params
-  }, [perPage, startDate, endDate, order])
+  }, [perPage, startDate, endDate, order, filter, observedUserId])
 
   const {
     data,
     isLoading,
+    isFetching,
     error,
     refetch: refetchInitial,
   } = useQuery({
@@ -74,6 +90,7 @@ export function usePlannerItems(options: UsePlannerItemsOptions = {}): UsePlanne
     retry: 2,
     persister: widgetDashboardPersister,
     refetchOnMount: false,
+    placeholderData: keepPreviousData,
   })
 
   useEffect(() => {
@@ -113,7 +130,9 @@ export function usePlannerItems(options: UsePlannerItemsOptions = {}): UsePlanne
               return newUrls
             })
           })
-          .catch(err => console.error('Failed to load page:', err))
+          .catch(() => {
+            // Silently fail pagination - error will be caught by main query
+          })
           .finally(() => {
             setIsLoadingMore(false)
             loadingPageRef.current = null
@@ -138,8 +157,27 @@ export function usePlannerItems(options: UsePlannerItemsOptions = {}): UsePlanne
     refetchInitial()
   }, [refetchInitial])
 
-  const currentPage = allPages[currentPageIndex] || []
-  const hasMorePages = currentPageIndex < nextUrls.length && !!nextUrls[currentPageIndex]
+  const updateItemOverride = useCallback(
+    (plannableId: string, plannableType: string, override: PlannerOverride) => {
+      setAllPages(prev =>
+        prev.map(page =>
+          page.map(item =>
+            item.plannable_id === plannableId && item.plannable_type === plannableType
+              ? {...item, planner_override: override}
+              : item,
+          ),
+        ),
+      )
+    },
+    [],
+  )
+
+  const currentPage = allPages[currentPageIndex] || allPages[allPages.length - 1] || []
+  const lastLoadedPageIndex = allPages.length - 1
+  const hasMorePages =
+    lastLoadedPageIndex >= 0 &&
+    lastLoadedPageIndex < nextUrls.length &&
+    !!nextUrls[lastLoadedPageIndex]
   const totalPages = allPages.length + (hasMorePages ? 1 : 0)
 
   return {
@@ -148,8 +186,10 @@ export function usePlannerItems(options: UsePlannerItemsOptions = {}): UsePlanne
     totalPages,
     goToPage,
     resetPagination,
-    isLoading: isLoading || isLoadingMore,
+    isLoading,
+    isPaginationLoading: (isFetching || isLoadingMore) && allPages.length > 0,
     error: error as Error | null,
     refetch,
+    updateItemOverride,
   }
 }

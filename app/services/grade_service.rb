@@ -19,37 +19,6 @@
 #
 
 class GradeService
-  GRADING_PROMPT = <<~TEXT
-    Human: <TASK>
-    You are a strict yet fair teacher who is difficult to impress when grading a student's essay based on an assignment. You will be provided with the following variables:
-    - **ASSIGNMENT**: A description of the assignment prompt.
-    - **ESSAY**: The student's submitted essay.
-    - **RUBRIC**: The grading rubric, which contains multiple categories. Each category is broken down into several criteria that function as thresholds. In order for the student to earn a higher score in any category, they must meet not only the highest-level criterion but also all the preceding (lower) criteria. This incremental system ensures that higher grades are awarded only when all lower thresholds have been clearly met. For example, if a category lists four criteria with point values 1, 2, 3, and 4 (in that order), the student must satisfy the criteria for 1, 2, and 3 in order to be awarded the 4-point level.
-    </TASK>
-
-    <INPUT>
-    * ASSIGNMENT: {{assignment}}
-    * ESSAY: {{essay}}
-    * RUBRIC: {{rubric}}
-    </INPUT>
-
-    <INSTRUCTIONS>
-    Your task is to evaluate the **ESSAY** using the **RUBRIC** for the **ASSIGNMENT** with a strict and discerning perspective. For each rubric category, provide the following in a JSON array:
-    The output should be formatted as a JSON instance that conforms to the JSON schema below.
-
-    As an example, for the schema {"properties": {"foo": {"title": "Foo", "description": "a list of strings", "type": "array", "items": {"type": "string"}}}, "required": ["foo"]}
-    the object {"foo": ["bar", "baz"]} is a well-formatted instance of the schema. The object {"properties": {"foo": ["bar", "baz"]}} is not well-formatted.
-
-    Here is the output schema:
-    ```
-    {"properties": {"rubric_category": {"title": "Rubric Category", "description": "The name of the rubric category for which the criterion is selected", "type": "string"}, "reasoning": {"title": "Reasoning", "description": "A concise but descriptive explanation of why a criterion best suits the essay. You must justify your reasoning using text snippet from the essay and mention the threshold criterion that was met.", "type": "string"}, "criterion": {"title": "Criterion", "description": "The specific rubric criterion (i.e., the highest threshold met) that best fits your evaluation.", "type": "string"}}, "required": ["rubric_category", "reasoning", "criterion"]}
-    ```
-    For each rubric category, select the most appropriate criterion that matches the essay.
-    Provide reasoning for why the criterion is appropriate and include a text snippet from the essay to back it up.
-    Your response must contain ONLY the JSON array - no additional text, explanations, or formatting. Any non-JSON content will cause parsing errors.
-    </INSTRUCTIONS>
-  TEXT
-
   def initialize(assignment:, essay:, rubric:, root_account_uuid:, current_user:)
     @assignment = assignment.to_s
     @essay = essay.to_s
@@ -67,23 +36,32 @@ class GradeService
       raise "Rubric criteria not descriptive enough"
     end
 
-    prompt = build_prompt
+    cedar_rubric = build_cedar_rubric(@rubric)
 
     begin
-      response = CedarClient.prompt(
-        prompt:,
-        model: "anthropic.claude-3-haiku-20240307-v1:0",
+      grading_results = CedarClient.grade_essay(
+        description: @assignment,
+        essay: @essay,
+        rubric: cedar_rubric,
         feature_slug: "grading-assistance",
         root_account_uuid: @root_account_uuid,
         current_user: @current_user
-      ).response
+      )
 
-      body = JsonUtilsHelper.safe_parse_json_array(response)
-      parsed_result = filter_repeating_keys(body)
-
-      map_criteria_ids_to_grades(parsed_result, @rubric)
+      map_grade_essay_results_to_canvas(grading_results, @rubric)
+    # These subclasses have static, user-safe messages and can be shown directly.
+    # If new CedarClientError subclasses are added with user-safe messages, add them here.
+    rescue InstructureMiscPlugin::Extensions::CedarClient::ValidationError,
+           InstructureMiscPlugin::Extensions::CedarClient::CedarLimitReachedError,
+           InstructureMiscPlugin::Extensions::CedarClient::UnsupportedLanguageError,
+           InstructureMiscPlugin::Extensions::CedarClient::ContentTooLongError => e
+      raise CedarAi::Errors::GraderError, friendly_cedar_error_for(e)
+    rescue InstructureMiscPlugin::Extensions::CedarClient::CedarClientError => e
+      Rails.logger.error("[GradeService] Cedar API error: #{e.message}")
+      raise CedarAi::Errors::GraderError, friendly_cedar_error_for(e)
     rescue => e
-      raise CedarAi::Errors::GraderError, "Invalid JSON response: #{e.message}"
+      Rails.logger.error("[GradeService] Unexpected error: #{e.class}: #{e.message}")
+      raise CedarAi::Errors::GraderError, I18n.t("An unexpected error occurred while grading.")
     end
   end
 
@@ -93,7 +71,7 @@ class GradeService
       acc[key] = {
         "Criteria" => (criterion[:ratings] || []).map do |rating|
           {
-            "Description" => rating[:long_description],
+            "Description" => rating_description_for(criterion, rating),
             "Points" => rating[:points]
           }
         end,
@@ -102,7 +80,55 @@ class GradeService
     end
   end
 
+  def self.rating_description_for(criterion, rating)
+    criterion[:learning_outcome_id].present? ? rating[:description] : rating[:long_description]
+  end
+
   private
+
+  def build_cedar_rubric(rubric_data)
+    rubric_data.map do |criterion|
+      {
+        name: criterion[:description],
+        useRange: criterion[:criterion_use_range],
+        criteria: (criterion[:ratings] || []).map do |rating|
+          {
+            points: rating[:points],
+            description: self.class.rating_description_for(criterion, rating)
+          }
+        end
+      }
+    end
+  end
+
+  def map_grade_essay_results_to_canvas(grading_results, rubric_data)
+    grading_results.filter_map do |result|
+      rubric_category = result.rubric_category
+
+      criterion_data = rubric_data.find { |c| c[:description] == rubric_category }
+      next unless criterion_data
+
+      matched_rating = (criterion_data[:ratings] || []).find do |r|
+        rating_description = self.class.rating_description_for(criterion_data, r)
+        TextNormalizerHelper.normalize(rating_description) ==
+          TextNormalizerHelper.normalize(result.criterion)
+      end
+      next unless matched_rating
+
+      {
+        "id" => criterion_data[:id],
+        "description" => rubric_category,
+        "rating" => {
+          "id" => matched_rating[:id],
+          "description" => result.criterion,
+          "rating" => (criterion_data[:criterion_use_range] && result.points) ? result.points : matched_rating[:points],
+          "reasoning" => result.reasoning
+        },
+        "comments" => result.guidance,
+        "responseId" => result.response_id
+      }
+    end
+  end
 
   def sanitize_essay(text)
     # First decode any HTML entities
@@ -132,6 +158,19 @@ class GradeService
     raise "Submission must be at least 5 words long" if text.split.size < 5
   end
 
+  def friendly_cedar_error_for(error)
+    case error
+    when InstructureMiscPlugin::Extensions::CedarClient::CedarLimitReachedError
+      I18n.t("Grading is temporarily unavailable. Please try again later.")
+    when InstructureMiscPlugin::Extensions::CedarClient::ContentTooLongError
+      I18n.t("The submission is too long to be graded automatically.")
+    when InstructureMiscPlugin::Extensions::CedarClient::UnsupportedLanguageError
+      I18n.t("The submission language is not supported for automatic grading.")
+    else
+      I18n.t("An unexpected error occurred while grading.")
+    end
+  end
+
   def rubric_matches_default_template?
     predefined_criteria_templates = [
       ["Exit Ticket Prompt", "Preparation", "Time", "Participation"],
@@ -147,42 +186,5 @@ class GradeService
     end
 
     false
-  end
-
-  def map_criteria_ids_to_grades(grader_response_array, rubric_data)
-    grader_response_array.filter_map do |item|
-      rubric_category = item["rubric_category"]
-      selected_description = item["criterion"]
-
-      criterion_data = rubric_data.find { |c| c[:description] == rubric_category }
-      next unless criterion_data
-
-      matched_rating = (criterion_data[:ratings] || []).find do |r|
-        TextNormalizerHelper.normalize(r[:long_description]) == TextNormalizerHelper.normalize(selected_description)
-      end
-      next unless matched_rating
-
-      {
-        "id" => criterion_data[:id],
-        "description" => rubric_category,
-        "rating" => {
-          "id" => matched_rating&.dig(:id),
-          "description" => selected_description,
-          "rating" => matched_rating&.dig(:points),
-          "reasoning" => item["reasoning"]
-        }
-      }
-    end
-  end
-
-  def filter_repeating_keys(json_array)
-    json_array.uniq { |item| item["rubric_category"] }
-  end
-
-  def build_prompt
-    GRADING_PROMPT
-      .gsub("{{assignment}}", @assignment.encode(xml: :text))
-      .gsub("{{essay}}", @essay.encode(xml: :text))
-      .gsub("{{rubric}}", @rubric_prompt_format.to_json)
   end
 end

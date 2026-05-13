@@ -108,6 +108,33 @@ describe ContextModule do
         expect(@page2.reload).to be_published
       end
     end
+
+    context "with wiki page user tracking" do
+      before :once do
+        @user1 = user_model
+        @user2 = user_model
+        @page = @course.wiki_pages.create!(title: "tracked page", user: @user1, workflow_state: "unpublished")
+        @page_tag = @module.add_item(id: @page.id, type: "page")
+      end
+
+      it "sets the wiki page user from the explicit user argument" do
+        @module.publish_items!(user: @user2)
+        expect(@page.reload.user).to eq @user2
+      end
+
+      it "sets the wiki page user from the progress object" do
+        progress = Progress.create!(context: @course, tag: "test", user: @user2)
+        @module.publish_items!(progress:)
+        expect(@page.reload.user).to eq @user2
+      end
+
+      it "prefers the explicit user over the progress user" do
+        user3 = user_model
+        progress = Progress.create!(context: @course, tag: "test", user: @user2)
+        @module.publish_items!(progress:, user: user3)
+        expect(@page.reload.user).to eq user3
+      end
+    end
   end
 
   describe "unpublish_items!" do
@@ -182,6 +209,27 @@ describe ContextModule do
         @module.unpublish_items!
         expect(@context_visibility_tag.reload.published?).to be true
         expect(@context_visibility_file.reload.locked?).to be false
+      end
+    end
+
+    context "with wiki page user tracking" do
+      before :once do
+        @user1 = user_model
+        @user2 = user_model
+        @page = @course.wiki_pages.create!(title: "tracked page", user: @user1)
+        @page_tag = @module.add_item(id: @page.id, type: "page")
+        @page_tag.publish
+      end
+
+      it "sets the wiki page user from the explicit user argument" do
+        @module.unpublish_items!(user: @user2)
+        expect(@page.reload.user).to eq @user2
+      end
+
+      it "sets the wiki page user from the progress object" do
+        progress = Progress.create!(context: @course, tag: "test", user: @user2)
+        @module.unpublish_items!(progress:)
+        expect(@page.reload.user).to eq @user2
       end
     end
   end
@@ -602,7 +650,7 @@ describe ContextModule do
                 custom_params: custom, lti_resource_link_lookup_uuid: lookup_uuid
               )
             )
-            expect(tag.associated_asset.id).to_not eq(existing_resource_link.id)
+            expect(tag.associated_asset.id).not_to eq(existing_resource_link.id)
             expect(tag.associated_asset.lookup_uuid).to eq(lookup_uuid)
             expect(tag.associated_asset.custom).to eq("foo" => "bar")
           end
@@ -950,6 +998,107 @@ describe ContextModule do
       progression = mod.update_for(@student, :read, tag)
       reqs_met = progression.requirements_met.map { |r| { id: r[:id], type: r[:type] } }
       expect(reqs_met).to eq [{ id: tag.id, type: "must_contribute" }]
+    end
+
+    it "does not allow progression updates for date-concluded enrollments" do
+      student_in_course(active_all: true)
+      mod = @course.context_modules.create!(name: "Module")
+      page = @course.wiki_pages.create!(title: "View This Page")
+      tag = mod.add_item(id: page.id, type: "wiki_page")
+      mod.completion_requirements = [{ id: tag.id, type: "must_view" }]
+      mod.workflow_state = "active"
+      mod.save!
+
+      # Student completes the requirement
+      progression = mod.update_for(@student, :read, tag)
+      expect(progression).not_to be_nil
+      expect(progression.requirements_met.pluck(:id)).to include(tag.id)
+      progression.reload
+      original_completed_at = progression.completed_at
+      expect(original_completed_at).not_to be_nil
+
+      # Simulate enrollment being soft-concluded by date (past the end date)
+      # This sets enrollment_state.state to "completed" while workflow_state stays "active"
+      @enrollment.start_at = 2.months.ago
+      @enrollment.end_at = 1.month.ago
+      @enrollment.save!
+      @enrollment.enrollment_state.recalculate_state
+      @enrollment.enrollment_state.save!
+      expect(@enrollment.reload.workflow_state).to eq("active")
+      expect(@enrollment.enrollment_state.state).to eq("completed")
+
+      # Make the progression outdated by updating the module
+      # This simulates a real scenario where module content changes after enrollment conclusion
+      mod.touch
+
+      # Simulate what happens when a concluded user accesses a module page
+      # Controllers call evaluate_for directly, which should return existing progression
+      # without re-evaluating (preventing evaluated_at from being updated)
+      Timecop.freeze(2.days.from_now) do
+        progression.reload
+        original_evaluated_at = progression.evaluated_at
+
+        result = mod.evaluate_for(@student)
+        expect(result).to be_a(ContextModuleProgression)
+        expect(result.persisted?).to be(true)
+
+        # Verify neither timestamp has changed (progression was not re-evaluated)
+        result.reload
+        expect(result.completed_at).to eq(original_completed_at)
+        expect(result.evaluated_at).to eq(original_evaluated_at)
+      end
+    end
+  end
+
+  describe "evaluate_all_progressions" do
+    it "does not re-evaluate progressions for date-concluded enrollments" do
+      student_in_course(active_all: true)
+      mod = @course.context_modules.create!(name: "Module")
+      assignment = @course.assignments.create!(
+        title: "Score This",
+        grading_type: "points",
+        points_possible: 10,
+        submission_types: "online_text_entry"
+      )
+      tag = mod.add_item(id: assignment.id, type: "assignment")
+      mod.completion_requirements = [{ id: tag.id, type: "min_score", min_score: 5 }]
+      mod.workflow_state = "active"
+      mod.save!
+
+      # Set manual posting so grade stays unposted
+      assignment.ensure_post_policy(post_manually: true)
+
+      # Student submits and gets a passing score, but grade is NOT posted yet
+      assignment.submit_homework(@student, body: "my answer")
+      submission = assignment.grade_student(@student, grade: "10", grader: @teacher).first
+      expect(submission.posted_at).to be_nil
+      # Grade is unposted - module progression should NOT be completed
+      progression = mod.evaluate_for(@student)
+      expect(progression.workflow_state).not_to eq("completed")
+      expect(progression.completed_at).to be_nil
+
+      # Conclude enrollment by date
+      @enrollment.start_at = 2.months.ago
+      @enrollment.end_at = 1.month.ago
+      @enrollment.save!
+      @enrollment.enrollment_state.recalculate_state
+      @enrollment.enrollment_state.save!
+      expect(@enrollment.enrollment_state.state).to eq("completed")
+
+      # Now post the grade (simulating instructor posting after course end)
+      submission.update!(posted_at: Time.zone.now)
+
+      # Mark progression as outdated (what recalculate_module_progressions does)
+      mod.context_module_progressions.where(current: true).update_all(current: false)
+
+      Timecop.freeze(2.days.from_now) do
+        mod.evaluate_all_progressions
+
+        # Progression should NOT have been re-evaluated for concluded enrollment
+        progression.reload
+        expect(progression.completed_at).to be_nil
+        expect(progression.workflow_state).not_to eq("completed")
+      end
     end
   end
 
@@ -2043,6 +2192,63 @@ describe ContextModule do
       end
     end
 
+    describe "when mastery path has fewer than 3 assignment associations" do
+      before :once do
+        @simple_trigger = @course.assignments.create!(points_possible: 10, submission_types: "online_text_entry")
+        @simple_pass = @course.assignments.create!(only_visible_to_overrides: true)
+        @simple_fail = @course.assignments.create!(only_visible_to_overrides: true)
+
+        ranges = [
+          ConditionalRelease::ScoringRange.new(lower_bound: 0.5, upper_bound: 1.0, assignment_sets: [
+                                                 ConditionalRelease::AssignmentSet.new(assignment_set_associations: [
+                                                                                         ConditionalRelease::AssignmentSetAssociation.new(assignment_id: @simple_pass.id)
+                                                                                       ])
+                                               ]),
+          ConditionalRelease::ScoringRange.new(lower_bound: 0, upper_bound: 0.5, assignment_sets: [
+                                                 ConditionalRelease::AssignmentSet.new(assignment_set_associations: [
+                                                                                         ConditionalRelease::AssignmentSetAssociation.new(assignment_id: @simple_fail.id)
+                                                                                       ])
+                                               ])
+        ]
+        @simple_rule = @course.conditional_release_rules.create!(trigger_assignment: @simple_trigger, scoring_ranges: ranges)
+
+        @tag_m1_trigger = @module1.add_item(type: "assignment", id: @simple_trigger.id)
+        @module1.completion_requirements = { id: @tag_m1_trigger.id, type: "must_submit" }
+        @module1.save
+
+        @tag_m2_pass = @module2.add_item(type: "assignment", id: @simple_pass.id)
+        @tag_m2_fail = @module2.add_item(type: "assignment", id: @simple_fail.id)
+        @module2.completion_requirements = [
+          { id: @tag_m2_pass.id, type: "must_view" },
+          { id: @tag_m2_fail.id, type: "must_view" }
+        ]
+        @module2.requirement_count = 1
+        @module2.save
+
+        @m3_assmt = @course.assignments.create!
+        @tag_m3 = @module3.add_item(type: "assignment", id: @m3_assmt.id)
+
+        course_with_student(course: @course)
+        @simple_trigger.submit_homework(@student, body: "hi")
+      end
+
+      it "includes unreleased items even with only 2 associations" do
+        expect(@module2.content_tags_for(@student)).to include(@tag_m2_pass)
+      end
+
+      it "does not unlock module 3 until module 2 is completed" do
+        @module1_prog = @module1.evaluate_for(@student)
+        expect(@module1_prog).to be_completed
+
+        @module2_prog = @module2.evaluate_for(@student)
+        expect(@module2_prog).not_to be_completed
+        expect(@module2_prog.workflow_state).to eq("unlocked")
+
+        @module3_prog = @module3.evaluate_for(@student)
+        expect(@module3_prog).to be_locked
+      end
+    end
+
     describe "when a module includes attachments" do
       def create_attachment(context, opts = {})
         opts[:uploaded_data] ||= StringIO.new("attachment content")
@@ -2341,7 +2547,7 @@ describe ContextModule do
 
   it "only loads visibility and progression information once when calculating prerequisites" do
     course_factory(active_all: true)
-    student_in_course(course: @course)
+    student_in_course(course: @course, active_all: true)
     m1 = @course.context_modules.create!(name: "m1")
     m2 = @course.context_modules.create!(name: "m2", prerequisites: [{ id: m1.id, type: "context_module", name: m1.name }])
 
@@ -2394,6 +2600,46 @@ describe ContextModule do
     it "returns false if the module has only deleted overrides" do
       @module.assignment_overrides.create!(workflow_state: "deleted")
       expect(@module.only_visible_to_overrides).to be false
+    end
+  end
+
+  describe ".preload_progressions_for_user" do
+    before :once do
+      course_with_student(active_all: true)
+      @module1 = @course.context_modules.create!(name: "Module 1")
+      @module2 = @course.context_modules.create!(name: "Module 2")
+      @module3 = @course.context_modules.create!(name: "Module 3")
+      @progression1 = @module1.find_or_create_progression(@student)
+      @progression2 = @module2.find_or_create_progression(@student)
+    end
+
+    it "returns a hash of module_id to progression" do
+      result = ContextModule.preload_progressions_for_user([@module1, @module2, @module3], @student)
+      expect(result).to be_a(Hash)
+      expect(result[@module1.id]).to eq @progression1
+      expect(result[@module2.id]).to eq @progression2
+      expect(result[@module3.id]).to be_nil
+    end
+
+    it "returns empty hash when no modules provided" do
+      result = ContextModule.preload_progressions_for_user([], @student)
+      expect(result).to eq({})
+    end
+
+    it "returns empty hash when no user provided" do
+      result = ContextModule.preload_progressions_for_user([@module1, @module2], nil)
+      expect(result).to eq({})
+    end
+
+    it "loads progressions in a single query" do
+      query_count = 0
+      allow(ContextModuleProgression).to receive(:where).and_wrap_original do |method, *args|
+        query_count += 1
+        method.call(*args)
+      end
+
+      ContextModule.preload_progressions_for_user([@module1, @module2, @module3], @student)
+      expect(query_count).to eq 1
     end
   end
 end

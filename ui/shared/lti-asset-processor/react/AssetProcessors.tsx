@@ -29,6 +29,7 @@ import {useAssetProcessorsToolsList} from './hooks/useAssetProcessorsToolsList'
 import {buildAPDisplayTitle, AssetProcessorType} from '@canvas/lti/model/AssetProcessor'
 import {LtiLaunchDefinition} from '@canvas/select-content-dialog/jquery/select_content_dialog'
 import {DeepLinkResponse} from '@canvas/deep-linking/DeepLinkResponse'
+import {ToolContextName} from './ToolContextName'
 
 const I18n = createI18nScope('asset_processors_selection')
 
@@ -47,14 +48,18 @@ export type AssetProcessorsProps = {
  */
 export function AssetProcessors(props: AssetProcessorsProps) {
   const openAddDialog = useAssetProcessorsAddModalState(s => s.actions.showToolList)
-  const toolsAvailable = !!useAssetProcessorsToolsList(props.courseId, props.type).data?.length
+  const tools = useAssetProcessorsToolsList(props.courseId, props.type).data
+  const toolsAvailable = !!tools?.length
   const {attachedProcessors, addAttachedProcessors, removeAttachedProcessor} =
     useAssetProcessorsState(s => s)
 
   const handleProcessorResponse = ({
     tool,
     data,
-  }: {tool: LtiLaunchDefinition; data: DeepLinkResponse}) => {
+  }: {
+    tool: LtiLaunchDefinition
+    data: DeepLinkResponse
+  }) => {
     addAttachedProcessors({tool, data, type: props.type})
   }
 
@@ -79,7 +84,9 @@ export function AssetProcessors(props: AssetProcessorsProps) {
               windowSettings={processor.window}
               iframeSettings={processor.iframe}
               onRemove={() => removeAttachedProcessor(index, props.hideErrors)}
-            ></AssetProcessorsAttachedProcessorCard>
+            >
+              <ToolContextName tool={tools?.find(t => t.definition_id === processor.toolId)} />
+            </AssetProcessorsAttachedProcessorCard>
           ))}
           <span
             data-testid="asset-processor-errors"
@@ -87,8 +94,13 @@ export function AssetProcessors(props: AssetProcessorsProps) {
             className="error-message"
           />
           {toolsAvailable && (
-            <Flex.Item>
-              <Button color="secondary" onClick={openAddDialog} id="asset-processor-add-button">
+            <Flex.Item overflowY="visible">
+              <Button
+                color="secondary"
+                onClick={openAddDialog}
+                id="asset-processor-add-button"
+                aria-haspopup="dialog"
+              >
                 {I18n.t('Add Document Processing App')}
               </Button>
             </Flex.Item>

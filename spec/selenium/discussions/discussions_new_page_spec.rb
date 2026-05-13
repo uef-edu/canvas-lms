@@ -178,8 +178,8 @@ describe "discussions" do
         # Set Message
         Discussion.update_discussion_message(message)
 
-        update_available_date(0, available_date, true)
-        update_available_time(0, "8:00 AM", true)
+        update_available_date(0, available_date, exclude_due_date: true)
+        update_available_time(0, "8:00 AM", exclude_due_date: true)
 
         # Save and publish
         Discussion.save_button.click
@@ -210,8 +210,8 @@ describe "discussions" do
         # Set Message
         Discussion.update_discussion_message(message)
 
-        update_available_date(0, available_date, true)
-        update_available_time(0, "8:00 AM", true)
+        update_available_date(0, available_date, exclude_due_date: true)
+        update_available_time(0, "8:00 AM", exclude_due_date: true)
 
         # Save and publish
         Discussion.save_button.click
@@ -415,6 +415,8 @@ describe "discussions" do
         title = "new topic with file"
         title2 = "another topic with file"
         graded_png = File.expand_path(File.dirname(__FILE__) + "/../../../public/images/graded.png")
+        file = nil
+        file2 = nil
 
         get "/courses/#{course.id}/discussion_topics/new"
         wait_for_ajaximations
@@ -434,6 +436,12 @@ describe "discussions" do
         get "/courses/#{course.id}/discussion_topics/new"
         wait_for_ajaximations
 
+        # Dismiss autosave modal if it appears
+        if element_exists?("[data-testid='RCE_RestoreAutoSaveModal']")
+          fj("button:contains('No')").click
+          wait_for_ajaximations
+        end
+
         set_react_topic_title_and_message(title2, "replying to topic")
         _filename2, fullpath2, file2 = get_permanent_file(graded_png)
         f("[data-testid='attachment-input']").send_keys(fullpath2)
@@ -448,8 +456,8 @@ describe "discussions" do
         expect(attachment_name).to eq("graded.png")
         expect(attachment_name2).to eq("graded-1.png")
       ensure
-        file.close
-        file2.close
+        file&.close
+        file2&.close
       end
 
       context "Horizon course" do
@@ -597,8 +605,8 @@ describe "discussions" do
       end
 
       context "when instui_nav feature flag on" do
-        page_header_title_discussion = "Create Discussion"
-        page_header_title_announcement = "Create Announcement"
+        let(:page_header_title_discussion) { "Create Discussion" }
+        let(:page_header_title_announcement) { "Create Announcement" }
 
         before do
           course.root_account.enable_feature!(:instui_nav)
@@ -1353,10 +1361,10 @@ describe "discussions" do
         click_add_assign_to_card
         expect(element_exists?(due_date_input_selector)).to be_falsey
         select_module_item_assignee(1, student1.name)
-        update_available_date(1, format_date_for_view(available_from, "%-m/%-d/%Y"), true)
-        update_available_time(1, "8:00 AM", true)
-        update_until_date(1, format_date_for_view(available_until, "%-m/%-d/%Y"), true)
-        update_until_time(1, "9:00 PM", true)
+        update_available_date(1, format_date_for_view(available_from, "%-m/%-d/%Y"), exclude_due_date: true)
+        update_available_time(1, "8:00 AM", exclude_due_date: true)
+        update_until_date(1, format_date_for_view(available_until, "%-m/%-d/%Y"), exclude_due_date: true)
+        update_until_time(1, "9:00 PM", exclude_due_date: true)
 
         Discussion.save_button.click
         wait_for_ajaximations
@@ -1394,10 +1402,10 @@ describe "discussions" do
           click_add_assign_to_card
           expect(element_exists?(due_date_input_selector)).to be_falsey
           select_module_item_assignee(1, student1.name)
-          update_available_date(1, format_date_for_view(available_from, "%-m/%-d/%Y"), true)
-          update_available_time(1, "8:00 AM", true)
-          update_until_date(1, format_date_for_view(available_until, "%-m/%-d/%Y"), true)
-          update_until_time(1, "9:00 PM", true)
+          update_available_date(1, format_date_for_view(available_from, "%-m/%-d/%Y"), exclude_due_date: true)
+          update_available_time(1, "8:00 AM", exclude_due_date: true)
+          update_until_date(1, format_date_for_view(available_until, "%-m/%-d/%Y"), exclude_due_date: true)
+          update_until_time(1, "9:00 PM", exclude_due_date: true)
 
           Discussion.save_button.click
           wait_for_ajaximations

@@ -35,7 +35,7 @@ describe RubricLLMService do
 
   let(:llm_config_double) do
     instance_double(
-      "LLMConfig",
+      LLMConfig,
       name: "rubric-create-V3",
       model_id: "anthropic.claude-3-haiku-20240307-v1:0"
     ).tap do |config|
@@ -43,13 +43,13 @@ describe RubricLLMService do
     end
   end
 
-  let(:cedar_response_struct) { Struct.new(:response, keyword_init: true) }
+  let(:cedar_response_struct) { Struct.new(:response) }
   let(:mock_cedar_prompt_response) do
-    Struct.new(:response, keyword_init: true).new(response: "<RUBRIC_DATA>\n</RUBRIC_DATA>")
+    Struct.new(:response).new(response: "<RUBRIC_DATA>\n</RUBRIC_DATA>")
   end
 
   let(:mock_cedar_conversation_response) do
-    Struct.new(:response, keyword_init: true).new(response: '{"criteria": []}')
+    Struct.new(:response).new(response: '{"criteria": []}')
   end
 
   before do
@@ -75,10 +75,10 @@ describe RubricLLMService do
   shared_context "llm config for regenerate criteria" do
     before do
       allow(LLMConfigs).to receive(:config_for).with("rubric_regenerate_criteria").and_return(
-        double("LLMConfig",
-               name: "rubric-regenerate-criteriaV2",
-               model_id: "anthropic.claude-3-haiku-20240307-v1:0",
-               generate_prompt_and_options: ["PROMPT", { temperature: 1.0 }])
+        instance_double(LLMConfig,
+                        name: "rubric-regenerate-criteriaV2",
+                        model_id: "anthropic.claude-3-haiku-20240307-v1:0",
+                        generate_prompt_and_options: ["PROMPT", { temperature: 1.0 }])
       )
     end
   end
@@ -86,10 +86,10 @@ describe RubricLLMService do
   shared_context "llm config for regenerate criterion" do
     before do
       allow(LLMConfigs).to receive(:config_for).with("rubric_regenerate_criterion").and_return(
-        double("LLMConfig",
-               name: "rubric-regenerate-criterionV2",
-               model_id: "anthropic.claude-3-haiku-20240307-v1:0",
-               generate_prompt_and_options: ["PROMPT", { temperature: 1.0 }])
+        instance_double(LLMConfig,
+                        name: "rubric-regenerate-criterionV2",
+                        model_id: "anthropic.claude-3-haiku-20240307-v1:0",
+                        generate_prompt_and_options: ["PROMPT", { temperature: 1.0 }])
       )
     end
   end
@@ -123,10 +123,9 @@ describe RubricLLMService do
           extract_text_from_response(text, tag:)
         end
 
-        def public_build_structure_directives_for_llm(existing_criteria:, required_criteria_count:, required_rating_count:)
+        def public_build_structure_directives_for_llm(existing_criteria:, required_rating_count:)
           build_structure_directives_for_llm(
             existing_criteria:,
-            required_criteria_count:,
             required_rating_count:
           )
         end
@@ -140,20 +139,32 @@ describe RubricLLMService do
           @used_ids
         end
 
-        def public_determine_final_criterion_id(data)
-          determine_final_criterion_id(data)
-        end
-
         def public_rebuild_regenerated_ratings(criterion_data, criterion_id, points)
           rebuild_regenerated_ratings(criterion_data, criterion_id, points)
         end
 
-        def public_build_criterion_from_llm(data, options)
-          build_criterion_from_llm(data, options)
+        def public_build_criterion_from_llm(data, criterion_points, use_range)
+          build_criterion_from_llm(data, criterion_points, use_range)
         end
 
-        def public_rebuild_regenerated_criterion(data, options)
-          rebuild_regenerated_criterion(data, options)
+        def public_rebuild_regenerated_criterion(data, criterion_points, use_range)
+          rebuild_regenerated_criterion(data, criterion_points, use_range)
+        end
+
+        def public_calculate_points_per_criterion(total_points, criteria_count)
+          calculate_points_per_criterion(total_points, criteria_count)
+        end
+
+        def public_build_generate_dynamic_content(assignment, generate_options)
+          build_generate_dynamic_content(assignment, generate_options)
+        end
+
+        def public_parse_and_transform_generated_criteria(response, generate_options)
+          parse_and_transform_generated_criteria(response, generate_options)
+        end
+
+        def public_build_regenerate_dynamic_content(**)
+          build_regenerate_dynamic_content(**)
         end
       end.new(rubric)
     end
@@ -250,15 +261,16 @@ describe RubricLLMService do
       )
 
       expect do
-        criteria = service.generate_criteria_via_llm(assignment, criteria_count: 2, rating_count: 4, points_per_criterion: 20, use_range: true, grade_level: "higher-ed")
+        criteria = service.generate_criteria_via_llm(assignment, criteria_count: 2, rating_count: 4, total_points: 20, use_range: true, grade_level: "higher-ed")
         expect(criteria.size).to eq 2
 
         first = criteria.first
         expect(first[:description]).to eq "Argument Quality"
         expect(first[:long_description]).to eq "Strength and clarity of the central claim."
         expect(first[:criterion_use_range]).to be true
-        expect(first[:points]).to eq 20 # max rating points after sorting
+        expect(first[:points]).to eq 10
         expect(first[:ratings].size).to eq 4
+        expect(first[:generated]).to be true
 
         # Ratings should be sorted by points descending, then description
         points = first[:ratings].pluck(:points)
@@ -283,7 +295,7 @@ describe RubricLLMService do
     describe "validations" do
       let(:method_args) { [criteria_count: 2] }
 
-      include_examples "validates rubric user and assignment", :generate_criteria_via_llm
+      it_behaves_like "validates rubric user and assignment", :generate_criteria_via_llm
     end
   end
 
@@ -295,6 +307,8 @@ describe RubricLLMService do
           description: "Old Criterion 1",
           long_description: "Old long 1",
           points: 20,
+          criterion_use_range: false,
+          generated: false,
           ratings: [
             { id: "r1", description: "Excellent", long_description: "Great", points: 20 },
             { id: "r2", description: "Good", long_description: "Solid", points: 10 },
@@ -306,6 +320,8 @@ describe RubricLLMService do
           description: "Old Criterion 2",
           long_description: "Old long 2",
           points: 20,
+          criterion_use_range: true,
+          generated: false,
           ratings: [
             { id: "r4", description: "Excellent", long_description: "Great", points: 20 },
             { id: "r5", description: "Good", long_description: "Solid", points: 10 },
@@ -317,6 +333,8 @@ describe RubricLLMService do
           description: "Old Criterion 3",
           long_description: "Old long 3",
           points: 20,
+          criterion_use_range: false,
+          generated: false,
           ratings: [
             { id: "_new_r_7", description: "Excellent", long_description: "Great", points: 20 },
             { id: "_new_r_8", description: "Good", long_description: "Solid", points: 10 },
@@ -365,26 +383,78 @@ describe RubricLLMService do
         criteria = service.regenerate_criteria_via_llm(
           assignment,
           { criteria: existing_criteria },
-          { criteria_count: 3, rating_count: 3, points_per_criterion: 20, use_range: false, grade_level: "higher-ed" }
+          { criteria_count: 3, rating_count: 3, total_points: 20, use_range: false, grade_level: "higher-ed" }
         )
 
         expect(criteria.size).to eq 3
         ids = criteria.pluck(:id)
         expect(ids).to include("c1", "c2")
+        expect(ids).not_to include("_new_c_3")
+
+        c1 = criteria.find { |c| c[:id] == "c1" }
+        expect(c1[:description]).to eq "Updated Criterion 1"
+        expect(c1[:long_description]).to eq "Updated long 1"
+        expect(c1[:criterion_use_range]).to be false
+        expect(c1[:generated]).to be true
+
+        c2 = criteria.find { |c| c[:id] == "c2" }
+        expect(c2[:description]).to eq "Updated Criterion 2"
+        expect(c2[:long_description]).to eq "Updated long 2"
+        expect(c2[:criterion_use_range]).to be true
+        expect(c2[:generated]).to be true
+
         new_third = criteria.detect { |c| c[:description] == "New Criterion 3" }
         expect(new_third).to be_present
-        expect(new_third[:id]).not_to match(/^_new_c_/) # was transformed into a unique real ID
+        expect(new_third[:id]).not_to match(/^_new_c_/) # was transformed into a unique real ID with the rubric.unique_item_id method
+        expect(new_third[:points]).to eq 6.66
         expect(new_third[:ratings].size).to eq 3
-        expect(new_third[:ratings].pluck(:points)).to eq [20, 10, 0]
-        # ratings sorted by points desc (then description)
+        expect(new_third[:ratings].pluck(:points)).to eq [6.66, 3.33, 0]
         expect(new_third[:ratings].pluck(:points)).to eq new_third[:ratings].pluck(:points).sort.reverse
+        expect(new_third[:criterion_use_range]).to be false
+        expect(new_third[:generated]).to be true
+      end
+
+      it "sets generated flag on all regenerated criterions" do
+        llm_text = <<~TEXT
+          <RUBRIC_DATA>
+          criterion:c1:description=Updated Criterion 1
+          criterion:c1:long_description=Updated long 1
+          rating:r1:description=Excellent
+          rating:r1:long_description=Great
+
+          criterion:c2:description=Updated Criterion 2
+          criterion:c2:long_description=Updated long 2
+          rating:r4:description=Excellent
+          rating:r4:long_description=Great
+
+          criterion:_new_c_3:description=Updated Criterion 3
+          criterion:_new_c_3:long_description=Updated long 3
+          rating:_new_r_7:description=Excellent
+          rating:_new_r_7:long_description=Top
+          </RUBRIC_DATA>
+        TEXT
+
+        expect(CedarClient).to receive(:prompt).and_return(
+          cedar_response_struct.new(response: llm_text)
+        )
+
+        criteria = service.regenerate_criteria_via_llm(
+          assignment,
+          { criteria: existing_criteria },
+          { criteria_count: 3, rating_count: 3, total_points: 20, use_range: false, grade_level: "higher-ed" }
+        )
+
+        expect(criteria.size).to eq 3
+        criteria.each do |criterion|
+          expect(criterion[:generated]).to be true
+        end
       end
     end
 
     context "single-criterion regeneration (criterion_id provided)" do
       include_context "llm config for regenerate criterion"
 
-      it "updates only the specified criterion, preserving IDs and rating count" do
+      it "updates only the specified criterion, preserving IDs, rating count and other criterions" do
         llm_text = <<~TEXT
           <RUBRIC_DATA>
           criterion:c1:description=Sharper Criterion 1
@@ -410,7 +480,7 @@ describe RubricLLMService do
         criteria = service.regenerate_criteria_via_llm(
           assignment,
           { criteria: existing_criteria, criterion_id: "c1" },
-          { criteria_count: 3, rating_count: 3, points_per_criterion: 20, use_range: false }
+          { criteria_count: 3, rating_count: 3, total_points: 20, use_range: false }
         )
 
         expect(criteria.size).to eq 3
@@ -418,13 +488,812 @@ describe RubricLLMService do
         c1 = criteria.find { |c| c[:id] == "c1" }
         expect(c1[:description]).to eq "Sharper Criterion 1"
         expect(c1[:long_description]).to eq "Sharpened long 1"
-        expect(c1[:ratings].pluck(:id)).to eq %w[r1 r2 r3] # IDs preserved
+        expect(c1[:ratings].pluck(:id)).to eq %w[r1 r2 r3]
+        expect(c1[:criterion_use_range]).to be false
+        expect(c1[:generated]).to be true
 
         c2 = criteria.find { |c| c[:id] == "c2" }
-        expect(c2[:description]).to eq "Old Criterion 2" # unchanged
+        expect(c2[:description]).to eq "Old Criterion 2"
+        expect(c2[:criterion_use_range]).to be true
+        expect(c2[:generated]).to be false
 
         c3 = criteria.find { |c| c[:id] == "_new_c_3" }
-        expect(c3[:description]).to eq "Old Criterion 3" # unchanged
+        expect(c3[:description]).to eq "Old Criterion 3"
+        expect(c3[:criterion_use_range]).to be false
+        expect(c3[:generated]).to be false
+      end
+
+      it "sets generated flag on regenerated criterion only" do
+        llm_text = <<~TEXT
+          <RUBRIC_DATA>
+          criterion:c1:description=Regenerated Criterion 1
+          criterion:c1:long_description=Regenerated long 1
+          rating:r1:description=Excellent
+          rating:r1:long_description=Top
+          rating:r2:description=Good
+          rating:r2:long_description=Solid
+          rating:r3:description=Poor
+          rating:r3:long_description=Needs work
+          </RUBRIC_DATA>
+        TEXT
+
+        expect(CedarClient).to receive(:prompt).with(
+          hash_including(
+            model: "anthropic.claude-3-haiku-20240307-v1:0",
+            feature_slug: "rubric-regenerate-criterion"
+          )
+        ).and_return(
+          cedar_response_struct.new(response: llm_text)
+        )
+
+        criteria = service.regenerate_criteria_via_llm(
+          assignment,
+          { criteria: existing_criteria, criterion_id: "c1" },
+          { criteria_count: 3, rating_count: 3, total_points: 20, use_range: false }
+        )
+
+        c1 = criteria.find { |c| c[:id] == "c1" }
+        expect(c1[:generated]).to be true
+
+        c2 = criteria.find { |c| c[:id] == "c2" }
+        expect(c2[:generated]).to be false
+
+        c3 = criteria.find { |c| c[:id] == "_new_c_3" }
+        expect(c3[:generated]).to be false
+      end
+
+      it "preserves generated flag on non-targeted criteria during single criterion regeneration" do
+        mixed_criteria = [
+          {
+            id: "c1",
+            description: "Previously generated Criterion 1",
+            generated: true,
+            points: 10,
+            ratings: [
+              { id: "r1", description: "Good", points: 10 },
+              { id: "r2", description: "Poor", points: 0 }
+            ]
+          },
+          {
+            id: "c2",
+            description: "To regenerate Criterion 2",
+            generated: true,
+            points: 10,
+            ratings: [
+              { id: "r3", description: "Excellent", points: 10 },
+              { id: "r4", description: "Needs Work", points: 0 }
+            ]
+          },
+          {
+            id: "c3",
+            description: "Manually Created Criterion 3",
+            generated: false,
+            points: 10,
+            ratings: [
+              { id: "r5", description: "Great", points: 10 },
+              { id: "r6", description: "Weak", points: 0 }
+            ]
+          }
+        ]
+
+        llm_text = <<~TEXT
+          <RUBRIC_DATA>
+          criterion:c2:description=Regenerated Criterion 2
+          criterion:c2:long_description=This was regenerated by AI
+          </RUBRIC_DATA>
+        TEXT
+
+        expect(CedarClient).to receive(:prompt).and_return(
+          cedar_response_struct.new(response: llm_text)
+        )
+
+        criteria = service.regenerate_criteria_via_llm(
+          assignment,
+          { criteria: mixed_criteria, criterion_id: "c2" },
+          { criteria_count: 3, rating_count: 2, total_points: 30 }
+        )
+
+        expect(criteria.size).to eq 3
+
+        # c1: Previously generated -> should preserve generated: true
+        c1 = criteria.find { |c| c[:id] == "c1" }
+        expect(c1[:description]).to eq "Previously generated Criterion 1"
+        expect(c1[:generated]).to be true
+
+        # c2: AI-generated before, WAS regenerated -> should have generated: true
+        c2 = criteria.find { |c| c[:id] == "c2" }
+        expect(c2[:description]).to eq "Regenerated Criterion 2"
+        expect(c2[:long_description]).to eq "This was regenerated by AI"
+        expect(c2[:generated]).to be true
+
+        # c3: Manually created, NOT regenerated -> should preserve generated: false
+        c3 = criteria.find { |c| c[:id] == "c3" }
+        expect(c3[:description]).to eq "Manually Created Criterion 3"
+        expect(c3[:generated]).to be false
+      end
+
+      it "preserves generated flag on non-targeted criteria with learning outcomes" do
+        mixed_criteria = [
+          {
+            id: "c1",
+            description: "Learning Outcome Criterion",
+            learning_outcome_id: 123,
+            ignore_for_scoring: false,
+            mastery_points: 4.0,
+            generated: false,
+            points: 10,
+            ratings: [
+              { id: "r1", description: "Mastery", points: 10 },
+              { id: "r2", description: "Developing", points: 5 }
+            ]
+          },
+          {
+            id: "c2",
+            description: "Manually Created Criterion",
+            generated: false,
+            points: 10,
+            ratings: [
+              { id: "r3", description: "Good", points: 10 },
+              { id: "r4", description: "Poor", points: 0 }
+            ]
+          },
+          {
+            id: "c3",
+            description: "Target for Regeneration",
+            generated: true,
+            points: 10,
+            ratings: [
+              { id: "r5", description: "Excellent", points: 10 },
+              { id: "r6", description: "Weak", points: 0 }
+            ]
+          }
+        ]
+
+        llm_text = <<~TEXT
+          <RUBRIC_DATA>
+          criterion:c3:description=Newly Regenerated Criterion 3
+          criterion:c3:long_description=Fresh from AI
+          </RUBRIC_DATA>
+        TEXT
+
+        expect(CedarClient).to receive(:prompt).and_return(
+          cedar_response_struct.new(response: llm_text)
+        )
+
+        criteria = service.regenerate_criteria_via_llm(
+          assignment,
+          { criteria: mixed_criteria, criterion_id: "c3" },
+          { criteria_count: 3, rating_count: 2, total_points: 30 }
+        )
+
+        expect(criteria.size).to eq 3
+
+        # c1: Learning outcome -> should ALWAYS have generated: false
+        c1 = criteria.find { |c| c[:id] == "c1" }
+        expect(c1[:learning_outcome_id]).to eq 123
+        expect(c1[:generated]).to be false
+
+        # c2: Manually created, NOT regenerated -> should preserve generated: false
+        c2 = criteria.find { |c| c[:id] == "c2" }
+        expect(c2[:description]).to eq "Manually Created Criterion"
+        expect(c2[:generated]).to be false
+
+        # c3: WAS regenerated -> should have generated: true
+        c3 = criteria.find { |c| c[:id] == "c3" }
+        expect(c3[:description]).to eq "Newly Regenerated Criterion 3"
+        expect(c3[:long_description]).to eq "Fresh from AI"
+        expect(c3[:generated]).to be true
+      end
+
+      it "preserves learning outcome fields when regenerating other criterions" do
+        criteria_with_mixed = [
+          {
+            id: "c1",
+            description: "Regular Criterion",
+            points: 10,
+            ratings: [
+              { id: "r1", description: "Good", points: 10 },
+              { id: "r2", description: "Poor", points: 0 }
+            ]
+          },
+          {
+            id: "c2",
+            description: "Learning Outcome Criterion",
+            learning_outcome_id: 456,
+            ignore_for_scoring: true,
+            mastery_points: 3.5,
+            generated: false,
+            criterion_use_range: false,
+            points: 10,
+            ratings: [
+              { id: "r3", description: "Mastery", points: 10 },
+              { id: "r4", description: "Developing", points: 0 }
+            ]
+          }
+        ]
+
+        llm_text = <<~TEXT
+          <RUBRIC_DATA>
+          criterion:c1:description=Updated Regular Criterion
+          criterion:c1:long_description=This was regenerated
+          rating:r1:description=Excellent
+          rating:r1:long_description=Great work
+          rating:r2:description=Needs Work
+          rating:r2:long_description=Keep trying
+          </RUBRIC_DATA>
+        TEXT
+
+        expect(CedarClient).to receive(:prompt).and_return(
+          cedar_response_struct.new(response: llm_text)
+        )
+
+        criteria = service.regenerate_criteria_via_llm(
+          assignment,
+          { criteria: criteria_with_mixed, criterion_id: "c1" },
+          { criteria_count: 2, rating_count: 2, total_points: 20 }
+        )
+
+        expect(criteria.size).to eq 2
+
+        c1 = criteria.find { |c| c[:id] == "c1" }
+        expect(c1[:description]).to eq "Updated Regular Criterion"
+        expect(c1[:generated]).to be true
+        expect(c1).not_to have_key(:learning_outcome_id)
+
+        c2 = criteria.find { |c| c[:id] == "c2" }
+        expect(c2[:description]).to eq "Learning Outcome Criterion"
+        expect(c2[:learning_outcome_id]).to eq 456
+        expect(c2[:ignore_for_scoring]).to be true
+        expect(c2[:mastery_points]).to eq 3.5
+        expect(c2[:generated]).to be false
+        expect(c2[:criterion_use_range]).to be false
+      end
+
+      it "sets generated to false for learning outcome criterions without the field during single regeneration" do
+        criteria_mixed_no_flag = [
+          {
+            id: "c1",
+            description: "Regular Criterion",
+            points: 10,
+            ratings: []
+          },
+          {
+            id: "c2",
+            description: "Learning Outcome",
+            learning_outcome_id: 789,
+            mastery_points: 3.0,
+            points: 10,
+            ratings: []
+          }
+        ]
+
+        llm_text = <<~TEXT
+          <RUBRIC_DATA>
+          criterion:c1:description=Updated Regular
+          criterion:c1:long_description=Regenerated
+          </RUBRIC_DATA>
+        TEXT
+
+        expect(CedarClient).to receive(:prompt).and_return(
+          cedar_response_struct.new(response: llm_text)
+        )
+
+        criteria = service.regenerate_criteria_via_llm(
+          assignment,
+          { criteria: criteria_mixed_no_flag, criterion_id: "c1" },
+          { criteria_count: 2, rating_count: 2, total_points: 20 }
+        )
+
+        c1 = criteria.find { |c| c[:id] == "c1" }
+        expect(c1[:generated]).to be true
+
+        c2 = criteria.find { |c| c[:id] == "c2" }
+        expect(c2[:learning_outcome_id]).to eq 789
+        expect(c2[:generated]).to be false
+      end
+
+      it "raises an error when trying to regenerate a criterion with learning_outcome_id" do
+        criteria_with_outcome = existing_criteria.dup
+        criteria_with_outcome[0][:learning_outcome_id] = 123
+
+        expect do
+          service.regenerate_criteria_via_llm(
+            assignment,
+            { criteria: criteria_with_outcome, criterion_id: "c1" },
+            { criteria_count: 3, rating_count: 3, total_points: 20 }
+          )
+        end.to raise_error(/Cannot regenerate criteria with learning outcomes attached/)
+      end
+    end
+
+    context "with learning outcome criteria" do
+      include_context "llm config for regenerate criteria"
+
+      let(:criteria_with_outcomes) do
+        [
+          {
+            id: "c1",
+            description: "Regular Criterion 1",
+            long_description: "Can be regenerated",
+            points: 25,
+            ratings: [
+              { id: "r1", description: "Excellent", points: 25 },
+              { id: "r2", description: "Good", points: 12.5 },
+              { id: "r3", description: "Poor", points: 0 }
+            ]
+          },
+          {
+            id: "c2",
+            description: "Learning Outcome Criterion",
+            long_description: "Tied to a learning outcome",
+            learning_outcome_id: 123,
+            points: 25,
+            generated: false,
+            ratings: [
+              { id: "r4", description: "Proficient", points: 25 },
+              { id: "r5", description: "Developing", points: 12.5 },
+              { id: "r6", description: "Beginning", points: 0 }
+            ]
+          },
+          {
+            id: "c3",
+            description: "Regular Criterion 2",
+            long_description: "Can be regenerated",
+            points: 25,
+            ratings: [
+              { id: "r7", description: "Excellent", points: 25 },
+              { id: "r8", description: "Good", points: 12.5 },
+              { id: "r9", description: "Poor", points: 0 }
+            ]
+          },
+          {
+            id: "c4",
+            description: "Another Learning Outcome",
+            long_description: "Also tied to outcome",
+            learning_outcome_id: 456,
+            points: 25,
+            ratings: [
+              { id: "r10", description: "Mastery", points: 25 },
+              { id: "r11", description: "Near Mastery", points: 12.5 },
+              { id: "r12", description: "Novice", points: 0 }
+            ]
+          }
+        ]
+      end
+
+      it "preserves learning outcome criteria at original indices" do
+        llm_text = <<~TEXT
+          <RUBRIC_DATA>
+          criterion:c1:description=Updated Regular Criterion 1
+          criterion:c1:long_description=This was regenerated
+          rating:r1:description=Outstanding
+          rating:r1:long_description=Top tier
+
+          criterion:c3:description=Updated Regular Criterion 2
+          criterion:c3:long_description=This was also regenerated
+          rating:r7:description=Amazing
+          rating:r7:long_description=Excellent work
+          </RUBRIC_DATA>
+        TEXT
+
+        expect(CedarClient).to receive(:prompt).with(
+          hash_including(
+            model: "anthropic.claude-3-haiku-20240307-v1:0",
+            feature_slug: "rubric-regenerate-criteria"
+          )
+        ).and_return(
+          cedar_response_struct.new(response: llm_text)
+        )
+
+        criteria = service.regenerate_criteria_via_llm(
+          assignment,
+          { criteria: criteria_with_outcomes },
+          { criteria_count: 4, rating_count: 3, total_points: 50, use_range: false }
+        )
+
+        expect(criteria.size).to eq 4
+
+        c1 = criteria[0]
+        expect(c1[:id]).to eq "c1"
+        expect(c1[:description]).to eq "Updated Regular Criterion 1"
+        expect(c1[:long_description]).to eq "This was regenerated"
+
+        c2 = criteria[1]
+        expect(c2[:id]).to eq "c2"
+        expect(c2[:description]).to eq "Learning Outcome Criterion"
+
+        c3 = criteria[2]
+        expect(c3[:id]).to eq "c3"
+        expect(c3[:description]).to eq "Updated Regular Criterion 2"
+
+        c4 = criteria[3]
+        expect(c4[:id]).to eq "c4"
+        expect(c4[:description]).to eq "Another Learning Outcome"
+
+        expect(criteria.pluck(:points)).to eq [25.0, 25.0, 25.0, 25.0]
+      end
+
+      it "skips LLM call when all criteria are outcomes based" do
+        all_outcome_criteria = criteria_with_outcomes.map do |c|
+          c.merge(learning_outcome_id: 999)
+        end
+
+        expect(CedarClient).not_to receive(:prompt)
+
+        criteria = service.regenerate_criteria_via_llm(
+          assignment,
+          { criteria: all_outcome_criteria },
+          { criteria_count: 4, rating_count: 3, total_points: 100, use_range: false }
+        )
+
+        expect(criteria.size).to eq 4
+        criteria.each_with_index do |criterion, index|
+          expect(criterion[:learning_outcome_id]).to eq 999
+          expect(criterion[:description]).to eq all_outcome_criteria[index][:description]
+          expect(criterion[:points]).to eq 25.0
+        end
+      end
+
+      it "preserves all learning outcome fields during full regeneration" do
+        criteria_with_all_fields = [
+          {
+            id: "c1",
+            description: "Regular Criterion",
+            long_description: "Can be regenerated",
+            points: 50,
+            ratings: [
+              { id: "r1", description: "Good", points: 50 },
+              { id: "r2", description: "Poor", points: 0 }
+            ]
+          },
+          {
+            id: "c2",
+            description: "Learning Outcome Criterion",
+            long_description: "Tied to outcome",
+            learning_outcome_id: 123,
+            ignore_for_scoring: true,
+            mastery_points: 3.0,
+            generated: false,
+            points: 50,
+            ratings: [
+              { id: "r3", description: "Mastery", points: 50 },
+              { id: "r4", description: "Developing", points: 0 }
+            ]
+          }
+        ]
+
+        llm_text = <<~TEXT
+          <RUBRIC_DATA>
+          criterion:c1:description=Updated Regular Criterion
+          criterion:c1:long_description=This was regenerated
+          rating:r1:description=Excellent
+          rating:r1:long_description=Top work
+          </RUBRIC_DATA>
+        TEXT
+
+        expect(CedarClient).to receive(:prompt).and_return(
+          cedar_response_struct.new(response: llm_text)
+        )
+
+        criteria = service.regenerate_criteria_via_llm(
+          assignment,
+          { criteria: criteria_with_all_fields },
+          { criteria_count: 2, rating_count: 2, total_points: 100, use_range: false }
+        )
+
+        expect(criteria.size).to eq 2
+
+        c1 = criteria[0]
+        expect(c1[:id]).to eq "c1"
+        expect(c1[:description]).to eq "Updated Regular Criterion"
+        expect(c1[:generated]).to be true
+
+        c2 = criteria[1]
+        expect(c2[:id]).to eq "c2"
+        expect(c2[:description]).to eq "Learning Outcome Criterion"
+        expect(c2[:long_description]).to eq "Tied to outcome"
+        expect(c2[:learning_outcome_id]).to eq 123
+        expect(c2[:ignore_for_scoring]).to be true
+        expect(c2[:mastery_points]).to eq 3.0
+        expect(c2[:generated]).to be false
+        expect(c2[:points]).to eq 50.0
+      end
+
+      it "preserves learning outcome fields when all criteria have outcomes" do
+        all_outcome_criteria = [
+          {
+            id: "c1",
+            description: "Outcome Criterion 1",
+            learning_outcome_id: 111,
+            ignore_for_scoring: false,
+            mastery_points: 4.0,
+            generated: false,
+            points: 50
+          },
+          {
+            id: "c2",
+            description: "Outcome Criterion 2",
+            learning_outcome_id: 222,
+            ignore_for_scoring: true,
+            mastery_points: 5.0,
+            generated: false,
+            points: 50
+          }
+        ]
+
+        # Should NOT call the LLM
+        expect(CedarClient).not_to receive(:prompt)
+
+        criteria = service.regenerate_criteria_via_llm(
+          assignment,
+          { criteria: all_outcome_criteria },
+          { criteria_count: 2, rating_count: 2, total_points: 100 }
+        )
+
+        expect(criteria.size).to eq 2
+
+        # First criterion - all fields preserved, generated forced to false
+        expect(criteria[0][:learning_outcome_id]).to eq 111
+        expect(criteria[0][:ignore_for_scoring]).to be false
+        expect(criteria[0][:mastery_points]).to eq 4.0
+        expect(criteria[0][:generated]).to be false
+        expect(criteria[0][:points]).to eq 50.0
+
+        # Second criterion - all fields preserved, generated forced to false
+        expect(criteria[1][:learning_outcome_id]).to eq 222
+        expect(criteria[1][:ignore_for_scoring]).to be true
+        expect(criteria[1][:mastery_points]).to eq 5.0
+        expect(criteria[1][:generated]).to be false
+        expect(criteria[1][:points]).to eq 50.0
+      end
+
+      it "preserves learning outcome fields at multiple indices" do
+        mixed_criteria = [
+          {
+            id: "c1",
+            description: "Outcome 1",
+            learning_outcome_id: 100,
+            ignore_for_scoring: true,
+            mastery_points: 2.5,
+            generated: false,
+            points: 25,
+            ratings: []
+          },
+          {
+            id: "c2",
+            description: "Regular 1",
+            points: 25,
+            ratings: []
+          },
+          {
+            id: "c3",
+            description: "Outcome 2",
+            learning_outcome_id: 200,
+            ignore_for_scoring: false,
+            mastery_points: 3.5,
+            generated: false,
+            points: 25,
+            ratings: []
+          },
+          {
+            id: "c4",
+            description: "Regular 2",
+            points: 25,
+            ratings: []
+          }
+        ]
+
+        llm_text = <<~TEXT
+          <RUBRIC_DATA>
+          criterion:c2:description=Updated Regular 1
+          criterion:c2:long_description=Regenerated
+          criterion:c4:description=Updated Regular 2
+          criterion:c4:long_description=Also regenerated
+          </RUBRIC_DATA>
+        TEXT
+
+        expect(CedarClient).to receive(:prompt).and_return(
+          cedar_response_struct.new(response: llm_text)
+        )
+
+        criteria = service.regenerate_criteria_via_llm(
+          assignment,
+          { criteria: mixed_criteria },
+          { criteria_count: 4, rating_count: 2, total_points: 100 }
+        )
+
+        expect(criteria.size).to eq 4
+
+        # Outcome criterion at index 0 - preserved
+        expect(criteria[0][:id]).to eq "c1"
+        expect(criteria[0][:learning_outcome_id]).to eq 100
+        expect(criteria[0][:ignore_for_scoring]).to be true
+        expect(criteria[0][:mastery_points]).to eq 2.5
+        expect(criteria[0][:generated]).to be false
+
+        # Regular criterion at index 1 - regenerated
+        expect(criteria[1][:id]).to eq "c2"
+        expect(criteria[1][:description]).to eq "Updated Regular 1"
+        expect(criteria[1]).not_to have_key(:learning_outcome_id)
+
+        # Outcome criterion at index 2 - preserved, generated forced to false
+        expect(criteria[2][:id]).to eq "c3"
+        expect(criteria[2][:learning_outcome_id]).to eq 200
+        expect(criteria[2][:ignore_for_scoring]).to be false
+        expect(criteria[2][:mastery_points]).to eq 3.5
+        expect(criteria[2][:generated]).to be false
+
+        # Regular criterion at index 3 - regenerated
+        expect(criteria[3][:id]).to eq "c4"
+        expect(criteria[3][:description]).to eq "Updated Regular 2"
+        expect(criteria[3]).not_to have_key(:learning_outcome_id)
+      end
+
+      it "sets generated to false for learning outcome criterions when not present" do
+        criteria_without_generated = [
+          {
+            id: "c1",
+            description: "Regular Criterion",
+            points: 50,
+            ratings: []
+          },
+          {
+            id: "c2",
+            description: "Learning Outcome Criterion",
+            learning_outcome_id: 123,
+            ignore_for_scoring: true,
+            mastery_points: 3.0,
+            points: 50,
+            ratings: []
+          }
+        ]
+
+        llm_text = <<~TEXT
+          <RUBRIC_DATA>
+          criterion:c1:description=Updated Regular Criterion
+          criterion:c1:long_description=Regenerated
+          </RUBRIC_DATA>
+        TEXT
+
+        expect(CedarClient).to receive(:prompt).and_return(
+          cedar_response_struct.new(response: llm_text)
+        )
+
+        criteria = service.regenerate_criteria_via_llm(
+          assignment,
+          { criteria: criteria_without_generated },
+          { criteria_count: 2, rating_count: 2, total_points: 100 }
+        )
+
+        expect(criteria.size).to eq 2
+
+        # Regular criterion gets generated: true from regeneration
+        expect(criteria[0][:generated]).to be true
+
+        # Learning outcome criterion should have generated set to false as fallback
+        expect(criteria[1][:learning_outcome_id]).to eq 123
+        expect(criteria[1][:generated]).to be false
+      end
+
+      it "sets generated to false when all criterions are learning outcomes without the field" do
+        all_outcome_criteria_no_flag = [
+          {
+            id: "c1",
+            description: "Outcome 1",
+            learning_outcome_id: 100,
+            mastery_points: 3.0,
+            points: 50
+          },
+          {
+            id: "c2",
+            description: "Outcome 2",
+            learning_outcome_id: 200,
+            mastery_points: 4.0,
+            points: 50
+          }
+        ]
+
+        expect(CedarClient).not_to receive(:prompt)
+
+        criteria = service.regenerate_criteria_via_llm(
+          assignment,
+          { criteria: all_outcome_criteria_no_flag },
+          { criteria_count: 2, rating_count: 2, total_points: 100 }
+        )
+
+        expect(criteria.size).to eq 2
+
+        expect(criteria[0][:generated]).to be false
+        expect(criteria[1][:generated]).to be false
+      end
+
+      it "normalizes ratings from hash to array for learning outcome criterions" do
+        criteria_with_hash_ratings = [
+          {
+            id: "c1",
+            description: "Regular Criterion",
+            points: 50,
+            ratings: [
+              { id: "r1", description: "Good", points: 50 },
+              { id: "r2", description: "Poor", points: 0 }
+            ]
+          },
+          {
+            id: "c2",
+            description: "Learning Outcome with Hash Ratings",
+            learning_outcome_id: 123,
+            mastery_points: 3.0,
+            points: 50,
+            ratings: {
+              "r3" => { id: "r3", description: "Mastery", points: 50 },
+              "r4" => { id: "r4", description: "Developing", points: 0 }
+            }
+          }
+        ]
+
+        llm_text = <<~TEXT
+          <RUBRIC_DATA>
+          criterion:c1:description=Updated Regular
+          criterion:c1:long_description=Regenerated
+          </RUBRIC_DATA>
+        TEXT
+
+        expect(CedarClient).to receive(:prompt).and_return(
+          cedar_response_struct.new(response: llm_text)
+        )
+
+        criteria = service.regenerate_criteria_via_llm(
+          assignment,
+          { criteria: criteria_with_hash_ratings },
+          { criteria_count: 2, rating_count: 2, total_points: 100 }
+        )
+
+        # Learning outcome criterion should have ratings as an array, not a hash
+        c2 = criteria.find { |c| c[:id] == "c2" }
+        expect(c2[:ratings]).to be_an(Array)
+        expect(c2[:ratings].size).to eq 2
+        expect(c2[:ratings][0]).to have_key(:id)
+        expect(c2[:ratings][0]).to have_key(:description)
+      end
+
+      it "normalizes ratings when all criterions are learning outcomes with hash ratings" do
+        all_outcome_hash_ratings = [
+          {
+            id: "c1",
+            description: "Outcome 1",
+            learning_outcome_id: 100,
+            mastery_points: 3.0,
+            points: 50,
+            ratings: {
+              "r1" => { id: "r1", description: "Excellent", points: 50 },
+              "r2" => { id: "r2", description: "Good", points: 25 }
+            }
+          },
+          {
+            id: "c2",
+            description: "Outcome 2",
+            learning_outcome_id: 200,
+            mastery_points: 4.0,
+            points: 50,
+            ratings: {
+              "r3" => { id: "r3", description: "Mastery", points: 50 },
+              "r4" => { id: "r4", description: "Developing", points: 25 }
+            }
+          }
+        ]
+
+        expect(CedarClient).not_to receive(:prompt)
+
+        criteria = service.regenerate_criteria_via_llm(
+          assignment,
+          { criteria: all_outcome_hash_ratings },
+          { criteria_count: 2, rating_count: 2, total_points: 100 }
+        )
+
+        criteria.each do |criterion|
+          expect(criterion[:ratings]).to be_an(Array)
+          expect(criterion[:ratings].size).to eq 2
+        end
       end
     end
 
@@ -433,7 +1302,7 @@ describe RubricLLMService do
 
       let(:method_args) { [{ criteria: existing_criteria }, {}] }
 
-      include_examples "validates rubric user and assignment", :regenerate_criteria_via_llm
+      it_behaves_like "validates rubric user and assignment", :regenerate_criteria_via_llm
 
       it "raises when no <RUBRIC_DATA> block is found" do
         expect(CedarClient).to receive(:prompt).and_return(
@@ -627,7 +1496,7 @@ describe RubricLLMService do
         expect(crit["ratings"][0]["long_description"]).to eq("Updated Rating Long")
       end
 
-      it "adds new ratings if not found" do
+      it "replaces with new ratings" do
         update_text = <<~TEXT
           criterion:c1:description=Updated
           rating:r3:description=New Rating
@@ -638,7 +1507,7 @@ describe RubricLLMService do
         parsed = JSON.parse(result)
 
         crit = parsed["criteria"][0]
-        expect(crit["ratings"].size).to eq(1) # Only added the new rating since it doesn't match any existing ones
+        expect(crit["ratings"].size).to eq(1) # Replaces all ratings with only the new r3; original r1 and r2 are removed
         new_rating = crit["ratings"].find { |r| r["id"] == "r3" }
         expect(new_rating["description"]).to eq("New Rating")
         expect(new_rating["long_description"]).to eq("New Rating Long")
@@ -679,7 +1548,6 @@ describe RubricLLMService do
       end
 
       it "creates new criteria with _new_ placeholder IDs" do
-        # Mock the unique_item_id method to return predictable IDs
         allow(rubric).to receive(:unique_item_id).and_return("new_id_1", "new_id_2", "new_id_3")
 
         update_text = <<~TEXT
@@ -791,41 +1659,18 @@ describe RubricLLMService do
     include_context "service with access to private methods"
 
     describe "#build_structure_directives_for_llm" do
-      it "generates directives for adding missing criteria" do
+      it "generates directives for adding missing ratings" do
         existing_criteria = [
           { id: "c1", ratings: [{ id: "r1" }, { id: "r2" }] }
         ]
 
         directives = service_with_access.public_build_structure_directives_for_llm(
           existing_criteria:,
-          required_criteria_count: 3,
           required_rating_count: 4
         )
 
-        expect(directives).to include("Criteria count: current=1, required=3")
-        expect(directives).to include("You must append exactly 2 new criteria at the end:")
-        expect(directives).to include("criterion:_new_c_2 (with exactly 4 ratings)")
-        expect(directives).to include("criterion:_new_c_3 (with exactly 4 ratings)")
-        expect(directives).to include("Do not reorder existing criteria")
-        expect(directives).to include("Do not invent criteria with other IDs")
-        expect(directives).to include("Ratings for c1: current=2, required=4. Create 2 new ratings")
-      end
-
-      it "generates directives for removing extra criteria" do
-        existing_criteria = [
-          { id: "c1", ratings: [] },
-          { id: "c2", ratings: [] },
-          { id: "c3", ratings: [] }
-        ]
-
-        directives = service_with_access.public_build_structure_directives_for_llm(
-          existing_criteria:,
-          required_criteria_count: 2,
-          required_rating_count: 3
-        )
-
-        expect(directives).to include("Criteria count: current=3, required=2. Remove 1 criteria")
-        expect(directives).to include("IDs must remain stable for the rest")
+        expect(directives).to include("Ratings for c1: current=2, required=4.")
+        expect(directives).to include("Append 2 new rating(s) at the end (lowest performance levels), using _new_r_N IDs, listed in descending point order.")
       end
 
       it "generates directives for adding and removing ratings" do
@@ -836,27 +1681,13 @@ describe RubricLLMService do
 
         directives = service_with_access.public_build_structure_directives_for_llm(
           existing_criteria:,
-          required_criteria_count: 2,
           required_rating_count: 3
         )
 
-        expect(directives).to include("Ratings for c1: current=1, required=3. Create 2 new ratings")
-        expect(directives).to include("Ratings for c2: current=5, required=3. Remove 2 ratings")
-      end
-
-      it "handles creating all new criteria from scratch" do
-        existing_criteria = []
-
-        directives = service_with_access.public_build_structure_directives_for_llm(
-          existing_criteria:,
-          required_criteria_count: 2,
-          required_rating_count: 3
-        )
-
-        expect(directives).to include("Criteria count: current=0, required=2")
-        expect(directives).to include("You must create exactly the following 2 criteria")
-        expect(directives).to include("criterion:_new_c_1 (with exactly 3 ratings)")
-        expect(directives).to include("criterion:_new_c_2 (with exactly 3 ratings)")
+        expect(directives).to include("Ratings for c1: current=1, required=3.")
+        expect(directives).to include("Append 2 new rating(s) at the end (lowest performance levels), using _new_r_N IDs, listed in descending point order.")
+        expect(directives).to include("Ratings for c2: current=5, required=3.")
+        expect(directives).to include("Remove the 2 lowest-scoring rating(s).")
       end
 
       it "returns keep structure message when counts match" do
@@ -867,11 +1698,19 @@ describe RubricLLMService do
 
         directives = service_with_access.public_build_structure_directives_for_llm(
           existing_criteria:,
-          required_criteria_count: 2,
           required_rating_count: 3
         )
 
-        expect(directives).to eq("Keep the structure, criterion count, rating count and order as given.")
+        expect(directives).to eq("Keep the structure, return exactly 2 criteria, keep the rating counts and order as given.")
+      end
+
+      it "returns keep structure message for empty criteria" do
+        directives = service_with_access.public_build_structure_directives_for_llm(
+          existing_criteria: [],
+          required_rating_count: 3
+        )
+
+        expect(directives).to eq("Keep the structure, return exactly 0 criteria, keep the rating counts and order as given.")
       end
 
       it "handles Hash-based ratings format" do
@@ -887,24 +1726,23 @@ describe RubricLLMService do
 
         directives = service_with_access.public_build_structure_directives_for_llm(
           existing_criteria:,
-          required_criteria_count: 1,
           required_rating_count: 4
         )
 
-        expect(directives).to include("Ratings for c1: current=2, required=4. Create 2 new ratings")
+        expect(directives).to include("Ratings for c1: current=2, required=4.")
+        expect(directives).to include("Append 2 new rating(s) at the end (lowest performance levels), using _new_r_N IDs, listed in descending point order.")
       end
 
-      it "handles edge case with zero required counts" do
-        existing_criteria = [{ id: "c1", ratings: [{ id: "r1" }] }]
+      it "generates remove directives when ratings exceed required count" do
+        existing_criteria = [{ id: "c1", ratings: [{ id: "r1" }, { id: "r2" }] }]
 
         directives = service_with_access.public_build_structure_directives_for_llm(
           existing_criteria:,
-          required_criteria_count: 0,
-          required_rating_count: 0
+          required_rating_count: 1
         )
 
-        expect(directives).to include("Remove 1 criteria")
-        expect(directives).to include("Remove 1 ratings")
+        expect(directives).to include("Ratings for c1: current=2, required=1.")
+        expect(directives).to include("Remove the 1 lowest-scoring rating(s).")
       end
     end
 
@@ -979,7 +1817,7 @@ describe RubricLLMService do
         criteria = [
           { id: "c1", ratings: nil },
           { id: "c2", ratings: [] },
-          { id: "c3" } # no ratings key
+          { id: "c3" }
         ]
 
         used_ids = service_with_access.public_reserve_existing_ids!(criteria)
@@ -996,43 +1834,6 @@ describe RubricLLMService do
         used_ids = service_with_access.public_reserve_existing_ids!(criteria)
         expect(used_ids).to include("c1", "r1")
         expect(used_ids.keys.size).to eq(2)
-      end
-    end
-
-    describe "#determine_final_criterion_id" do
-      it "keeps existing ID when not colliding" do
-        service_with_access.used_ids = { "other_id" => true }
-
-        result = service_with_access.public_determine_final_criterion_id({ id: "c1" })
-        expect(result).to eq("c1")
-      end
-
-      it "generates unique ID for _new_c_ placeholders" do
-        allow(rubric).to receive(:unique_item_id).with("_new_c_1").and_return("unique_c1")
-
-        result = service_with_access.public_determine_final_criterion_id({ id: "_new_c_1" })
-        expect(result).to eq("unique_c1")
-      end
-
-      it "generates unique ID for unused IDs" do
-        allow(rubric).to receive(:unique_item_id).with("unused_id").and_return("unique_new")
-
-        result = service_with_access.public_determine_final_criterion_id({ id: "unused_id" })
-        expect(result).to eq("unique_new")
-      end
-
-      it "keeps colliding ID that's already used" do
-        service_with_access.used_ids = { "existing_id" => true }
-
-        result = service_with_access.public_determine_final_criterion_id({ id: "existing_id" })
-        expect(result).to eq("existing_id")
-      end
-
-      it "generates new ID when none provided" do
-        allow(rubric).to receive(:unique_item_id).and_return("generated_id")
-
-        result = service_with_access.public_determine_final_criterion_id({})
-        expect(result).to eq("generated_id")
       end
     end
 
@@ -1126,6 +1927,202 @@ describe RubricLLMService do
     end
   end
 
+  describe "#calculate_points_per_criterion" do
+    include_context "service with access to private methods"
+
+    it "returns a hash mapping criterion indices to point values" do
+      result = service_with_access.public_calculate_points_per_criterion(100, 5)
+      expect(result).to be_a(Hash)
+      expect(result.keys).to eq([0, 1, 2, 3, 4])
+    end
+
+    it "distributes points evenly across criteria" do
+      result = service_with_access.public_calculate_points_per_criterion(100, 5)
+      expect(result).to eq({
+                             0 => 20.0,
+                             1 => 20.0,
+                             2 => 20.0,
+                             3 => 20.0,
+                             4 => 20.0
+                           })
+    end
+
+    it "adjusts last criterion to account for rounding errors" do
+      # 100 / 3 = 33.33 (per criterion)
+      # First two: 33.33 each (66.66 total)
+      # Last: 100 - 66.66 = 33.34 (to ensure exact total)
+      result = service_with_access.public_calculate_points_per_criterion(100.0, 3)
+      expect(result).to eq({
+                             0 => 33.33,
+                             1 => 33.33,
+                             2 => 33.34
+                           })
+      expect(result.values.sum).to eq(100.0)
+    end
+
+    it "handles single criterion" do
+      result = service_with_access.public_calculate_points_per_criterion(50, 1)
+      expect(result).to eq({ 0 => 50.0 })
+    end
+
+    it "handles two criteria" do
+      result = service_with_access.public_calculate_points_per_criterion(100, 2)
+      expect(result).to eq({
+                             0 => 50.0,
+                             1 => 50.0
+                           })
+    end
+
+    it "rounds to specified precision (2 decimal places)" do
+      result = service_with_access.public_calculate_points_per_criterion(10.0, 3)
+      expect(result[0]).to eq(3.33)
+      expect(result[1]).to eq(3.33)
+      expect(result[2]).to eq(3.34) # Last criterion gets remainder
+    end
+
+    it "ensures total points sum exactly to the input" do
+      result = service_with_access.public_calculate_points_per_criterion(100.0, 7)
+      total = result.values.sum
+      expect(total).to eq(100.0)
+    end
+
+    it "handles fractional total_points" do
+      result = service_with_access.public_calculate_points_per_criterion(33.5, 4)
+      expect(result[0]).to eq(8.38)
+      expect(result[1]).to eq(8.38)
+      expect(result[2]).to eq(8.38)
+      expect(result[3]).to eq(8.36) # Last gets remainder: 33.5 - 25.14
+      expect(result.values.sum).to eq(33.5)
+    end
+
+    it "handles zero total_points" do
+      result = service_with_access.public_calculate_points_per_criterion(0, 5)
+      expect(result).to eq({
+                             0 => 0.0,
+                             1 => 0.0,
+                             2 => 0.0,
+                             3 => 0.0,
+                             4 => 0.0
+                           })
+    end
+
+    it "handles negative total_points" do
+      result = service_with_access.public_calculate_points_per_criterion(-20, 4)
+      expect(result[0]).to eq(-5.0)
+      expect(result[1]).to eq(-5.0)
+      expect(result[2]).to eq(-5.0)
+      expect(result[3]).to eq(-5.0)
+      expect(result.values.sum).to eq(-20.0)
+    end
+
+    it "handles large number of criteria" do
+      result = service_with_access.public_calculate_points_per_criterion(100.0, 1000)
+      expect(result[0]).to eq(0.1)
+      expect(result[999]).to be_within(0.01).of(0.1)
+      expect(result.values.sum).to be_within(0.01).of(100.0)
+    end
+
+    it "handles very small total_points" do
+      result = service_with_access.public_calculate_points_per_criterion(0.01, 5)
+      # 0.01 / 5 = 0.002, rounds to 0.0
+      expect(result[0]).to eq(0.0)
+      expect(result[1]).to eq(0.0)
+      expect(result[2]).to eq(0.0)
+      expect(result[3]).to eq(0.0)
+      # Last criterion gets the remainder
+      expect(result[4]).to eq(0.01)
+    end
+
+    it "handles very large total_points" do
+      result = service_with_access.public_calculate_points_per_criterion(1_000_000, 5)
+      expect(result).to eq({
+                             0 => 200_000.0,
+                             1 => 200_000.0,
+                             2 => 200_000.0,
+                             3 => 200_000.0,
+                             4 => 200_000.0
+                           })
+    end
+
+    it "handles edge case with 7 criteria and 100 points" do
+      result = service_with_access.public_calculate_points_per_criterion(100.0, 7)
+      # 100 / 7 = 14.285714..., rounds to 14.29
+      expect(result[0]).to eq(14.29)
+      expect(result[1]).to eq(14.29)
+      expect(result[2]).to eq(14.29)
+      expect(result[3]).to eq(14.29)
+      expect(result[4]).to eq(14.29)
+      expect(result[5]).to eq(14.29)
+      # Last criterion: 100 - (14.29 * 6) = 100 - 85.74 = 14.26
+      expect(result[6]).to eq(14.26)
+      expect(result.values.sum).to eq(100.0)
+    end
+
+    it "handles uneven distribution with remainder going to last criterion" do
+      result = service_with_access.public_calculate_points_per_criterion(50.0, 6)
+      # 50 / 6 = 8.333..., rounds to 8.33
+      expect(result[0]).to eq(8.33)
+      expect(result[1]).to eq(8.33)
+      expect(result[2]).to eq(8.33)
+      expect(result[3]).to eq(8.33)
+      expect(result[4]).to eq(8.33)
+      # Last: 50 - (8.33 * 5) = 50 - 41.65 = 8.35
+      expect(result[5]).to eq(8.35)
+      expect(result.values.sum).to eq(50.0)
+    end
+
+    it "maintains precision with decimal points" do
+      result = service_with_access.public_calculate_points_per_criterion(99.99, 3)
+      # 99.99 / 3 = 33.33
+      expect(result[0]).to eq(33.33)
+      expect(result[1]).to eq(33.33)
+      # Last: 99.99 - 66.66 = 33.33
+      expect(result[2]).to eq(33.33)
+      expect(result.values.sum).to eq(99.99)
+    end
+
+    context "with precision verification" do
+      it "verifies ROUNDING_PRECISION is 2" do
+        expect(RubricLLMService::ROUNDING_PRECISION).to eq(2)
+      end
+
+      it "applies rounding precision correctly to each criterion" do
+        result = service_with_access.public_calculate_points_per_criterion(100.0, 6)
+        # 100 / 6 = 16.666666..., rounds to 16.67
+        expect(result[0]).to eq(16.67)
+        expect(result[1]).to eq(16.67)
+        expect(result[2]).to eq(16.67)
+        expect(result[3]).to eq(16.67)
+        expect(result[4]).to eq(16.67)
+        # Last: 100 - (16.67 * 5) = 100 - 83.35 = 16.65
+        expect(result[5]).to eq(16.65)
+      end
+
+      it "verifies rounded values are not truncated" do
+        result = service_with_access.public_calculate_points_per_criterion(100.0, 6)
+        # Verify rounding up occurred (16.67, not 16.66)
+        expect(result[0]).to eq(16.67)
+        expect(result[0]).not_to eq(16.66)
+      end
+    end
+
+    context "ensures total equals input exactly" do
+      it "with various criteria counts" do
+        [2, 3, 5, 7, 11, 13].each do |count|
+          result = service_with_access.public_calculate_points_per_criterion(100.0, count)
+          expect(result.values.sum).to eq(100.0), "Failed for #{count} criteria"
+        end
+      end
+
+      it "with various total points" do
+        [10, 25, 50, 75, 100, 150, 200].each do |points|
+          result = service_with_access.public_calculate_points_per_criterion(points, 3)
+          expect(result.values.sum).to eq(points.to_f), "Failed for #{points} points"
+        end
+      end
+    end
+  end
+
   describe "Criterion Building" do
     include_context "service with access to private methods"
 
@@ -1141,7 +2138,7 @@ describe RubricLLMService do
           ]
         }
 
-        result = service_with_access.public_build_criterion_from_llm(criterion_data, { points_per_criterion: 12, use_range: true })
+        result = service_with_access.public_build_criterion_from_llm(criterion_data, 12.0, true)
 
         expect(result[:description]).to eq("Valid Name")
         expect(result[:long_description]).to eq("Description")
@@ -1160,7 +2157,7 @@ describe RubricLLMService do
               ratings: [{ title: "Good", description: "Good work" }]
             }
 
-            result = service_with_access.public_build_criterion_from_llm(criterion_data, { points_per_criterion: 10 })
+            result = service_with_access.public_build_criterion_from_llm(criterion_data, 10.0, false)
             expect(result[:description]).to eq("No Description")
           end
         end
@@ -1172,7 +2169,7 @@ describe RubricLLMService do
             ratings: [{ title: "Good", description: "Good work" }]
           }
 
-          result = service_with_access.public_build_criterion_from_llm(criterion_data, { points_per_criterion: 10 })
+          result = service_with_access.public_build_criterion_from_llm(criterion_data, 10.0, false)
           expect(result[:description]).to eq("Valid Name")
         end
 
@@ -1186,14 +2183,14 @@ describe RubricLLMService do
             ]
           }
 
-          result = service_with_access.public_build_criterion_from_llm(criterion_data, { points_per_criterion: 12 })
+          result = service_with_access.public_build_criterion_from_llm(criterion_data, 12.0, false)
           expect(result[:ratings].pluck(:description)).to all(eq("No Description"))
         end
 
         it "handles zero ratings" do
           criterion_data = { name: "Criterion", ratings: [] }
 
-          result = service_with_access.public_build_criterion_from_llm(criterion_data, { points_per_criterion: 10 })
+          result = service_with_access.public_build_criterion_from_llm(criterion_data, 10.0, false)
 
           expect(result[:ratings]).to be_empty
           expect(result[:points]).to eq(0)
@@ -1205,7 +2202,7 @@ describe RubricLLMService do
             ratings: [{ title: "Only Rating" }]
           }
 
-          result = service_with_access.public_build_criterion_from_llm(criterion_data, { points_per_criterion: 10 })
+          result = service_with_access.public_build_criterion_from_llm(criterion_data, 10.0, false)
 
           expect(result[:ratings].size).to eq(1)
           expect(result[:ratings].first[:points]).to eq(10)
@@ -1218,13 +2215,13 @@ describe RubricLLMService do
             ratings: Array.new(7) { |i| { title: "Rating #{i + 1}" } }
           }
 
-          result = service_with_access.public_build_criterion_from_llm(criterion_data, { points_per_criterion: 18 })
+          result = service_with_access.public_build_criterion_from_llm(criterion_data, 18.0, false)
 
           points = result[:ratings].pluck(:points)
           expect(points.size).to eq(7)
-          expect(points.first).to eq(18)  # max points
-          expect(points.last).to eq(0)    # min points (rounded)
-          expect(points).to eq(points.sort.reverse) # descending order
+          expect(points.first).to eq(18)
+          expect(points.last).to eq(0)
+          expect(points).to eq(points.sort.reverse)
         end
 
         it "handles fractional points correctly with rounding" do
@@ -1237,13 +2234,13 @@ describe RubricLLMService do
             ]
           }
 
-          result = service_with_access.public_build_criterion_from_llm(criterion_data, { points_per_criterion: 7 })
+          result = service_with_access.public_build_criterion_from_llm(criterion_data, 7.0, false)
 
           points = result[:ratings].pluck(:points)
-          expect(points).to eq([7, 4, 0]) # 7, 3.5 rounded to 4, 0
+          expect(points).to eq([7, 3.5, 0])
         end
 
-        it "handles zero points_per_criterion" do
+        it "handles zero total_points" do
           criterion_data = {
             name: "Criterion",
             ratings: [
@@ -1252,14 +2249,14 @@ describe RubricLLMService do
             ]
           }
 
-          result = service_with_access.public_build_criterion_from_llm(criterion_data, { points_per_criterion: 0 })
+          result = service_with_access.public_build_criterion_from_llm(criterion_data, 0.0, false)
 
           points = result[:ratings].pluck(:points)
           expect(points).to eq([0, 0])
           expect(result[:points]).to eq(0)
         end
 
-        it "handles negative points_per_criterion" do
+        it "handles negative total_points" do
           criterion_data = {
             name: "Criterion",
             ratings: [
@@ -1268,10 +2265,10 @@ describe RubricLLMService do
             ]
           }
 
-          result = service_with_access.public_build_criterion_from_llm(criterion_data, { points_per_criterion: -10 })
+          result = service_with_access.public_build_criterion_from_llm(criterion_data, -5.0, false)
 
           points = result[:ratings].pluck(:points)
-          expect(points).to eq([0, -10]) # Ratings get sorted by points descending: -10 - (-10*0) = -10, -10 - (-10*1) = 0, sorted = [0, -10]
+          expect(points).to eq([0.0, -5.0]) # Ratings get sorted by points descending: -5.0 - (-5.0*0) = -5.0, -5.0 - (-5.0*1) = 0, sorted = [0, -5.0]
         end
 
         it "handles very small fractional points" do
@@ -1284,11 +2281,11 @@ describe RubricLLMService do
             ]
           }
 
-          result = service_with_access.public_build_criterion_from_llm(criterion_data, { points_per_criterion: 0.01 })
+          result = service_with_access.public_build_criterion_from_llm(criterion_data, 0.01, false)
 
           points = result[:ratings].pluck(:points)
-          expect(points).to all(be_a(Integer)) # should be rounded
-          expect(points.first).to eq(0) # 0.01 rounds to 0
+          expect(points).to all(be_a(Float))
+          expect(points.first).to eq(0.01)
         end
       end
 
@@ -1296,9 +2293,9 @@ describe RubricLLMService do
         it "handles truthy use_range values" do
           criterion_data = { name: "Test", ratings: [] }
 
-          result1 = service_with_access.public_build_criterion_from_llm(criterion_data, { use_range: true })
-          result2 = service_with_access.public_build_criterion_from_llm(criterion_data, { use_range: "yes" })
-          result3 = service_with_access.public_build_criterion_from_llm(criterion_data, { use_range: 1 })
+          result1 = service_with_access.public_build_criterion_from_llm(criterion_data, 0.0, true)
+          result2 = service_with_access.public_build_criterion_from_llm(criterion_data, 0.0, "yes")
+          result3 = service_with_access.public_build_criterion_from_llm(criterion_data, 0.0, 1)
 
           expect(result1[:criterion_use_range]).to be true
           expect(result2[:criterion_use_range]).to be true
@@ -1308,9 +2305,9 @@ describe RubricLLMService do
         it "handles falsy use_range values" do
           criterion_data = { name: "Test", ratings: [] }
 
-          result1 = service_with_access.public_build_criterion_from_llm(criterion_data, { use_range: false })
-          result2 = service_with_access.public_build_criterion_from_llm(criterion_data, { use_range: nil })
-          result3 = service_with_access.public_build_criterion_from_llm(criterion_data, {}) # missing key defaults to false
+          result1 = service_with_access.public_build_criterion_from_llm(criterion_data, 0.0, false)
+          result2 = service_with_access.public_build_criterion_from_llm(criterion_data, 0.0, nil)
+          result3 = service_with_access.public_build_criterion_from_llm(criterion_data, 0.0, false)
 
           expect(result1[:criterion_use_range]).to be false
           expect(result2[:criterion_use_range]).to be false
@@ -1332,13 +2329,13 @@ describe RubricLLMService do
           ]
         }
 
-        result = service_with_access.public_rebuild_regenerated_criterion(criterion_data, { points_per_criterion: 10, use_range: false })
+        result = service_with_access.public_rebuild_regenerated_criterion(criterion_data, 10.0, false)
 
         expect(result[:description]).to eq("Valid Description")
         expect(result[:long_description]).to eq("Long description")
         points = result[:ratings].pluck(:points)
-        expect(points).to eq([10, 5, 0]) # evenly distributed points, sorted descending
-        expect(result[:points]).to eq(10) # max points
+        expect(points).to eq([10, 5, 0])
+        expect(result[:points]).to eq(10)
         expect(result[:ratings].size).to eq(3)
       end
 
@@ -1350,7 +2347,7 @@ describe RubricLLMService do
             ratings: []
           }
 
-          result = service_with_access.public_rebuild_regenerated_criterion(criterion_data, { points_per_criterion: 10, use_range: false })
+          result = service_with_access.public_rebuild_regenerated_criterion(criterion_data, 10.0, false)
           expect(result[:description]).to eq("No Description")
         end
       end
@@ -1362,8 +2359,142 @@ describe RubricLLMService do
           ratings: []
         }
 
-        result = service_with_access.public_rebuild_regenerated_criterion(criterion_data, { points_per_criterion: 10, use_range: false })
+        result = service_with_access.public_rebuild_regenerated_criterion(criterion_data, 10.0, false)
         expect(result[:description]).to eq("Valid Description")
+      end
+    end
+  end
+
+  describe "Dynamic Content Building" do
+    include_context "service with access to private methods"
+
+    describe "#build_generate_dynamic_content" do
+      it "strips HTML tags from assignment description" do
+        assignment.update!(description: "<p>Write an <strong>argumentative</strong> essay.</p>")
+
+        result = service_with_access.public_build_generate_dynamic_content(assignment, {})
+        content = JSON.parse(result[:CONTENT])
+
+        expect(content["description"]).to eq("Write an argumentative essay.")
+        expect(content["description"]).not_to match(/<[^>]+>/)
+      end
+
+      it "converts block-level elements preserving text" do
+        assignment.update!(description: "<h1>Prompt</h1><p>Body text here.</p>")
+
+        result = service_with_access.public_build_generate_dynamic_content(assignment, {})
+        content = JSON.parse(result[:CONTENT])
+
+        expect(content["description"]).to include("Prompt")
+        expect(content["description"]).to include("Body text here.")
+        expect(content["description"]).not_to include("<h1>")
+        expect(content["description"]).not_to include("<p>")
+      end
+
+      it "returns empty string for nil description" do
+        assignment.update!(description: nil)
+
+        result = service_with_access.public_build_generate_dynamic_content(assignment, {})
+        content = JSON.parse(result[:CONTENT])
+
+        expect(content["description"]).to eq("")
+      end
+
+      it "returns empty string for blank description" do
+        assignment.update!(description: "   ")
+
+        result = service_with_access.public_build_generate_dynamic_content(assignment, {})
+        content = JSON.parse(result[:CONTENT])
+
+        expect(content["description"]).to eq("")
+      end
+
+      it "preserves plain text descriptions unchanged" do
+        assignment.update!(description: "Write a 5-paragraph essay on climate change.")
+
+        result = service_with_access.public_build_generate_dynamic_content(assignment, {})
+        content = JSON.parse(result[:CONTENT])
+
+        expect(content["description"]).to eq("Write a 5-paragraph essay on climate change.")
+      end
+    end
+
+    describe "#parse_and_transform_generated_criteria" do
+      let(:base_options) { { total_points: 10, use_range: false } }
+      let(:single_criterion_response) do
+        '"criteria": [{"name": "Clarity", "description": "Clear writing", "ratings": [{"title": "Good", "description": "Well done"}, {"title": "Poor", "description": "Needs work"}]}]}'
+      end
+
+      it "parses a clean JSON response" do
+        result = service_with_access.public_parse_and_transform_generated_criteria(single_criterion_response, base_options)
+        expect(result).to be_an(Array)
+        expect(result.length).to eq(1)
+        expect(result.first[:description]).to eq("Clarity")
+      end
+
+      it "strips trailing text after the closing brace" do
+        response_with_trailing = single_criterion_response + "\n\nLanguage: English"
+        result = service_with_access.public_parse_and_transform_generated_criteria(response_with_trailing, base_options)
+        expect(result).to be_an(Array)
+        expect(result.length).to eq(1)
+      end
+
+      it "strips trailing whitespace and newlines after the closing brace" do
+        response_with_whitespace = single_criterion_response + "\n\n   \n"
+        result = service_with_access.public_parse_and_transform_generated_criteria(response_with_whitespace, base_options)
+        expect(result).to be_an(Array)
+        expect(result.length).to eq(1)
+      end
+
+      it "raises a user-friendly error when the response is malformed JSON" do
+        expect do
+          service_with_access.public_parse_and_transform_generated_criteria("not json at all", base_options)
+        end.to raise_error(JSON::ParserError, /AI response.*not in the expected format/)
+      end
+    end
+
+    describe "#build_regenerate_dynamic_content" do
+      let(:criteria_as_text) { "criterion:c1:description=Clarity" }
+
+      let(:default_kwargs) do
+        {
+          assignment:,
+          existing_criteria_text: criteria_as_text,
+          regeneration_target: "c1",
+          additional_user_prompt: "improve it",
+          grade_level: "higher-ed",
+          standard: "",
+          criteria_count: 1,
+          structure_directives: ""
+        }
+      end
+
+      it "strips HTML tags from assignment description" do
+        assignment.update!(description: "<p>Write an <em>analytical</em> essay.</p>")
+
+        result = service_with_access.public_build_regenerate_dynamic_content(**default_kwargs)
+        content = JSON.parse(result[:CONTENT])
+
+        expect(content["description"]).to eq("Write an analytical essay.")
+        expect(content["description"]).not_to match(/<[^>]+>/)
+      end
+
+      it "returns empty string for nil description" do
+        assignment.update!(description: nil)
+
+        result = service_with_access.public_build_regenerate_dynamic_content(**default_kwargs)
+        content = JSON.parse(result[:CONTENT])
+
+        expect(content["description"]).to eq("")
+      end
+
+      it "preserves plain text descriptions unchanged" do
+        assignment.update!(description: "Research and write about climate change.")
+
+        result = service_with_access.public_build_regenerate_dynamic_content(**default_kwargs)
+        content = JSON.parse(result[:CONTENT])
+
+        expect(content["description"]).to eq("Research and write about climate change.")
       end
     end
   end
@@ -1398,7 +2529,7 @@ describe RubricLLMService do
         expect(CedarClient).to receive(:conversation).and_raise(Timeout::Error.new("Connection timed out"))
 
         expect do
-          service.generate_criteria_via_llm(assignment, criteria_count: 2, rating_count: 3, points_per_criterion: 10)
+          service.generate_criteria_via_llm(assignment, criteria_count: 2, rating_count: 3, total_points: 10)
         end.to raise_error(Timeout::Error)
       end
 
@@ -1406,7 +2537,7 @@ describe RubricLLMService do
         expect(CedarClient).to receive(:conversation).and_raise(SocketError.new("getaddrinfo: Name or service not known"))
 
         expect do
-          service.generate_criteria_via_llm(assignment, criteria_count: 2, rating_count: 3, points_per_criterion: 10)
+          service.generate_criteria_via_llm(assignment, criteria_count: 2, rating_count: 3, total_points: 10)
         end.to raise_error(SocketError)
       end
 
@@ -1414,7 +2545,7 @@ describe RubricLLMService do
         expect(CedarClient).to receive(:conversation).and_raise(RuntimeError.new("HTTP client error"))
 
         expect do
-          service.generate_criteria_via_llm(assignment, criteria_count: 2, rating_count: 3, points_per_criterion: 10)
+          service.generate_criteria_via_llm(assignment, criteria_count: 2, rating_count: 3, total_points: 10)
         end.to raise_error(RuntimeError, "HTTP client error")
       end
 
@@ -1444,11 +2575,11 @@ describe RubricLLMService do
 
       it "handles unexpected response formats from LLM service" do
         expect(CedarClient).to receive(:conversation).and_return(
-          double("BadResponse", response: nil)
+          cedar_response_struct.new(response: nil)
         )
 
         expect do
-          service.generate_criteria_via_llm(assignment, criteria_count: 2, rating_count: 3, points_per_criterion: 10)
+          service.generate_criteria_via_llm(assignment, criteria_count: 2, rating_count: 3, total_points: 10)
         end.to raise_error(ActiveRecord::NotNullViolation)
       end
 
@@ -1458,7 +2589,7 @@ describe RubricLLMService do
         )
 
         expect do
-          service.generate_criteria_via_llm(assignment, criteria_count: 1, rating_count: 2, points_per_criterion: 10)
+          service.generate_criteria_via_llm(assignment, criteria_count: 1, rating_count: 2, total_points: 10)
         end.to raise_error(JSON::ParserError)
       end
 
@@ -1468,7 +2599,7 @@ describe RubricLLMService do
         )
 
         expect do
-          service.generate_criteria_via_llm(assignment, criteria_count: 1, rating_count: 2, points_per_criterion: 10)
+          service.generate_criteria_via_llm(assignment, criteria_count: 1, rating_count: 2, total_points: 10)
         end.to raise_error(JSON::ParserError)
       end
     end
@@ -1565,25 +2696,8 @@ describe RubricLLMService do
         expect(result.size).to eq(1)
       end
 
-      it "gracefully handles criterion_id that doesn't exist" do
-        allow(LLMConfigs).to receive(:config_for).with("rubric_regenerate_criterion").and_return(
-          double("LLMConfig",
-                 name: "rubric-regenerate-criterionV2",
-                 model_id: "anthropic.claude-3-haiku-20240307-v1:0",
-                 generate_prompt_and_options: ["PROMPT", { temperature: 1.0 }])
-        )
-
-        response_text = <<~TEXT
-          <RUBRIC_DATA>
-          criterion:nonexistent_id:description=Updated
-          criterion:nonexistent_id:long_description=This ID doesn't exist
-          rating:r999:description=Good
-          </RUBRIC_DATA>
-        TEXT
-
-        expect(CedarClient).to receive(:prompt).and_return(
-          cedar_response_struct.new(response: response_text)
-        )
+      it "raises error early when criterion_id doesn't exist" do
+        expect(CedarClient).not_to receive(:prompt)
 
         expect do
           service.regenerate_criteria_via_llm(
@@ -1591,8 +2705,332 @@ describe RubricLLMService do
             { criteria: existing_criteria, criterion_id: "nonexistent_id" },
             { criteria_count: 1, rating_count: 1 }
           )
-        end.to raise_error(/No updates applied/)
+        end.to raise_error(/Cannot find criterion with id nonexistent_id/)
       end
+    end
+  end
+
+  describe "#resolve_item_id" do
+    let(:test_rubric) { rubric }
+    let(:test_service) { described_class.new(test_rubric) }
+
+    before { test_service.instance_variable_set(:@used_ids, {}) }
+
+    it "generates a new unique ID when raw_id is nil" do
+      result = test_service.send(:resolve_item_id, nil)
+      expect(result).to be_present
+    end
+
+    it "generates a new unique ID when raw_id is blank" do
+      result = test_service.send(:resolve_item_id, "")
+      expect(result).to be_present
+    end
+
+    it "delegates to unique_item_id for _new_c_ placeholder IDs" do
+      allow(rubric).to receive(:unique_item_id).with("_new_c_1").and_return("canvas_id_1")
+      result = test_service.send(:resolve_item_id, "_new_c_1")
+      expect(result).to eq("canvas_id_1")
+    end
+
+    it "delegates to unique_item_id for _new_r_ placeholder IDs" do
+      allow(rubric).to receive(:unique_item_id).with("_new_r_3").and_return("canvas_id_2")
+      result = test_service.send(:resolve_item_id, "_new_r_3")
+      expect(result).to eq("canvas_id_2")
+    end
+
+    it "generates a new ID for an unseen (not in @used_ids) raw ID" do
+      result = test_service.send(:resolve_item_id, "some_existing_id")
+      expect(result).to be_present
+    end
+
+    it "preserves an ID that is already in @used_ids" do
+      test_service.instance_variable_set(:@used_ids, { "known_id" => true })
+      result = test_service.send(:resolve_item_id, "known_id")
+      expect(result).to eq("known_id")
+    end
+
+    it "delegates to unique_item_id for an ID not in @used_ids, even when other IDs are present" do
+      test_service.instance_variable_set(:@used_ids, { "other_id" => true })
+      allow(rubric).to receive(:unique_item_id).with("c1").and_return("canvas_c1")
+      result = test_service.send(:resolve_item_id, "c1")
+      expect(result).to eq("canvas_c1")
+    end
+
+    it "generates a specific ID when none is provided" do
+      allow(rubric).to receive(:unique_item_id).and_return("generated_id")
+      result = test_service.send(:resolve_item_id, nil)
+      expect(result).to eq("generated_id")
+    end
+  end
+
+  describe "#build_blank_criterion" do
+    let(:test_rubric) { rubric }
+    let(:test_service) { described_class.new(test_rubric) }
+
+    it "returns a hash with the correct structure" do
+      result = test_service.send(:build_blank_criterion, id: "c1", points: 10, use_range: false)
+      expect(result).to include(
+        "id" => "c1",
+        "description" => "",
+        "long_description" => "",
+        "ratings" => [],
+        "points" => 10,
+        "generated" => true
+      )
+    end
+
+    it "uses use_range as fallback when original_criterion is nil" do
+      result = test_service.send(:build_blank_criterion, id: "c1", points: 5, use_range: true)
+      expect(result["criterion_use_range"]).to be(true)
+    end
+
+    it "prefers original_criterion's criterion_use_range over use_range" do
+      original = { "criterion_use_range" => true }
+      result = test_service.send(:build_blank_criterion, id: "c1", points: 5, use_range: false, original_criterion: original)
+      expect(result["criterion_use_range"]).to be(true)
+    end
+
+    it "falls back to use_range when original_criterion has no criterion_use_range" do
+      original = { "description" => "no use_range key here" }
+      result = test_service.send(:build_blank_criterion, id: "c1", points: 5, use_range: true, original_criterion: original)
+      expect(result["criterion_use_range"]).to be(true)
+    end
+  end
+
+  describe "#build_blank_rating" do
+    let(:test_rubric) { rubric }
+    let(:test_service) { described_class.new(test_rubric) }
+
+    it "returns a hash with the correct structure" do
+      result = test_service.send(:build_blank_rating, id: "r1", criterion_id: "c1")
+      expect(result).to eq(
+        "id" => "r1",
+        "criterion_id" => "c1",
+        "description" => "",
+        "long_description" => "",
+        "points" => 0
+      )
+    end
+
+    it "sets description and long_description to empty strings" do
+      result = test_service.send(:build_blank_rating, id: "r2", criterion_id: "c2")
+      expect(result["description"]).to eq("")
+      expect(result["long_description"]).to eq("")
+    end
+
+    it "sets points to 0" do
+      result = test_service.send(:build_blank_rating, id: "r3", criterion_id: "c3")
+      expect(result["points"]).to eq(0)
+    end
+  end
+
+  describe "#resolve_generate_options" do
+    let(:test_service) { described_class.new(rubric) }
+
+    it "fills in all DEFAULT_GENERATE_OPTIONS keys when none are provided" do
+      result = test_service.send(:resolve_generate_options, {})
+      expect(result).to include(
+        criteria_count: 5,
+        rating_count: 4,
+        total_points: 100,
+        use_range: false,
+        grade_level: "higher-ed",
+        standard: "",
+        additional_prompt_info: ""
+      )
+    end
+
+    it "preserves caller-provided values over defaults" do
+      result = test_service.send(:resolve_generate_options, { criteria_count: 3, grade_level: "k-12" })
+      expect(result[:criteria_count]).to eq(3)
+      expect(result[:grade_level]).to eq("k-12")
+    end
+
+    it "keeps default values for keys not provided by the caller" do
+      result = test_service.send(:resolve_generate_options, { criteria_count: 3 })
+      expect(result[:rating_count]).to eq(4)
+      expect(result[:total_points]).to eq(100)
+    end
+  end
+
+  describe "#resolve_regenerate_options" do
+    let(:test_service) { described_class.new(rubric) }
+
+    it "includes all generate defaults" do
+      result = test_service.send(:resolve_regenerate_options, {}, {})
+      expect(result).to include(criteria_count: 5, rating_count: 4, total_points: 100)
+    end
+
+    it "uses additional_user_prompt from regenerate_options when present" do
+      result = test_service.send(:resolve_regenerate_options, {}, { additional_user_prompt: "be concise" })
+      expect(result[:additional_user_prompt]).to eq("be concise")
+    end
+
+    it "falls back to additional_prompt_info from generate_options when additional_user_prompt is absent" do
+      result = test_service.send(:resolve_regenerate_options, { additional_prompt_info: "focus on clarity" }, {})
+      expect(result[:additional_user_prompt]).to eq("focus on clarity")
+    end
+
+    it "falls back to hardcoded default when both prompt fields are blank" do
+      result = test_service.send(:resolve_regenerate_options, {}, {})
+      expect(result[:additional_user_prompt]).to eq("No specific expectations, just improve it.")
+    end
+
+    it "prefers additional_user_prompt over additional_prompt_info" do
+      result = test_service.send(:resolve_regenerate_options,
+                                 { additional_prompt_info: "from generate" },
+                                 { additional_user_prompt: "from regenerate" })
+      expect(result[:additional_user_prompt]).to eq("from regenerate")
+    end
+  end
+
+  describe "#normalize_boolean_field!" do
+    let(:test_rubric) { rubric }
+    let(:test_service) { described_class.new(test_rubric) }
+
+    it "converts boolean true to true" do
+      hash = { field: true }
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash[:field]).to be(true)
+    end
+
+    it "converts boolean false to false" do
+      hash = { field: false }
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash[:field]).to be(false)
+    end
+
+    it "converts string 'true' to true" do
+      hash = { field: "true" }
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash[:field]).to be(true)
+    end
+
+    it "converts string 'false' to false" do
+      hash = { field: "false" }
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash[:field]).to be(false)
+    end
+
+    it "converts string '1' to true" do
+      hash = { field: "1" }
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash[:field]).to be(true)
+    end
+
+    it "converts string '0' to false" do
+      hash = { field: "0" }
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash[:field]).to be(false)
+    end
+
+    it "converts integer 1 to true" do
+      hash = { field: 1 }
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash[:field]).to be(true)
+    end
+
+    it "converts integer 0 to false" do
+      hash = { field: 0 }
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash[:field]).to be(false)
+    end
+
+    it "converts string 't' to true" do
+      hash = { field: "t" }
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash[:field]).to be(true)
+    end
+
+    it "converts string 'f' to false" do
+      hash = { field: "f" }
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash[:field]).to be(false)
+    end
+
+    it "converts string 'yes' to true" do
+      hash = { field: "yes" }
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash[:field]).to be(true)
+    end
+
+    it "converts string 'no' to true (not a recognized falsy value)" do
+      hash = { field: "no" }
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash[:field]).to be(true)
+    end
+
+    it "converts nil to nil (preserved)" do
+      hash = { field: nil }
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash[:field]).to be_nil
+    end
+
+    it "converts empty string to nil" do
+      hash = { field: "" }
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash[:field]).to be_nil
+    end
+
+    it "does not modify hash when field is not present" do
+      hash = { other_field: "value" }
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash).to eq({ other_field: "value" })
+      expect(hash).not_to have_key(:field)
+    end
+
+    it "handles uppercase string 'TRUE'" do
+      hash = { field: "TRUE" }
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash[:field]).to be(true)
+    end
+
+    it "handles uppercase string 'FALSE'" do
+      hash = { field: "FALSE" }
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash[:field]).to be(false)
+    end
+
+    it "handles mixed case string 'True'" do
+      hash = { field: "True" }
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash[:field]).to be(true)
+    end
+
+    it "converts mixed case string 'False' to true" do
+      hash = { field: "False" }
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash[:field]).to be(true)
+    end
+
+    it "converts unexpected string values to true (default behavior)" do
+      hash = { field: "random_string" }
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash[:field]).to be(true)
+    end
+
+    it "modifies the hash in place" do
+      hash = { field: "true" }
+      original_hash = hash
+      test_service.send(:normalize_boolean_field!, hash, :field)
+      expect(hash.object_id).to eq(original_hash.object_id)
+      expect(hash[:field]).to be(true)
+    end
+
+    it "works with string keys" do
+      hash = { "field" => "1" }
+      test_service.send(:normalize_boolean_field!, hash, "field")
+      expect(hash["field"]).to be(true)
+    end
+
+    it "handles multiple fields independently" do
+      hash = { field1: "true", field2: "false", field3: "1" }
+      test_service.send(:normalize_boolean_field!, hash, :field1)
+      test_service.send(:normalize_boolean_field!, hash, :field2)
+      test_service.send(:normalize_boolean_field!, hash, :field3)
+      expect(hash[:field1]).to be(true)
+      expect(hash[:field2]).to be(false)
+      expect(hash[:field3]).to be(true)
     end
   end
 end

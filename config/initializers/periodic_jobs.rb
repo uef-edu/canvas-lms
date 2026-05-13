@@ -168,6 +168,10 @@ Rails.configuration.after_initialize do
   end
 
   unless ApplicationController.test_cluster?
+    Delayed::Periodic.cron "AccessToken.send_expiration_reminders", "0 6 * * *", priority: Delayed::LOW_PRIORITY do
+      with_each_shard_by_database(AccessToken, :send_expiration_reminders, local_offset: true)
+    end
+
     Delayed::Periodic.cron "Attachments::GarbageCollector::ContentExportAndMigrationContextType.delete_content", "37 1 * * *" do
       with_each_shard_by_database(Attachments::GarbageCollector::ContentExportAndMigrationContextType, :delete_content, jitter: 30.minutes, local_offset: true)
     end
@@ -195,6 +199,10 @@ Rails.configuration.after_initialize do
       :process,
       { run_current_region_asynchronously: true }
     )
+  end
+
+  Delayed::Periodic.cron "YoutubeMigrationService.process_stuck_scans", "*/30 * * * *" do
+    with_each_shard_by_database(YoutubeMigrationService, :process_stuck_scans)
   end
 
   Delayed::Periodic.cron "NotificationFailureProcessor.process", "*/5 * * * *" do
@@ -344,6 +352,10 @@ Rails.configuration.after_initialize do
 
   Delayed::Periodic.cron "Feature.remove_obsolete_flags", "0 8 * * 0", priority: Delayed::LOWER_PRIORITY do
     with_each_shard_by_database(Feature, :remove_obsolete_flags)
+  end
+
+  Delayed::Periodic.cron "BrandConfigReconciler.process", "0 3 * * 6", priority: Delayed::LOWER_PRIORITY do
+    with_each_shard_by_database(BrandConfigReconciler, :process, local_offset: true)
   end
 
   Delayed::Periodic.cron "Assignment.disable_post_to_sis_if_grading_period_closed", "*/5 * * * *", priority: Delayed::LOWER_PRIORITY do

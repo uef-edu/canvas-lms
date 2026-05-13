@@ -22,28 +22,33 @@ import userEvent from '@testing-library/user-event'
 import {QueryClient} from '@tanstack/react-query'
 import {MockedQueryClientProvider} from '@canvas/test-utils/query'
 import Assignment from '@canvas/assignments/backbone/models/Assignment'
-import PeerReviewDetails from '../PeerReviewDetails'
+import PeerReviewDetails, {type AssignmentModel} from '../PeerReviewDetails'
 import {MAX_NUM_PEER_REVIEWS} from '../hooks/usePeerReviewSettings'
+import {SETTING_MESSAGES} from '@canvas/assignments/react/hooks/useSettingDependency'
 
-jest.mock('@canvas/graphql', () => ({
-  executeQuery: jest.fn(),
+vi.mock('@canvas/graphql', () => ({
+  executeQuery: vi.fn(),
 }))
 
-// @ts-expect-error
-global.ENV = {
+window.ENV = {
+  ...window.ENV,
   use_high_contrast: false,
   PEER_REVIEW_ALLOCATION_AND_GRADING_ENABLED: true,
 }
 
+const PEER_REVIEW_SUBMISSIONS_WARNING =
+  'Students have already submitted peer reviews, so peer reviews cannot be disabled and reviews required and points cannot be changed.'
+
 const createMockAssignment = (overrides = {}) => ({
-  peerReviews: jest.fn(() => false),
-  peerReviewCount: jest.fn(() => 1),
-  moderatedGrading: jest.fn(() => false),
-  courseID: jest.fn(() => '123'),
-  getId: jest.fn(() => '456'),
-  peerReviewSubmissionRequired: jest.fn(() => false),
-  groupCategoryId: jest.fn(() => null),
-  peerReviewAcrossSections: jest.fn(() => true),
+  peerReviews: vi.fn(() => false),
+  peerReviewCount: vi.fn(() => 1),
+  moderatedGrading: vi.fn(() => false),
+  courseID: vi.fn(() => '123'),
+  getId: vi.fn(() => '456'),
+  peerReviewSubmissionRequired: vi.fn(() => false),
+  groupCategoryId: vi.fn(() => null),
+  peerReviewAcrossSections: vi.fn(() => true),
+  hasPeerReviewSubmissions: vi.fn(() => false),
   ...overrides,
 })
 
@@ -53,20 +58,42 @@ function renderWithQueryClient(ui: React.ReactElement) {
 }
 
 describe('PeerReviewDetails', () => {
-  let assignment: Assignment
+  let assignment: AssignmentModel
   let user: ReturnType<typeof userEvent.setup>
 
   beforeEach(() => {
     user = userEvent.setup()
-    assignment = createMockAssignment() as unknown as Assignment
-    assignment.peerReviews = jest.fn(() => false)
-    assignment.moderatedGrading = jest.fn(() => false)
+    assignment = createMockAssignment() as unknown as AssignmentModel
+    assignment.peerReviews = vi.fn(() => false)
+    assignment.moderatedGrading = vi.fn(() => false)
 
-    window.removeEventListener('message', jest.fn())
+    window.removeEventListener('message', vi.fn())
   })
 
   afterEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
+  })
+
+  describe('Accessibility', () => {
+    it('renders review count and points inputs as type text, not number', async () => {
+      renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
+      const checkbox = screen.getByTestId('peer-review-checkbox')
+      await user.click(checkbox)
+
+      const reviewsInput = screen.getByTestId('reviews-required-input')
+      const pointsInput = screen.getByTestId('points-per-review-input')
+      expect(reviewsInput).toHaveAttribute('type', 'text')
+      expect(pointsInput).toHaveAttribute('type', 'text')
+    })
+
+    it('programmatically associates visible labels with inputs', async () => {
+      renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
+      const checkbox = screen.getByTestId('peer-review-checkbox')
+      await user.click(checkbox)
+
+      expect(screen.getByLabelText('Reviews Required')).toBeInTheDocument()
+      expect(screen.getByLabelText('Points per Peer Review')).toBeInTheDocument()
+    })
   })
 
   describe('Initial rendering', () => {
@@ -76,7 +103,7 @@ describe('PeerReviewDetails', () => {
     })
 
     it('renders checkbox as checked when assignment has peer reviews enabled', () => {
-      assignment.peerReviews = jest.fn(() => true)
+      assignment.peerReviews = vi.fn(() => true)
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
       expect(screen.getByTestId('peer-review-checkbox')).toBeChecked()
@@ -90,7 +117,7 @@ describe('PeerReviewDetails', () => {
     })
 
     it('renders checkbox as disabled when assignment is moderated', () => {
-      assignment.moderatedGrading = jest.fn(() => true)
+      assignment.moderatedGrading = vi.fn(() => true)
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
       const checkbox = screen.getByTestId('peer-review-checkbox')
@@ -98,8 +125,8 @@ describe('PeerReviewDetails', () => {
     })
 
     it('loads initial value of submission required as checked when set to true in assignment', async () => {
-      assignment.peerReviews = jest.fn(() => true)
-      assignment.peerReviewSubmissionRequired = jest.fn(() => true)
+      assignment.peerReviews = vi.fn(() => true)
+      assignment.peerReviewSubmissionRequired = vi.fn(() => true)
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
@@ -111,7 +138,7 @@ describe('PeerReviewDetails', () => {
     })
 
     it('defaults submission required to unchecked when not set in assignment', async () => {
-      assignment.peerReviews = jest.fn(() => true)
+      assignment.peerReviews = vi.fn(() => true)
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
       const advancedSettingsToggle = screen.getByText('Advanced Peer Review Configurations')
@@ -122,8 +149,8 @@ describe('PeerReviewDetails', () => {
     })
 
     it('loads initial value of across sections as checked when set to true in assignment', async () => {
-      assignment.peerReviews = jest.fn(() => true)
-      assignment.peerReviewAcrossSections = jest.fn(() => true)
+      assignment.peerReviews = vi.fn(() => true)
+      assignment.peerReviewAcrossSections = vi.fn(() => true)
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
@@ -135,8 +162,8 @@ describe('PeerReviewDetails', () => {
     })
 
     it('defaults across sections to checked when not set in assignment', async () => {
-      assignment.peerReviews = jest.fn(() => true)
-      assignment.peerReviewAcrossSections = jest.fn(() => true)
+      assignment.peerReviews = vi.fn(() => true)
+      assignment.peerReviewAcrossSections = vi.fn(() => true)
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
@@ -157,12 +184,12 @@ describe('PeerReviewDetails', () => {
       expect(checkbox).toBeChecked()
       expect(screen.getByText('Review Settings')).toBeInTheDocument()
       expect(screen.getByText('Reviews Required*')).toBeInTheDocument()
-      expect(screen.getByText('Points per Peer Review')).toBeInTheDocument()
+      expect(screen.getAllByText('Points per Peer Review').length).toBeGreaterThan(0)
       expect(screen.getByText('Advanced Peer Review Configurations')).toBeInTheDocument()
     })
 
     it('hides settings when checkbox is unchecked', async () => {
-      assignment.peerReviews = jest.fn(() => true)
+      assignment.peerReviews = vi.fn(() => true)
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
       const checkbox = screen.getByTestId('peer-review-checkbox')
@@ -222,8 +249,8 @@ describe('PeerReviewDetails', () => {
       const reviewsRequiredInputAfter = screen.getByTestId('reviews-required-input')
       const pointsPerReviewInputAfter = screen.getByTestId('points-per-review-input')
 
-      expect(reviewsRequiredInputAfter).toHaveValue(1)
-      expect(pointsPerReviewInputAfter).toHaveValue(0)
+      expect(reviewsRequiredInputAfter).toHaveValue('1')
+      expect(pointsPerReviewInputAfter).toHaveValue('0')
       expect(
         screen.queryByText('Number of peer reviews cannot be negative.'),
       ).not.toBeInTheDocument()
@@ -248,24 +275,26 @@ describe('PeerReviewDetails', () => {
       const pointsPerReviewInput = screen.getByTestId('points-per-review-input')
       const totalPointsDisplay = screen.getByTestId('total-peer-review-points')
 
-      expect(reviewsRequiredInput).toHaveValue(1)
-      expect(pointsPerReviewInput).toHaveValue(0)
+      expect(reviewsRequiredInput).toHaveValue('1')
+      expect(pointsPerReviewInput).toHaveValue('0')
       expect(totalPointsDisplay).toHaveTextContent('0')
 
       await user.clear(reviewsRequiredInput)
       await user.type(reviewsRequiredInput, '3')
-      expect(reviewsRequiredInput).toHaveValue(3)
+      expect(reviewsRequiredInput).toHaveValue('3')
+      await user.click(pointsPerReviewInput)
       await user.clear(pointsPerReviewInput)
       await user.type(pointsPerReviewInput, '1.5')
-      expect(pointsPerReviewInput).toHaveValue(1.5)
+      expect(pointsPerReviewInput).toHaveValue('1.5')
       expect(totalPointsDisplay).toHaveTextContent('4.5')
 
       await user.clear(reviewsRequiredInput)
       await user.type(reviewsRequiredInput, '3')
-      expect(reviewsRequiredInput).toHaveValue(3)
+      expect(reviewsRequiredInput).toHaveValue('3')
+      await user.click(pointsPerReviewInput)
       await user.clear(pointsPerReviewInput)
       await user.type(pointsPerReviewInput, '2')
-      expect(pointsPerReviewInput).toHaveValue(2)
+      expect(pointsPerReviewInput).toHaveValue('2')
       expect(totalPointsDisplay).toHaveTextContent('6')
     })
 
@@ -278,19 +307,19 @@ describe('PeerReviewDetails', () => {
 
       await user.clear(reviewsRequiredInput)
       await user.tab()
-      expect(reviewsRequiredInput).toHaveValue(null)
+      expect(reviewsRequiredInput).toHaveValue('')
       expect(screen.getByText('Number of peer reviews is required.')).toBeInTheDocument()
 
       await user.clear(reviewsRequiredInput)
       await user.type(reviewsRequiredInput, '-2')
       await user.tab()
-      expect(reviewsRequiredInput).toHaveValue(-2)
+      expect(reviewsRequiredInput).toHaveValue('-2')
       expect(screen.getByText('Number of peer reviews cannot be negative.')).toBeInTheDocument()
 
       await user.clear(reviewsRequiredInput)
       await user.type(reviewsRequiredInput, `${MAX_NUM_PEER_REVIEWS + 1}`)
       await user.tab()
-      expect(reviewsRequiredInput).toHaveValue(MAX_NUM_PEER_REVIEWS + 1)
+      expect(reviewsRequiredInput).toHaveValue(String(MAX_NUM_PEER_REVIEWS + 1))
       expect(
         screen.getByText(`Number of peer reviews cannot exceed ${MAX_NUM_PEER_REVIEWS}.`),
       ).toBeInTheDocument()
@@ -298,8 +327,14 @@ describe('PeerReviewDetails', () => {
       await user.clear(reviewsRequiredInput)
       await user.type(reviewsRequiredInput, '2.5')
       await user.tab()
-      expect(reviewsRequiredInput).toHaveValue(2.5)
+      expect(reviewsRequiredInput).toHaveValue('2.5')
       expect(screen.getByText('Number of peer reviews must be a whole number.')).toBeInTheDocument()
+
+      await user.clear(reviewsRequiredInput)
+      await user.type(reviewsRequiredInput, 'abc')
+      await user.tab()
+      expect(reviewsRequiredInput).toHaveValue('abc')
+      expect(screen.getByText('Please enter a valid number.')).toBeInTheDocument()
     })
 
     it('displays errors for invalid inputs on "Points per Review" field', async () => {
@@ -312,8 +347,14 @@ describe('PeerReviewDetails', () => {
       await user.clear(pointsPerReviewInput)
       await user.type(pointsPerReviewInput, '-2')
       await user.tab()
-      expect(pointsPerReviewInput).toHaveValue(-2)
+      expect(pointsPerReviewInput).toHaveValue('-2')
       expect(screen.getByText('Points per review cannot be negative.')).toBeInTheDocument()
+
+      await user.clear(pointsPerReviewInput)
+      await user.type(pointsPerReviewInput, 'abc')
+      await user.tab()
+      expect(pointsPerReviewInput).toHaveValue('abc')
+      expect(screen.getByText('Please enter a valid number.')).toBeInTheDocument()
     })
 
     it('validates on blur for Reviews Required field', async () => {
@@ -396,7 +437,7 @@ describe('PeerReviewDetails', () => {
     it('shows within groups toggle when assignment is a group assignment', async () => {
       const mockCheckbox = document.getElementById('has_group_category') as HTMLInputElement
       mockCheckbox.checked = true
-      assignment.groupCategoryId = jest.fn(() => '123')
+      assignment.groupCategoryId = vi.fn(() => '123')
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
       const checkbox = screen.getByTestId('peer-review-checkbox')
@@ -411,7 +452,7 @@ describe('PeerReviewDetails', () => {
     it('hides within groups toggle when assignment has blank group category', async () => {
       const mockCheckbox = document.getElementById('has_group_category') as HTMLInputElement
       mockCheckbox.checked = false
-      assignment.groupCategoryId = jest.fn(() => 'blank')
+      assignment.groupCategoryId = vi.fn(() => 'blank')
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
       const checkbox = screen.getByTestId('peer-review-checkbox')
@@ -426,7 +467,7 @@ describe('PeerReviewDetails', () => {
     it('shows within groups toggle when group_category_changed event fires with group category', async () => {
       const mockCheckbox = document.getElementById('has_group_category') as HTMLInputElement
       mockCheckbox.checked = false
-      assignment.groupCategoryId = jest.fn(() => null)
+      assignment.groupCategoryId = vi.fn(() => null)
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
       const checkbox = screen.getByTestId('peer-review-checkbox')
@@ -437,7 +478,7 @@ describe('PeerReviewDetails', () => {
       expect(screen.queryByText('Allow peer reviews within groups')).not.toBeInTheDocument()
 
       mockCheckbox.checked = true
-      assignment.groupCategoryId = jest.fn(() => '456')
+      assignment.groupCategoryId = vi.fn(() => '456')
       fireEvent(document, new Event('group_category_changed'))
 
       await waitFor(() => {
@@ -449,7 +490,7 @@ describe('PeerReviewDetails', () => {
     it('hides within groups toggle when group_category_changed event fires without group category', async () => {
       const mockCheckbox = document.getElementById('has_group_category') as HTMLInputElement
       mockCheckbox.checked = true
-      assignment.groupCategoryId = jest.fn(() => '789')
+      assignment.groupCategoryId = vi.fn(() => '789')
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
       const checkbox = screen.getByTestId('peer-review-checkbox')
@@ -460,7 +501,7 @@ describe('PeerReviewDetails', () => {
       expect(screen.getByText('Allow peer reviews within groups')).toBeInTheDocument()
 
       mockCheckbox.checked = false
-      assignment.groupCategoryId = jest.fn(() => null)
+      assignment.groupCategoryId = vi.fn(() => null)
       fireEvent(document, new Event('group_category_changed'))
 
       await waitFor(() => {
@@ -472,7 +513,7 @@ describe('PeerReviewDetails', () => {
     it('hides within groups toggle when group_category_changed event fires with blank', async () => {
       const mockCheckbox = document.getElementById('has_group_category') as HTMLInputElement
       mockCheckbox.checked = true
-      assignment.groupCategoryId = jest.fn(() => '999')
+      assignment.groupCategoryId = vi.fn(() => '999')
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
       const checkbox = screen.getByTestId('peer-review-checkbox')
@@ -483,7 +524,7 @@ describe('PeerReviewDetails', () => {
       expect(screen.getByText('Allow peer reviews within groups')).toBeInTheDocument()
 
       mockCheckbox.checked = false
-      assignment.groupCategoryId = jest.fn(() => 'blank')
+      assignment.groupCategoryId = vi.fn(() => 'blank')
       fireEvent(document, new Event('group_category_changed'))
 
       await waitFor(() => {
@@ -498,7 +539,7 @@ describe('PeerReviewDetails', () => {
         document.body.removeChild(mockCheckbox)
       }
 
-      assignment.groupCategoryId = jest.fn(() => '123')
+      assignment.groupCategoryId = vi.fn(() => '123')
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
       const checkbox = screen.getByTestId('peer-review-checkbox')
       await user.click(checkbox)
@@ -521,7 +562,7 @@ describe('PeerReviewDetails', () => {
         window,
         new MessageEvent('message', {
           data: {
-            subject: 'ASGMT.togglePeerReviews',
+            subject: SETTING_MESSAGES.TOGGLE_PEER_REVIEWS,
             enabled: false,
           },
         }),
@@ -539,7 +580,7 @@ describe('PeerReviewDetails', () => {
         window,
         new MessageEvent('message', {
           data: {
-            subject: 'ASGMT.togglePeerReviews',
+            subject: SETTING_MESSAGES.TOGGLE_PEER_REVIEWS,
             enabled: false,
           },
         }),
@@ -554,7 +595,7 @@ describe('PeerReviewDetails', () => {
         window,
         new MessageEvent('message', {
           data: {
-            subject: 'ASGMT.togglePeerReviews',
+            subject: SETTING_MESSAGES.TOGGLE_PEER_REVIEWS,
             enabled: true,
           },
         }),
@@ -565,17 +606,20 @@ describe('PeerReviewDetails', () => {
       })
     })
 
-    it('unchecks checkbox when disabled', async () => {
-      assignment.peerReviews = jest.fn(() => true)
+    it('unchecks checkbox and updates hidden input when disabled via postMessage', async () => {
+      assignment.peerReviews = vi.fn(() => true)
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
-      const advancedSettingsToggle = screen.getByText('Advanced Peer Review Configurations')
-      await user.click(advancedSettingsToggle)
+
+      const hiddenInput = document.getElementById(
+        'assignment_peer_reviews_hidden',
+      ) as HTMLInputElement
+      expect(hiddenInput.value).toBe('true')
 
       fireEvent(
         window,
         new MessageEvent('message', {
           data: {
-            subject: 'ASGMT.togglePeerReviews',
+            subject: SETTING_MESSAGES.TOGGLE_PEER_REVIEWS,
             enabled: false,
           },
         }),
@@ -583,6 +627,7 @@ describe('PeerReviewDetails', () => {
 
       await waitFor(() => {
         expect(screen.getByTestId('peer-review-checkbox')).not.toBeChecked()
+        expect(hiddenInput.value).toBe('false')
       })
     })
 
@@ -762,45 +807,45 @@ describe('PeerReviewDetails', () => {
   describe('Data loading from existing assignment', () => {
     it('loads existing peer review count', () => {
       const assignmentWithData = createMockAssignment({
-        peerReviews: jest.fn(() => true),
-        peerReviewCount: jest.fn(() => 5),
-        peerReviewSubAssignment: jest.fn(() => ({
+        peerReviews: vi.fn(() => true),
+        peerReviewCount: vi.fn(() => 5),
+        peerReviewSubAssignment: vi.fn(() => ({
           points_possible: 25,
           grading_type: 'points',
         })),
-      }) as unknown as Assignment
+      }) as unknown as AssignmentModel
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignmentWithData} />)
 
       const reviewsRequiredInput = screen.getByTestId('reviews-required-input')
-      expect(reviewsRequiredInput).toHaveValue(5)
+      expect(reviewsRequiredInput).toHaveValue('5')
     })
 
     it('calculates points per review from total points', () => {
       const assignmentWithData = createMockAssignment({
-        peerReviews: jest.fn(() => true),
-        peerReviewCount: jest.fn(() => 4),
-        peerReviewSubAssignment: jest.fn(() => ({
+        peerReviews: vi.fn(() => true),
+        peerReviewCount: vi.fn(() => 4),
+        peerReviewSubAssignment: vi.fn(() => ({
           points_possible: 20,
           grading_type: 'points',
         })),
-      }) as unknown as Assignment
+      }) as unknown as AssignmentModel
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignmentWithData} />)
 
       const pointsPerReviewInput = screen.getByTestId('points-per-review-input')
-      expect(pointsPerReviewInput).toHaveValue(5) // 20 / 4 = 5
+      expect(pointsPerReviewInput).toHaveValue('5') // 20 / 4 = 5
     })
 
     it('loads pass_fail grading type', () => {
       const assignmentWithData = createMockAssignment({
-        peerReviews: jest.fn(() => true),
-        peerReviewCount: jest.fn(() => 2),
-        peerReviewSubAssignment: jest.fn(() => ({
+        peerReviews: vi.fn(() => true),
+        peerReviewCount: vi.fn(() => 2),
+        peerReviewSubAssignment: vi.fn(() => ({
           points_possible: 10,
           grading_type: 'pass_fail',
         })),
-      }) as unknown as Assignment
+      }) as unknown as AssignmentModel
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignmentWithData} />)
 
@@ -813,10 +858,10 @@ describe('PeerReviewDetails', () => {
 
     it('loads anonymous peer reviews setting', () => {
       const assignmentWithData = createMockAssignment({
-        peerReviews: jest.fn(() => true),
-        peerReviewCount: jest.fn(() => 2),
-        anonymousPeerReviews: jest.fn(() => true),
-      }) as unknown as Assignment
+        peerReviews: vi.fn(() => true),
+        peerReviewCount: vi.fn(() => 2),
+        anonymousPeerReviews: vi.fn(() => true),
+      }) as unknown as AssignmentModel
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignmentWithData} />)
 
@@ -829,11 +874,11 @@ describe('PeerReviewDetails', () => {
 
     it('loads intra group peer reviews setting', () => {
       const assignmentWithData = createMockAssignment({
-        peerReviews: jest.fn(() => true),
-        peerReviewCount: jest.fn(() => 2),
-        intraGroupPeerReviews: jest.fn(() => true),
-        groupCategoryId: jest.fn(() => '123'), // Make it a group assignment
-      }) as unknown as Assignment
+        peerReviews: vi.fn(() => true),
+        peerReviewCount: vi.fn(() => 2),
+        intraGroupPeerReviews: vi.fn(() => true),
+        groupCategoryId: vi.fn(() => '123'), // Make it a group assignment
+      }) as unknown as AssignmentModel
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignmentWithData} />)
 
@@ -847,7 +892,7 @@ describe('PeerReviewDetails', () => {
 
   describe('Hidden inputs for Advanced Configuration', () => {
     it('creates hidden inputs for toggle values when peer reviews are enabled', () => {
-      assignment.peerReviews = jest.fn(() => true)
+      assignment.peerReviews = vi.fn(() => true)
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
       expect(
@@ -863,7 +908,7 @@ describe('PeerReviewDetails', () => {
     })
 
     it('resets peer-review values via hidden inputs when peer reviews are disabled', () => {
-      assignment.peerReviews = jest.fn(() => false)
+      assignment.peerReviews = vi.fn(() => false)
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
       expect(
@@ -914,11 +959,11 @@ describe('PeerReviewDetails', () => {
 
     it('within groups hidden input has correct value when enabled', () => {
       const assignmentWithData = createMockAssignment({
-        peerReviews: jest.fn(() => true),
-        peerReviewCount: jest.fn(() => 2),
-        groupCategoryId: jest.fn(() => '123'),
-        intraGroupPeerReviews: jest.fn(() => true),
-      }) as unknown as Assignment
+        peerReviews: vi.fn(() => true),
+        peerReviewCount: vi.fn(() => 2),
+        groupCategoryId: vi.fn(() => '123'),
+        intraGroupPeerReviews: vi.fn(() => true),
+      }) as unknown as AssignmentModel
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignmentWithData} />)
 
@@ -929,7 +974,7 @@ describe('PeerReviewDetails', () => {
     })
 
     it('within groups hidden input has correct value when disabled', () => {
-      assignment.peerReviews = jest.fn(() => true)
+      assignment.peerReviews = vi.fn(() => true)
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
       const withinGroupsHidden = document.getElementById(
@@ -940,10 +985,10 @@ describe('PeerReviewDetails', () => {
 
     it('anonymity hidden input has correct value when enabled', () => {
       const assignmentWithData = createMockAssignment({
-        peerReviews: jest.fn(() => true),
-        peerReviewCount: jest.fn(() => 2),
-        anonymousPeerReviews: jest.fn(() => true),
-      }) as unknown as Assignment
+        peerReviews: vi.fn(() => true),
+        peerReviewCount: vi.fn(() => 2),
+        anonymousPeerReviews: vi.fn(() => true),
+      }) as unknown as AssignmentModel
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignmentWithData} />)
 
@@ -954,7 +999,7 @@ describe('PeerReviewDetails', () => {
     })
 
     it('anonymity hidden input has correct value when disabled', () => {
-      assignment.peerReviews = jest.fn(() => true)
+      assignment.peerReviews = vi.fn(() => true)
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
       const anonymityHidden = document.getElementById(
@@ -965,10 +1010,10 @@ describe('PeerReviewDetails', () => {
 
     it('submission required hidden input has correct value when enabled', () => {
       const assignmentWithData = createMockAssignment({
-        peerReviews: jest.fn(() => true),
-        peerReviewCount: jest.fn(() => 2),
-        peerReviewSubmissionRequired: jest.fn(() => true),
-      }) as unknown as Assignment
+        peerReviews: vi.fn(() => true),
+        peerReviewCount: vi.fn(() => 2),
+        peerReviewSubmissionRequired: vi.fn(() => true),
+      }) as unknown as AssignmentModel
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignmentWithData} />)
 
@@ -979,7 +1024,7 @@ describe('PeerReviewDetails', () => {
     })
 
     it('submission required hidden input has correct value when disabled', () => {
-      assignment.peerReviews = jest.fn(() => true)
+      assignment.peerReviews = vi.fn(() => true)
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
       const submissionRequiredHidden = document.getElementById(
@@ -990,13 +1035,13 @@ describe('PeerReviewDetails', () => {
 
     it('pass fail grading hidden input has correct value when enabled', () => {
       const assignmentWithData = createMockAssignment({
-        peerReviews: jest.fn(() => true),
-        peerReviewCount: jest.fn(() => 2),
-        peerReviewSubAssignment: jest.fn(() => ({
+        peerReviews: vi.fn(() => true),
+        peerReviewCount: vi.fn(() => 2),
+        peerReviewSubAssignment: vi.fn(() => ({
           points_possible: 10,
           grading_type: 'pass_fail',
         })),
-      }) as unknown as Assignment
+      }) as unknown as AssignmentModel
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignmentWithData} />)
 
@@ -1008,13 +1053,13 @@ describe('PeerReviewDetails', () => {
 
     it('pass fail grading hidden input has correct value when disabled', () => {
       const assignmentWithData = createMockAssignment({
-        peerReviews: jest.fn(() => true),
-        peerReviewCount: jest.fn(() => 2),
-        peerReviewSubAssignment: jest.fn(() => ({
+        peerReviews: vi.fn(() => true),
+        peerReviewCount: vi.fn(() => 2),
+        peerReviewSubAssignment: vi.fn(() => ({
           points_possible: 10,
           grading_type: 'points',
         })),
-      }) as unknown as Assignment
+      }) as unknown as AssignmentModel
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignmentWithData} />)
 
@@ -1025,8 +1070,8 @@ describe('PeerReviewDetails', () => {
     })
 
     it('within groups hidden input updates when toggle is changed', async () => {
-      assignment.peerReviews = jest.fn(() => true)
-      assignment.groupCategoryId = jest.fn(() => '123') // Make it a group assignment
+      assignment.peerReviews = vi.fn(() => true)
+      assignment.groupCategoryId = vi.fn(() => '123') // Make it a group assignment
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
@@ -1045,7 +1090,7 @@ describe('PeerReviewDetails', () => {
     })
 
     it('anonymity hidden input updates when toggle is changed', async () => {
-      assignment.peerReviews = jest.fn(() => true)
+      assignment.peerReviews = vi.fn(() => true)
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
       const advancedSettingsToggle = screen.getByText('Advanced Peer Review Configurations')
@@ -1063,7 +1108,7 @@ describe('PeerReviewDetails', () => {
     })
 
     it('submission required hidden input updates when toggle is changed', async () => {
-      assignment.peerReviews = jest.fn(() => true)
+      assignment.peerReviews = vi.fn(() => true)
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
       const advancedSettingsToggle = screen.getByText('Advanced Peer Review Configurations')
@@ -1081,7 +1126,7 @@ describe('PeerReviewDetails', () => {
     })
 
     it('pass fail grading hidden input updates when toggle is changed', async () => {
-      assignment.peerReviews = jest.fn(() => true)
+      assignment.peerReviews = vi.fn(() => true)
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
       const advancedSettingsToggle = screen.getByText('Advanced Peer Review Configurations')
@@ -1100,9 +1145,9 @@ describe('PeerReviewDetails', () => {
 
     it('reviews required hidden input has correct value when peer reviews enabled', () => {
       const assignmentWithData = createMockAssignment({
-        peerReviews: jest.fn(() => true),
-        peerReviewCount: jest.fn(() => 3),
-      }) as unknown as Assignment
+        peerReviews: vi.fn(() => true),
+        peerReviewCount: vi.fn(() => 3),
+      }) as unknown as AssignmentModel
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignmentWithData} />)
 
@@ -1114,13 +1159,13 @@ describe('PeerReviewDetails', () => {
 
     it('points per review hidden input has correct value when peer reviews enabled', () => {
       const assignmentWithData = createMockAssignment({
-        peerReviews: jest.fn(() => true),
-        peerReviewCount: jest.fn(() => 2),
-        peerReviewSubAssignment: jest.fn(() => ({
+        peerReviews: vi.fn(() => true),
+        peerReviewCount: vi.fn(() => 2),
+        peerReviewSubAssignment: vi.fn(() => ({
           points_possible: 10, // 10 / 2 = 5
           grading_type: 'points',
         })),
-      }) as unknown as Assignment
+      }) as unknown as AssignmentModel
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignmentWithData} />)
 
@@ -1131,7 +1176,7 @@ describe('PeerReviewDetails', () => {
     })
 
     it('reviews required hidden input updates when user changes value', async () => {
-      assignment.peerReviews = jest.fn(() => true)
+      assignment.peerReviews = vi.fn(() => true)
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
       const reviewsRequiredInput = screen.getByTestId('reviews-required-input')
@@ -1146,7 +1191,7 @@ describe('PeerReviewDetails', () => {
     })
 
     it('points per review hidden input updates when user changes value', async () => {
-      assignment.peerReviews = jest.fn(() => true)
+      assignment.peerReviews = vi.fn(() => true)
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
       const pointsPerReviewInput = screen.getByTestId('points-per-review-input')
@@ -1162,13 +1207,13 @@ describe('PeerReviewDetails', () => {
 
     it('reviews required and points per review hidden inputs reset when peer reviews disabled', async () => {
       const assignmentWithData = createMockAssignment({
-        peerReviews: jest.fn(() => true),
-        peerReviewCount: jest.fn(() => 3),
-        peerReviewSubAssignment: jest.fn(() => ({
+        peerReviews: vi.fn(() => true),
+        peerReviewCount: vi.fn(() => 3),
+        peerReviewSubAssignment: vi.fn(() => ({
           points_possible: 15,
           grading_type: 'points',
         })),
-      }) as unknown as Assignment
+      }) as unknown as AssignmentModel
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignmentWithData} />)
 
@@ -1200,38 +1245,38 @@ describe('PeerReviewDetails', () => {
   describe('Points formatting', () => {
     it('formats points per review with 2 decimals when loaded from database', () => {
       const assignmentWithData = createMockAssignment({
-        peerReviews: jest.fn(() => true),
-        peerReviewCount: jest.fn(() => 3),
-        peerReviewSubAssignment: jest.fn(() => ({
+        peerReviews: vi.fn(() => true),
+        peerReviewCount: vi.fn(() => 3),
+        peerReviewSubAssignment: vi.fn(() => ({
           points_possible: 3.7, // 3.7 / 3 = 1.233333...
           grading_type: 'points',
         })),
-      }) as unknown as Assignment
+      }) as unknown as AssignmentModel
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignmentWithData} />)
 
       const pointsPerReviewInput = screen.getByTestId('points-per-review-input')
-      expect(pointsPerReviewInput).toHaveValue(1.23) // Should be rounded to 1.23
+      expect(pointsPerReviewInput).toHaveValue('1.23') // Should be rounded to 1.23
     })
 
     it('formats points as integer when value rounds to whole number', () => {
       const assignmentWithData = createMockAssignment({
-        peerReviews: jest.fn(() => true),
-        peerReviewCount: jest.fn(() => 4),
-        peerReviewSubAssignment: jest.fn(() => ({
+        peerReviews: vi.fn(() => true),
+        peerReviewCount: vi.fn(() => 4),
+        peerReviewSubAssignment: vi.fn(() => ({
           points_possible: 31.996, // 31.996 / 4 = 7.999, should round to 8
           grading_type: 'points',
         })),
-      }) as unknown as Assignment
+      }) as unknown as AssignmentModel
 
       renderWithQueryClient(<PeerReviewDetails assignment={assignmentWithData} />)
 
       const pointsPerReviewInput = screen.getByTestId('points-per-review-input')
-      expect(pointsPerReviewInput).toHaveValue(8) // Should show as "8" not "8.00"
+      expect(pointsPerReviewInput).toHaveValue('8') // Should show as "8" not "8.00"
     })
 
     it('formats points with 2 decimals after user input and blur', async () => {
-      assignment.peerReviews = jest.fn(() => true)
+      assignment.peerReviews = vi.fn(() => true)
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
       const pointsPerReviewInput = screen.getByTestId('points-per-review-input')
@@ -1240,11 +1285,11 @@ describe('PeerReviewDetails', () => {
       await user.type(pointsPerReviewInput, '1.126')
       await user.tab()
 
-      expect(pointsPerReviewInput).toHaveValue(1.13) // Should round to 1.13
+      expect(pointsPerReviewInput).toHaveValue('1.13') // Should round to 1.13
     })
 
     it('formats integer input without decimals after blur', async () => {
-      assignment.peerReviews = jest.fn(() => true)
+      assignment.peerReviews = vi.fn(() => true)
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
       const pointsPerReviewInput = screen.getByTestId('points-per-review-input')
@@ -1253,15 +1298,149 @@ describe('PeerReviewDetails', () => {
       await user.type(pointsPerReviewInput, '5')
       await user.tab()
 
-      expect(pointsPerReviewInput).toHaveValue(5)
+      expect(pointsPerReviewInput).toHaveValue('5')
     })
 
     it('shows zero as "0" without decimals', () => {
-      assignment.peerReviews = jest.fn(() => true)
+      assignment.peerReviews = vi.fn(() => true)
       renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
 
       const pointsPerReviewInput = screen.getByTestId('points-per-review-input')
-      expect(pointsPerReviewInput).toHaveValue(0)
+      expect(pointsPerReviewInput).toHaveValue('0')
+    })
+  })
+
+  describe('Disabled state when peer review submissions exist', () => {
+    beforeEach(() => {
+      assignment.peerReviews = vi.fn(() => true)
+      assignment.hasPeerReviewSubmissions = vi.fn(() => true)
+    })
+
+    it('shows alert message when peer review submissions exist', () => {
+      renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
+
+      expect(screen.getByText(PEER_REVIEW_SUBMISSIONS_WARNING)).toBeInTheDocument()
+    })
+
+    it('disables reviews required input when peer review submissions exist', () => {
+      renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
+
+      const reviewsRequiredInput = screen.getByTestId('reviews-required-input')
+      expect(reviewsRequiredInput).toBeDisabled()
+    })
+
+    it('disables points per review input when peer review submissions exist', () => {
+      renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
+
+      const pointsPerReviewInput = screen.getByTestId('points-per-review-input')
+      expect(pointsPerReviewInput).toBeDisabled()
+    })
+
+    it('does not show alert or disable fields when peer review submissions do not exist', () => {
+      assignment.hasPeerReviewSubmissions = vi.fn(() => false)
+      renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
+
+      expect(screen.queryByText(PEER_REVIEW_SUBMISSIONS_WARNING)).not.toBeInTheDocument()
+
+      const reviewsRequiredInput = screen.getByTestId('reviews-required-input')
+      const pointsPerReviewInput = screen.getByTestId('points-per-review-input')
+
+      expect(reviewsRequiredInput).not.toBeDisabled()
+      expect(pointsPerReviewInput).not.toBeDisabled()
+    })
+
+    it('does not show alert or disable fields when PEER_REVIEW_ALLOCATION_AND_GRADING_ENABLED is false', () => {
+      window.ENV.PEER_REVIEW_ALLOCATION_AND_GRADING_ENABLED = false
+
+      renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
+
+      expect(screen.queryByText(PEER_REVIEW_SUBMISSIONS_WARNING)).not.toBeInTheDocument()
+
+      const reviewsRequiredInput = screen.getByTestId('reviews-required-input')
+      expect(reviewsRequiredInput).not.toBeDisabled()
+
+      window.ENV.PEER_REVIEW_ALLOCATION_AND_GRADING_ENABLED = true
+    })
+
+    it('does not show alert or disable fields when hasPeerReviewSubmissions method does not exist', () => {
+      const assignmentWithoutMethod = createMockAssignment({
+        peerReviews: vi.fn(() => true),
+      })
+      delete (assignmentWithoutMethod as any).hasPeerReviewSubmissions
+
+      renderWithQueryClient(<PeerReviewDetails assignment={assignmentWithoutMethod as any} />)
+
+      expect(screen.queryByText(PEER_REVIEW_SUBMISSIONS_WARNING)).not.toBeInTheDocument()
+
+      const reviewsRequiredInput = screen.getByTestId('reviews-required-input')
+      const pointsPerReviewInput = screen.getByTestId('points-per-review-input')
+
+      expect(reviewsRequiredInput).not.toBeDisabled()
+      expect(pointsPerReviewInput).not.toBeDisabled()
+    })
+
+    it('disables peer review checkbox when peer review submissions exist', () => {
+      renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
+
+      const checkbox = screen.getByTestId('peer-review-checkbox')
+      expect(checkbox).toBeDisabled()
+    })
+
+    it('keeps peer review checkbox enabled when peer review submissions do not exist', () => {
+      assignment.hasPeerReviewSubmissions = vi.fn(() => false)
+      renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
+
+      const checkbox = screen.getByTestId('peer-review-checkbox')
+      expect(checkbox).not.toBeDisabled()
+    })
+
+    it('does not disable checkbox when PEER_REVIEW_ALLOCATION_AND_GRADING_ENABLED is false', () => {
+      window.ENV.PEER_REVIEW_ALLOCATION_AND_GRADING_ENABLED = false
+
+      renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
+
+      const checkbox = screen.getByTestId('peer-review-checkbox')
+      expect(checkbox).not.toBeDisabled()
+
+      window.ENV.PEER_REVIEW_ALLOCATION_AND_GRADING_ENABLED = true
+    })
+
+    it('shows updated warning message including checkbox restriction', () => {
+      renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
+
+      expect(screen.getByText(PEER_REVIEW_SUBMISSIONS_WARNING)).toBeInTheDocument()
+    })
+  })
+
+  describe('Accessibility', () => {
+    it('associates visible label text as accessible name for advanced toggle checkboxes', async () => {
+      assignment.peerReviews = vi.fn(() => true)
+      renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
+
+      const advancedSettingsToggle = screen.getByText('Advanced Peer Review Configurations')
+      await user.click(advancedSettingsToggle)
+
+      expect(screen.getByLabelText('Allow peer reviews across sections')).toBeInTheDocument()
+      expect(
+        screen.getByLabelText('Use complete/incomplete instead of points for grading'),
+      ).toBeInTheDocument()
+      expect(screen.getByLabelText('Reviewers do not see who they review')).toBeInTheDocument()
+      expect(
+        screen.getByLabelText(
+          'Reviewers must submit their assignment before they can be allocated reviews',
+        ),
+      ).toBeInTheDocument()
+    })
+
+    it('associates visible label text as accessible name for within groups toggle', async () => {
+      assignment.peerReviews = vi.fn(() => true)
+      assignment.groupCategoryId = vi.fn(() => '123')
+      renderWithQueryClient(<PeerReviewDetails assignment={assignment} />)
+
+      const advancedSettingsToggle = screen.getByText('Advanced Peer Review Configurations')
+      await user.click(advancedSettingsToggle)
+
+      expect(screen.getByLabelText('Allow peer reviews within groups')).toBeInTheDocument()
     })
   })
 })

@@ -18,10 +18,10 @@
 
 import React from 'react'
 import {z} from 'zod'
-import {createRoot} from 'react-dom/client'
-import {queryClient} from '@canvas/query'
+import {render} from '@canvas/react'
+import {queryClient} from '@instructure/platform-query'
 import {QueryClientProvider} from '@tanstack/react-query'
-import {showFlashError} from '@canvas/alerts/react/FlashAlert'
+import {showFlashError} from '@instructure/platform-alerts'
 import {useScope as createI18nScope} from '@canvas/i18n'
 
 const I18n = createI18nScope('lti_asset_processor')
@@ -108,7 +108,7 @@ export function renderToElements<T extends z.ZodType | undefined>({
   let count = 0
   let error = false
 
-  for (const container of containers) {
+  for (const container of Array.from(containers)) {
     try {
       let elem = undefined
       if (datasetSchema === undefined) {
@@ -133,9 +133,7 @@ export function renderToElements<T extends z.ZodType | undefined>({
           elem = <QueryClientProvider client={queryClient}>{elem}</QueryClientProvider>
         }
 
-        createRoot(container).render(
-          <FlashErrorBoundary title={flashErrorTitle}>{elem}</FlashErrorBoundary>,
-        )
+        render(<FlashErrorBoundary title={flashErrorTitle}>{elem}</FlashErrorBoundary>, container)
 
         count++
       }

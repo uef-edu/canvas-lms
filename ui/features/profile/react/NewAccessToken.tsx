@@ -32,7 +32,7 @@ import {
   getFormErrorMessage,
   isDateTimeInputInvalid,
 } from '@canvas/forms/react/react-hook-form/utils'
-import {showFlashError} from '@canvas/alerts/react/FlashAlert'
+import {showFlashError} from '@instructure/platform-alerts'
 import doFetchApi from '@canvas/do-fetch-api-effect'
 import {DateTimeInput} from '@instructure/ui-date-time-input'
 import {ScreenReaderContent} from '@instructure/ui-a11y-content'
@@ -50,11 +50,7 @@ const getMaxExpirationDate = () => {
   return maxDate
 }
 
-const isFeatureFlagEnabled = () => ENV.FEATURES?.student_access_token_management
-
-const isCurrentUserStudent = () => ENV.user_is_only_student
-
-const shouldEnforceMaxExpiration = () => isFeatureFlagEnabled() && isCurrentUserStudent()
+const shouldEnforceMaxExpiration = () => ENV.user_is_only_student
 
 const defaultValues = {
   purpose: '',
@@ -156,7 +152,7 @@ const NewAccessToken = ({onSubmit, onClose}: NewAccessTokenProps) => {
                   "Access tokens are what allow third-party applications to access Canvas resources on your behalf. These tokens are normally created automatically for applications as needed, but if *you're developing a new or limited project* you can just generate the token from here.",
                   {
                     wrapper:
-                      '<a href="https://canvas.instructure.com/doc/api/index.html" class="external" target="_blank" rel="noreferrer noopener">$1</a>',
+                      '<a href="https://developerdocs.instructure.com/services/canvas" class="external" target="_blank" rel="noreferrer noopener">$1</a>',
                   },
                 ),
               ),

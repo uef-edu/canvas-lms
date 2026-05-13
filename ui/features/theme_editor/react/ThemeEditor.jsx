@@ -27,8 +27,8 @@ import {submitHtmlForm} from '@canvas/theme-editor/submitHtmlForm'
 import SaveThemeButton from './SaveThemeButton'
 import ThemeEditorModal from './ThemeEditorModal'
 import ThemeEditorSidebar from './ThemeEditorSidebar'
-import getCookie from '@instructure/get-cookie'
-import {showFlashError} from '@canvas/alerts/react/FlashAlert'
+import {getCookie} from '@instructure/platform-get-cookie'
+import {showFlashError} from '@instructure/platform-alerts'
 import {addFlashNoticeForNextPage} from '@canvas/rails-flash-notifications'
 import {Button, CloseButton} from '@instructure/ui-buttons'
 import {Modal} from '@instructure/ui-modal'
@@ -47,6 +47,8 @@ const OVERRIDE_FILE_KEYS = [
   'mobile_js_overrides',
   'mobile_css_overrides',
 ]
+
+export const PREVIEW_IFRAME_ID = 'previewIframe'
 
 function findVarDef(variableSchema, variableName) {
   for (let i = 0; i < variableSchema.length; i++) {
@@ -481,7 +483,7 @@ export default function ThemeEditor({
               </div>
             ) : null}
             <iframe
-              id="previewIframe"
+              id={PREVIEW_IFRAME_ID}
               src={`/accounts/${accountID}/theme-preview/?editing_brand_config=1`}
               title={I18n.t('Preview')}
               aria-hidden={somethingHasChanged()}

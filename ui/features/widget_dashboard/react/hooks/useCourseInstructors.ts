@@ -17,13 +17,13 @@
  */
 
 import {useState, useCallback, useEffect} from 'react'
-import {useInfiniteQuery, useQuery, useQueryClient} from '@tanstack/react-query'
+import {useInfiniteQuery, useQuery, useQueryClient, keepPreviousData} from '@tanstack/react-query'
 import {createUserQueryConfig} from '../utils/graphql'
 import {COURSE_INSTRUCTORS_PAGINATED_KEY, QUERY_CONFIG} from '../constants'
 import {fetchPaginatedCourseInstructors} from '../graphql/coursePeople'
 import {useWidgetDashboard} from './useWidgetDashboardContext'
 import {widgetDashboardPersister} from '../utils/persister'
-import {useBroadcastQuery} from '@canvas/query/broadcast'
+import {useBroadcastQuery} from '@instructure/platform-query/broadcast'
 
 export interface CourseInstructorForComponent {
   id: string
@@ -39,6 +39,8 @@ export interface CourseInstructorForComponent {
     id: string
     user_id: string
     course_id: string
+    course_name: string
+    course_code?: string
     type: 'TeacherEnrollment' | 'TaEnrollment'
     role: string
     role_id: string
@@ -50,16 +52,23 @@ interface UseCourseInstructorsOptions {
   courseIds?: string[]
   limit?: number
   enabled?: boolean
+  enrollmentTypes?: string[]
 }
 
 export function useCourseInstructors(options: UseCourseInstructorsOptions = {}) {
-  const {courseIds = [], limit = 5, enabled = true} = options
+  const {courseIds = [], limit = 5, enabled = true, enrollmentTypes} = options
 
   const {observedUserId} = useWidgetDashboard()
 
   return useInfiniteQuery({
     ...createUserQueryConfig(
-      [COURSE_INSTRUCTORS_PAGINATED_KEY, courseIds.join(','), limit, observedUserId ?? undefined],
+      [
+        COURSE_INSTRUCTORS_PAGINATED_KEY,
+        courseIds.join(','),
+        limit,
+        observedUserId ?? undefined,
+        enrollmentTypes?.join(','),
+      ],
       QUERY_CONFIG.STALE_TIME.USERS,
     ),
     queryFn: async ({
@@ -77,6 +86,7 @@ export function useCourseInstructors(options: UseCourseInstructorsOptions = {}) 
         limit,
         pageParam,
         observedUserId ?? undefined,
+        enrollmentTypes,
       )
     },
     initialPageParam: undefined as string | undefined,
@@ -114,10 +124,17 @@ async function fetchInstructorsPage(
   courseIds: string[],
   limit: number,
   observedUserId?: string,
+  enrollmentTypes?: string[],
 ): Promise<InstructorResult> {
   const cursor = calculateCursorForPage(pageIndex, limit)
 
-  const result = await fetchPaginatedCourseInstructors(courseIds, limit, cursor, observedUserId)
+  const result = await fetchPaginatedCourseInstructors(
+    courseIds,
+    limit,
+    cursor,
+    observedUserId,
+    enrollmentTypes,
+  )
 
   return {
     data: result.data,
@@ -132,7 +149,7 @@ async function fetchInstructorsPage(
 }
 
 export function useCourseInstructorsPaginated(options: UseCourseInstructorsOptions = {}) {
-  const {courseIds = [], limit = 5} = options
+  const {courseIds = [], limit = 5, enrollmentTypes} = options
   const queryClient = useQueryClient()
   const [currentPageIndex, setCurrentPageIndex] = useState<number>(0)
   const {observedUserId} = useWidgetDashboard()
@@ -146,21 +163,30 @@ export function useCourseInstructorsPaginated(options: UseCourseInstructorsOptio
     courseIds.join(','),
     limit,
     observedUserId ?? undefined,
+    enrollmentTypes?.join(','),
   ]
 
   // Use TanStack Query for this specific page (uses client from context)
   const {
     data: currentPage,
     isLoading,
+    isFetching,
     error,
     refetch: refetchCurrentPage,
   } = useQuery({
     queryKey,
     queryFn: () =>
-      fetchInstructorsPage(currentPageIndex, courseIds, limit, observedUserId ?? undefined),
+      fetchInstructorsPage(
+        currentPageIndex,
+        courseIds,
+        limit,
+        observedUserId ?? undefined,
+        enrollmentTypes,
+      ),
     staleTime: QUERY_CONFIG.STALE_TIME.USERS * 60 * 1000, // Convert minutes to ms
     persister: widgetDashboardPersister,
     refetchOnMount: false,
+    placeholderData: keepPreviousData,
   })
 
   // Broadcast instructor updates across tabs
@@ -169,11 +195,47 @@ export function useCourseInstructorsPaginated(options: UseCourseInstructorsOptio
     broadcastChannel: 'widget-dashboard',
   })
 
-  // Reset to page 0 when course filters change
+  // Prefetch next page for instant forward pagination
+  useEffect(() => {
+    if (currentPage?.pageInfo.hasNextPage) {
+      const nextPageIndex = currentPageIndex + 1
+      queryClient.prefetchQuery({
+        queryKey: [
+          COURSE_INSTRUCTORS_PAGINATED_KEY,
+          'page',
+          nextPageIndex,
+          courseIds.join(','),
+          limit,
+          observedUserId ?? undefined,
+          enrollmentTypes?.join(','),
+        ],
+        queryFn: () =>
+          fetchInstructorsPage(
+            nextPageIndex,
+            courseIds,
+            limit,
+            observedUserId ?? undefined,
+            enrollmentTypes,
+          ),
+        staleTime: QUERY_CONFIG.STALE_TIME.USERS * 60 * 1000,
+      })
+    }
+  }, [
+    currentPage,
+    currentPageIndex,
+    courseIds,
+    limit,
+    observedUserId,
+    enrollmentTypes,
+    queryClient,
+  ])
+
+  // Reset to page 0 when course filters or enrollment types change
   const courseIdString = courseIds.join(',')
+  const enrollmentTypesString = enrollmentTypes?.join(',')
   useEffect(() => {
     setCurrentPageIndex(0)
-  }, [courseIdString, limit])
+  }, [courseIdString, limit, enrollmentTypesString])
 
   const totalCount = currentPage?.pageInfo.totalCount ?? null
   const totalPages =
@@ -198,6 +260,8 @@ export function useCourseInstructorsPaginated(options: UseCourseInstructorsOptio
     return refetchCurrentPage()
   }, [queryClient, refetchCurrentPage])
 
+  const isPaginationLoading = isFetching && !!currentPage
+
   return {
     currentPage,
     currentPageIndex,
@@ -207,6 +271,7 @@ export function useCourseInstructorsPaginated(options: UseCourseInstructorsOptio
     resetPagination,
     refetch,
     isLoading,
+    isPaginationLoading,
     error: error as Error | null,
     pageSize,
   }

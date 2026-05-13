@@ -16,7 +16,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-import {showFlashError} from '@canvas/alerts/react/FlashAlert'
+import {showFlashError} from '@instructure/platform-alerts'
 import {datetimeString} from '@canvas/datetime/date-functions'
 import iframeAllowances from '@canvas/external-apps/iframeAllowances'
 import StatusPill from '@canvas/grading-status-pill'
@@ -47,10 +47,10 @@ import {Pill} from '@instructure/ui-pill'
 import {Tooltip} from '@instructure/ui-tooltip'
 import type JQuery from 'jquery'
 import $ from 'jquery'
-import {filter, find, includes, isEqual, keyBy, map, reject, some, values} from 'lodash'
+import {isEqual, keyBy, filter, find, includes, map, reject, some, values} from 'es-toolkit/compat'
 import qs from 'qs'
 import React, {useRef} from 'react'
-import ReactDOM from 'react-dom'
+import {legacyUnmountComponentAtNode, legacyRender, render} from '@canvas/react'
 import JQuerySelectorCache from '../JQuerySelectorCache'
 import QuizzesNextSpeedGrading from '../QuizzesNextSpeedGrading'
 import {
@@ -130,7 +130,7 @@ import type {SelectOptionDefinition} from './speed_grader_select_menu'
 import 'jqueryui/draggable'
 import '@canvas/jquery/jquery.ajaxJSON' /* getJSON, ajaxJSON */
 import '@canvas/jquery/jquery.instructure_forms' /* ajaxJSONFiles */
-import {loadDocPreview} from '@instructure/canvas-rce/es/enhance-user-content/doc_previews'
+import {loadDocPreview} from '@instructure/canvas-rce/enhance-user-content'
 import 'jqueryui/dialog'
 import 'jqueryui/menu'
 import '@canvas/jquery/jquery.instructure_misc_helpers' /* replaceTags */
@@ -144,7 +144,6 @@ import '@canvas/rails-flash-notifications'
 import 'jquery-scroll-to-visible/jquery.scrollTo'
 import 'jquery-selectmenu'
 import '@canvas/jquery/jquery.disableWhileLoading'
-import '@canvas/util/jquery/fixDialogButtons'
 import type {EnvGradebookSpeedGrader} from '@canvas/global/env/EnvGradebook'
 import type {GlobalEnv} from '@canvas/global/env/GlobalEnv.d'
 import type {GradeStatusUnderscore} from '@canvas/grading/accountGradingStatus'
@@ -157,7 +156,8 @@ import {containsHtmlTags, formatMessage} from '@canvas/util/TextHelper'
 import {windowAlert} from '@canvas/util/globalUtils'
 import replaceTags from '@canvas/util/replaceTags'
 import {isPreviewable} from '@instructure/canvas-rce/es/rce/plugins/shared/Previewable'
-import {createRoot} from 'react-dom/client'
+import type {Root} from 'react-dom/client'
+import {AmsLoader} from '@canvas/ams/react/AmsLoader'
 import sanitizeHtml from 'sanitize-html-with-tinymce'
 import {SpeedGraderCheckpointsWrapper} from '../react/SpeedGraderCheckpoints/SpeedGraderCheckpointsWrapper'
 import {SpeedGraderDiscussionsNavigation2} from '../react/SpeedGraderDiscussionsNavigation2'
@@ -236,6 +236,8 @@ let fileIndex: number
 let $add_attachment: JQuery
 let $submissions_container: JQuery
 let $iframe_holder: JQuery
+let $ams_grading_container: JQuery
+let amsGradingRoot: Root | null = null
 let $avatar_image: JQuery
 let $x_of_x_students: JQuery
 let $grded_so_far: JQuery
@@ -1004,7 +1006,7 @@ function renderProgressIcon(attachment: Attachment) {
   }
 
   if (attachment.upload_status === 'success') {
-    ReactDOM.unmountComponentAtNode(mountPoint)
+    legacyUnmountComponentAtNode(mountPoint)
   } else {
     const {icon, tip} = iconAndTipMap[attachment.upload_status] || iconAndTipMap.default
     const tooltip = (
@@ -1017,7 +1019,7 @@ function renderProgressIcon(attachment: Attachment) {
         />
       </Tooltip>
     )
-    ReactDOM.render(tooltip, mountPoint)
+    legacyRender(tooltip, mountPoint)
   }
 }
 
@@ -1026,14 +1028,14 @@ function renderHiddenSubmissionPill(submission: Submission) {
   if (!mountPoint) throw new Error('hidden submission pill mount point not found')
 
   if (isPostable(submission)) {
-    ReactDOM.render(
+    legacyRender(
       <Pill color="warning" margin="0 0 small">
         {I18n.t('Hidden')}
       </Pill>,
       mountPoint,
     )
   } else {
-    ReactDOM.unmountComponentAtNode(mountPoint)
+    legacyUnmountComponentAtNode(mountPoint)
   }
 }
 
@@ -1073,16 +1075,16 @@ export function renderLtiAssetReports(
       displayName: attachment.display_name,
     }))
     const props = {...student, assignmentId, attachments, attempt, submissionType}
-    ReactDOM.render(<LtiAssetReportsForSpeedgraderWrapper {...props} />, mountPoint)
+    legacyRender(<LtiAssetReportsForSpeedgraderWrapper {...props} />, mountPoint)
   } else {
-    ReactDOM.unmountComponentAtNode(mountPoint)
+    legacyUnmountComponentAtNode(mountPoint)
   }
 }
 
 function renderCheckpoints(submission: Submission) {
   const mountPoint = document.getElementById(SPEED_GRADER_CHECKPOINTS_MOUNT_POINT)
   if (mountPoint) {
-    ReactDOM.render(
+    legacyRender(
       <SpeedGraderCheckpointsWrapper
         EG={EG}
         courseId={ENV.course_id}
@@ -1100,7 +1102,7 @@ function renderRubricsCheckpointsInfo() {
   const mountPoint = document.getElementById('rubrics_checkpoints_info')
 
   if (mountPoint) {
-    ReactDOM.render(
+    legacyRender(
       <Alert variant="info" margin="medium none">
         {I18n.t('Rubrics do not auto-populate grades for checkpoints.')}
       </Alert>,
@@ -1127,7 +1129,7 @@ function renderDiscussionsNavigation(temporaryDiscussionContextView = null) {
     } else if (temporaryDiscussionContextView === 'discussion_view_with_context' && mountPoint) {
       const currentUrl = new URL(window.location.href)
       const params = new URLSearchParams(currentUrl.search)
-      ReactDOM.render(
+      legacyRender(
         <SpeedGraderDiscussionsNavigation2 studentId={params.get('student_id')} />,
         mountPoint,
       )
@@ -1136,7 +1138,7 @@ function renderDiscussionsNavigation(temporaryDiscussionContextView = null) {
   } else if (getDefaultDiscussionView() === 'discussion_view_with_context' && mountPoint) {
     const currentUrl = new URL(window.location.href)
     const params = new URLSearchParams(currentUrl.search)
-    ReactDOM.render(
+    legacyRender(
       <SpeedGraderDiscussionsNavigation2 studentId={params.get('student_id')} />,
       mountPoint,
     )
@@ -1150,7 +1152,7 @@ function clearDiscussionsNavigation() {
   const mountPoint = document.getElementById(SPEED_GRADER_DISCUSSIONS_NAVIGATION_MOUNT_POINT)
 
   if (mountPoint) {
-    ReactDOM.unmountComponentAtNode(mountPoint)
+    legacyUnmountComponentAtNode(mountPoint)
   }
 }
 
@@ -1173,7 +1175,7 @@ function renderCommentTextArea(readOnly = false) {
 
   const currentText = $add_a_comment_textarea.data('textarea')
 
-  ReactDOM.render(
+  legacyRender(
     <CommentArea
       getTextAreaRef={getTextAreaRef}
       courseId={ENV.course_id}
@@ -1296,7 +1298,7 @@ function initCommentBox() {
             recording: false,
             html: '<div></div>',
             click() {
-              const $this = $(this)
+              const $this = $(this) as unknown as JQuery<HTMLElement>
               processSpeech($this)
             },
           },
@@ -1581,7 +1583,7 @@ EG = {
           return $width_resizer_ew.clone().addClass('clone')
         },
         snapTolerance: 200,
-        drag(_event: Event, ui) {
+        drag(_event: Event, ui: JQueryUI.DraggableEventUIParams) {
           const offset = ui.offset
           const windowWidth = $window.width() as number
           $left_side.width(`${(offset.left / windowWidth) * 100}%`)
@@ -1597,7 +1599,7 @@ EG = {
             $right_side.width('100%')
           }
         },
-        stop(event: Event, _ui) {
+        stop(event: Event, _ui: JQueryUI.DraggableEventUIParams) {
           event.stopImmediatePropagation()
           $resize_overlay.hide()
         },
@@ -1627,14 +1629,14 @@ EG = {
         snap: '#full_width_container',
         appendTo: '#full_width_container',
         helper: 'original',
-        drag(_event: Event, dragBar) {
+        drag(_event: Event, dragBar: JQueryUI.DraggableEventUIParams) {
           const topContainerDesiredHeight = dragBar.offset.top - $full_width_container.offset()!.top
           const topContainerDesiredPercent =
             (topContainerDesiredHeight / $full_width_container.height()!) * 100
           $left_side.css('flex', `0 0 ${topContainerDesiredPercent}%`)
           $right_side.css('flex', `0 0 ${100 - topContainerDesiredPercent}%`)
         },
-        stop(event: Event, _ui) {
+        stop(event: Event, _ui: JQueryUI.DraggableEventUIParams) {
           event.stopImmediatePropagation()
           $resize_overlay.hide()
         },
@@ -1748,7 +1750,7 @@ EG = {
     } else {
       // unmount spinner
       const spinnerMount = document.getElementById('speed_grader_loading')
-      if (spinnerMount) ReactDOM.unmountComponentAtNode(spinnerMount)
+      if (spinnerMount) legacyUnmountComponentAtNode(spinnerMount)
       $('#speed_grader_loading').hide()
       $('#gradebook_header, #full_width_container').show()
       initDropdown()
@@ -1797,9 +1799,9 @@ EG = {
   },
 
   setupGradeLoadingSpinner() {
-    const root = createRoot(document.getElementById('grades-loading-spinner')!)
-    root.render(
+    render(
       <GradeLoadingSpinner onLoadingChange={loading => toggleGradeVisibility(!loading)} />,
+      document.getElementById('grades-loading-spinner')!,
     )
   },
 
@@ -1859,7 +1861,7 @@ EG = {
         resizable: false,
         dialogClass: 'no-close',
         modal: true,
-        create(_e, _ui) {
+        create(_e: Event, _ui: JQueryUI.DialogUIParams) {
           const pane = $(this).dialog('widget').find('.ui-dialog-buttonpane')
           $(
             `<label class='do-not-show-again'><input type='checkbox'/>&nbsp;${I18n.t(
@@ -2337,7 +2339,7 @@ EG = {
     }
 
     const tray = <AssessmentAuditTray ref={bindRef} />
-    ReactDOM.render(tray, document.getElementById(ASSESSMENT_AUDIT_TRAY_MOUNT_POINT))
+    legacyRender(tray, document.getElementById(ASSESSMENT_AUDIT_TRAY_MOUNT_POINT))
 
     const onClick = () => {
       const {submission} = this.currentStudent
@@ -2357,11 +2359,11 @@ EG = {
     }
 
     const button = <AssessmentAuditButton onClick={onClick} />
-    ReactDOM.render(button, document.getElementById(ASSESSMENT_AUDIT_BUTTON_MOUNT_POINT))
+    legacyRender(button, document.getElementById(ASSESSMENT_AUDIT_BUTTON_MOUNT_POINT))
   },
 
   setUpRubricAssessmentContainerWrapper() {
-    ReactDOM.render(
+    legacyRender(
       <RubricAssessmentWrapper
         currentUserId={ENV.current_user_id ?? ''}
         rubric={ENV.rubric as RubricUnderscoreType}
@@ -3099,11 +3101,18 @@ EG = {
           grade,
         }
       })
+      // Only show quiz history link if the global flag is true AND the student has actual submissions
+      const hasActualSubmissions = submissionHistory.some((h: any) => {
+        const s = h.submission || h
+        return s.submitted_at != null
+      })
       innerHTML = submissionsDropdownTemplate({
-        showSubmissionStatus: !window.jsonData.anonymize_students || isAdmin,
+        showSubmissionStatus:
+          !window.jsonData.anonymous_participants &&
+          (!window.jsonData.anonymize_students || isAdmin),
         singleSubmission: submissionHistory.length === 1,
         submissions: templateSubmissions,
-        linkToQuizHistory: window.jsonData.too_many_quiz_submissions,
+        linkToQuizHistory: window.jsonData.too_many_quiz_submissions && hasActualSubmissions,
         quizHistoryHref: replaceTags(ENV.quiz_history_url, {
           user_id: this.currentStudent[anonymizableId],
         }),
@@ -3275,6 +3284,8 @@ EG = {
       $this_student_has_a_submission.show()
     } else if (attachment) {
       this.renderAttachment(attachment)
+    } else if (submission && submission.submission_type === 'ams') {
+      this.renderAmsGrading(submission)
     } else if (submission && submission.submission_type === 'basic_lti_launch') {
       if (
         !ENV.SINGLE_NQ_SESSION_ENABLED ||
@@ -3288,6 +3299,7 @@ EG = {
         $iframe_holder.show()
       }
     } else {
+      this.unmountAmsGrading()
       this.renderSubmissionPreview()
     }
   },
@@ -3295,6 +3307,7 @@ EG = {
   emptyIframeHolder(elem?: JQuery) {
     elem = elem || $iframe_holder
     elem.empty()
+    this.unmountAmsGrading()
   },
 
   // load in the iframe preview.  if we are viewing a past version of the file pass the version to preview in the url
@@ -3387,6 +3400,52 @@ EG = {
       allowfullscreen: true,
     })
     $div.html(iframe).show()
+  },
+
+  renderAmsGrading(submission: HistoricalSubmission) {
+    this.emptyIframeHolder()
+    this.unmountAmsGrading()
+
+    if (!window.REMOTES?.ams?.launch_url) {
+      console.error('AMS not configured')
+      return
+    }
+
+    const container = document.getElementById('ams_grading_container')
+    if (!container) {
+      console.error('AMS grading container not found')
+      return
+    }
+
+    const handleAmsSubmissionUpdate = () => {
+      refreshGrades(() => {
+        this.updateStatsInHeader()
+      })
+    }
+
+    amsGradingRoot = render(
+      <AmsLoader
+        containerId="ams_grading_container"
+        gradingContext={{
+          assignmentId: String(window.jsonData.id),
+          studentId: String(this.currentStudent.id),
+          studentUuid: this.currentStudent.uuid,
+          submissionId: String(submission.id),
+        }}
+        onSubmissionUpdate={handleAmsSubmissionUpdate}
+      />,
+      container,
+    )
+
+    $ams_grading_container.show()
+  },
+
+  unmountAmsGrading() {
+    if (amsGradingRoot) {
+      amsGradingRoot.unmount()
+      amsGradingRoot = null
+    }
+    $ams_grading_container.hide()
   },
 
   generateWarningTimings(numHours: number): number[] {
@@ -4225,7 +4284,10 @@ EG = {
       if (!submissions[0].submission.excused) {
         const outlierScoreHelper = new OutlierScoreHelper(score, pointsPossible)
         if (outlierScoreHelper.hasWarning()) {
-          $.flashWarning(outlierScoreHelper.warningMessage())
+          const warningMessage = outlierScoreHelper.warningMessage()
+          if (warningMessage) {
+            $.flashWarning(warningMessage)
+          }
         }
       }
 
@@ -4475,7 +4537,7 @@ EG = {
     const screenCaptureMountPoint = document.getElementById(SCREEN_CAPTURE_ICON_MOUNT_POINT)
     if (screenCaptureMountPoint) {
       const screen_capture_icon = <ScreenCaptureIcon />
-      ReactDOM.render(screen_capture_icon, screenCaptureMountPoint)
+      legacyRender(screen_capture_icon, screenCaptureMountPoint)
     }
   },
 
@@ -4771,7 +4833,7 @@ EG = {
       this.renderSticker()
     }
 
-    ReactDOM.render(
+    legacyRender(
       <SubmissionSticker
         confetti={false}
         editable={isMostRecentAttempt}
@@ -4792,7 +4854,7 @@ EG = {
     // Only show the selector if the current student has at least one grade from
     // a provisional grader (i.e., not the moderator).
     if (!provisionalGrades.some(grade => grade.readonly)) {
-      ReactDOM.unmountComponentAtNode(mountPoint)
+      legacyUnmountComponentAtNode(mountPoint)
       return
     }
 
@@ -4818,8 +4880,9 @@ EG = {
       provisionalGrades,
     }
 
+    // @ts-expect-error
     const gradeSelector = <SpeedGraderProvisionalGradeSelector {...props} />
-    ReactDOM.render(gradeSelector, mountPoint)
+    legacyRender(gradeSelector, mountPoint)
   },
 
   changeToSection(sectionId: string | string[] | 'all') {
@@ -4922,6 +4985,7 @@ function setupSelectors() {
   $grading_box_selected_grader = $('#grading-box-selected-grader')
   $grded_so_far = $('#x_of_x_graded')
   $iframe_holder = $('#iframe_holder')
+  $ams_grading_container = $('#ams_grading_container')
   $left_side = $('#left_side')
   $multiple_submissions = $('#multiple_submissions')
   $new_screen_capture_indicator_wrapper = $('#new-studio-media-indicator-wrapper')

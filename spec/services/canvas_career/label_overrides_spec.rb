@@ -18,12 +18,10 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
-require "spec_helper"
-
 RSpec.describe CanvasCareer::LabelOverrides do
   describe ".permission_label_overrides" do
     context "when context is in career mode" do
-      let(:account) { double("Account", is_a?: true, horizon_account?: true) }
+      let(:account) { instance_double(Account, is_a?: true, horizon_account?: true) }
 
       before do
         allow(CanvasCareer::Constants::Overrides).to receive(:permission_label_overrides)
@@ -42,7 +40,7 @@ RSpec.describe CanvasCareer::LabelOverrides do
     end
 
     context "when context is not in career mode" do
-      let(:regular_account) { double("Account", is_a?: true, horizon_account?: false) }
+      let(:regular_account) { instance_double(Account, is_a?: true, horizon_account?: false) }
 
       it "returns an empty hash for non-horizon account" do
         result = described_class.permission_label_overrides(regular_account)
@@ -50,7 +48,7 @@ RSpec.describe CanvasCareer::LabelOverrides do
       end
 
       it "returns an empty hash for non-Account context" do
-        non_account_context = double("Course", is_a?: false)
+        non_account_context = instance_double(Course, is_a?: false)
         result = described_class.permission_label_overrides(non_account_context)
         expect(result).to eq({})
       end
@@ -69,7 +67,7 @@ RSpec.describe CanvasCareer::LabelOverrides do
 
   describe ".enrollment_type_overrides" do
     context "when context is in career mode" do
-      let(:account) { double("Account", is_a?: true, horizon_account?: true) }
+      let(:account) { instance_double(Account, is_a?: true, horizon_account?: true) }
 
       before do
         allow(CanvasCareer::Constants::Overrides).to receive(:enrollment_type_overrides)
@@ -88,7 +86,7 @@ RSpec.describe CanvasCareer::LabelOverrides do
     end
 
     context "when context is not in career mode" do
-      let(:regular_account) { double("Account", is_a?: true, horizon_account?: false) }
+      let(:regular_account) { instance_double(Account, is_a?: true, horizon_account?: false) }
 
       it "returns an empty hash for non-horizon account" do
         result = described_class.enrollment_type_overrides(regular_account)
@@ -96,7 +94,7 @@ RSpec.describe CanvasCareer::LabelOverrides do
       end
 
       it "returns an empty hash for non-Account context" do
-        non_account_context = double("Course", is_a?: false)
+        non_account_context = instance_double(Course, is_a?: false)
         result = described_class.enrollment_type_overrides(non_account_context)
         expect(result).to eq({})
       end
@@ -116,17 +114,17 @@ RSpec.describe CanvasCareer::LabelOverrides do
   describe ".career_mode?" do
     context "when context is an Account" do
       it "returns true for horizon account" do
-        account = double("Account", is_a?: true, horizon_account?: true)
+        account = instance_double(Account, is_a?: true, horizon_account?: true)
         expect(described_class.career_mode?(account)).to be true
       end
 
       it "returns false for non-horizon account" do
-        account = double("Account", is_a?: true, horizon_account?: false)
+        account = instance_double(Account, is_a?: true, horizon_account?: false)
         expect(described_class.career_mode?(account)).to be false
       end
 
       it "caches the result using instance variables" do
-        account = double("Account", is_a?: true, horizon_account?: true)
+        account = instance_double(Account, is_a?: true, horizon_account?: true)
 
         # First call should call horizon_account?
         expect(account).to receive(:horizon_account?).once.and_return(true)
@@ -138,7 +136,7 @@ RSpec.describe CanvasCareer::LabelOverrides do
       end
 
       it "returns cached result on subsequent calls" do
-        account = double("Account", is_a?: true)
+        account = instance_double(Account, is_a?: true)
 
         # Set up the account to return cached value
         allow(account).to receive(:instance_variable_get).with(:@_career_mode).and_return(true)
@@ -151,7 +149,7 @@ RSpec.describe CanvasCareer::LabelOverrides do
       end
 
       it "handles nil cache values correctly" do
-        account = double("Account", is_a?: true, horizon_account?: false)
+        account = instance_double(Account, is_a?: true, horizon_account?: false)
 
         # First call: cache is nil, should call horizon_account?
         expect(account).to receive(:instance_variable_get).with(:@_career_mode).and_return(nil)
@@ -162,7 +160,7 @@ RSpec.describe CanvasCareer::LabelOverrides do
       end
 
       it "distinguishes between nil and false cache values" do
-        account = double("Account", is_a?: true)
+        account = instance_double(Account, is_a?: true)
 
         # Cache contains false (not nil), should return cached value
         expect(account).to receive(:instance_variable_get).with(:@_career_mode).and_return(false)
@@ -175,12 +173,12 @@ RSpec.describe CanvasCareer::LabelOverrides do
 
     context "when context is not an Account" do
       it "returns false for Course context" do
-        course = double("Course", is_a?: false)
+        course = instance_double(Course, is_a?: false)
         expect(described_class.career_mode?(course)).to be false
       end
 
       it "returns false for User context" do
-        user = double("User", is_a?: false)
+        user = instance_double(User, is_a?: false)
         expect(described_class.career_mode?(user)).to be false
       end
 
@@ -195,8 +193,8 @@ RSpec.describe CanvasCareer::LabelOverrides do
   end
 
   describe "integration scenarios" do
-    let(:horizon_account) { double("Account", is_a?: true, horizon_account?: true) }
-    let(:regular_account) { double("Account", is_a?: true, horizon_account?: false) }
+    let(:horizon_account) { instance_double(Account, is_a?: true, horizon_account?: true) }
+    let(:regular_account) { instance_double(Account, is_a?: true, horizon_account?: false) }
 
     before do
       allow(CanvasCareer::Constants::Overrides).to receive_messages(permission_label_overrides: { "manage_students" => "Manage Learners" }, enrollment_type_overrides: { "StudentEnrollment" => "LearnerEnrollment" })

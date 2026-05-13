@@ -17,8 +17,6 @@
 # You should have received a copy of the GNU Affero General Public License along
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
-require_relative "../../spec_helper"
-
 describe "ModuleVisibility" do
   before :once do
     course_factory(active_all: true)
@@ -115,6 +113,38 @@ describe "ModuleVisibility" do
 
         expect(module_ids_visible_to_user(@student3)).to contain_exactly(@module1.id, @module2.id)
       end
+    end
+  end
+
+  describe ".invalidate_cache" do
+    it "requires at least one of course_ids or context_module_ids" do
+      expect do
+        ModuleVisibility::ModuleVisibilityService.invalidate_cache(user_ids: [@student1.id])
+      end.to raise_error(ArgumentError)
+    end
+
+    it "does not raise an error when course_ids is provided" do
+      expect do
+        ModuleVisibility::ModuleVisibilityService.invalidate_cache(course_ids: [@course.id])
+      end.not_to raise_error
+    end
+
+    it "does not raise an error when context_module_ids is provided" do
+      expect do
+        ModuleVisibility::ModuleVisibilityService.invalidate_cache(context_module_ids: [@module1.id])
+      end.not_to raise_error
+    end
+
+    it "deletes the cache key" do
+      ModuleVisibility::ModuleVisibilityService.modules_visible_to_students(course_ids: @course.id, user_ids: @student1.id)
+
+      expect(Rails.cache).to receive(:delete).at_least(:once)
+
+      ModuleVisibility::ModuleVisibilityService.invalidate_cache(
+        course_ids: [@course.id],
+        user_ids: [@student1.id],
+        context_module_ids: [@module1.id]
+      )
     end
   end
 end

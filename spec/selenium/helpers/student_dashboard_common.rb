@@ -22,6 +22,12 @@ module StudentDashboardCommon
     feature_status ? Account.default.root_account.enable_feature!(:widget_dashboard) : Account.default.root_account.disable_feature!(:widget_dashboard)
   end
 
+  def enable_widget_dashboard_for(*users)
+    users.each do |user|
+      user.update!(preferences: user.preferences.merge(widget_dashboard_user_preference: true))
+    end
+  end
+
   def dashboard_student_setup
     @course1 = course_factory(active_all: true, course_name: "Course 1")
     @course2 = course_factory(active_all: true, course_name: "Course 2")
@@ -129,12 +135,59 @@ module StudentDashboardCommon
     @graded_discussion.grade_student(@student, grade: "9", grader: @teacher1)
   end
 
+  def dashboard_recent_grades_setup
+    # Add the widget to the dashboard
+    add_widget_to_dashboard(@student, :recent_grades, 1)
+
+    # Add comments to submissions
+    @graded_assignment.submission_for_student(@student).add_comment(author: @teacher2, comment: "Place for improvement...")
+    @graded_discussion.submission_for_student(@student).add_comment(author: @teacher1, comment: "Well done!")
+    @submitted_assignment.submission_for_student(@student).add_comment(author: @teacher1, comment: "Please review your work.")
+    @submitted_discussion.submission_for_student(@student).add_comment(author: @teacher2, comment: "See my feedback.")
+  end
+
+  def pagination_recent_grades_setup
+    9.times do |i|
+      c1_graded_assignment = @course1.assignments.create!(
+        name: "Course 1: Graded Assignment #{i + 1}",
+        points_possible: "10",
+        due_at: (i + 1).days.ago.end_of_day,
+        submission_types: "online_text_entry"
+      )
+      c1_graded_assignment.submit_homework(@student, submission_type: "online_text_entry", body: "Submission #{i + 1}")
+      c1_graded_assignment.grade_student(@student, grade: (7 + (i % 3)).to_s, grader: @teacher1)
+
+      c1_submitted_assignment = @course1.assignments.create!(
+        name: "Course 1: Submitted Assignment #{i + 1}",
+        points_possible: "10",
+        due_at: (i + 1).days.ago.end_of_day,
+        submission_types: "online_text_entry"
+      )
+      c1_submitted_assignment.submit_homework(@student, submission_type: "online_text_entry", body: "Submission #{i + 1}")
+
+      c2_submitted_assignment = @course2.assignments.create!(
+        name: "Course 2: Graded Assignment #{i + 1}",
+        points_possible: "10",
+        due_at: (i + 1).days.ago.end_of_day,
+        submission_types: "online_text_entry"
+      )
+      c2_submitted_assignment.submit_homework(@student, submission_type: "online_text_entry", body: "Submission #{i + 1}")
+    end
+  end
+
+  def dashboard_conversation_setup
+    add_widget_to_dashboard(@student, :inbox, 2)
+    create_multiple_conversations(@student, @teacher1, 3, "unread")
+    create_multiple_conversations(@student, @teacher2, 2, "read")
+  end
+
   def observed_student_setup
     @student2 = user_factory(active_all: true, name: "student2")
     @course1.enroll_student(@student2, enrollment_state: :active)
     @course2.enroll_student(@student2, enrollment_state: :active)
 
     @submitted_discussion.submit_homework(@student2, submission_type: "discussion_topic")
+    @submitted_discussion.submission_for_student(@student2).add_comment(author: @teacher2, comment: "Good effort!")
     @graded_assignment.submit_homework(@student2, submission_type: "online_text_entry")
     @graded_assignment.grade_student(@student2, grade: "10", grader: @teacher2)
   end
@@ -254,5 +307,120 @@ module StudentDashboardCommon
     @multi_section_observer = user_factory(name: "Observer3", active_all: true)
     @multi_course.enroll_user(@multi_section_observer, "ObserverEnrollment", enrollment_state: "active", associated_user_id: @multi_stu_sec1, allow_multiple_enrollments: true)
     @multi_course.enroll_user(@multi_section_observer, "ObserverEnrollment", enrollment_state: "active", associated_user_id: @multi_stu_sec2, allow_multiple_enrollments: true)
+  end
+
+  def group_assignment_course_setup
+    workflow_edge_case_course_setup
+    @student1_group1 = user_factory(active_all: true, name: "Student 1")
+    @student2_group1 = user_factory(active_all: true, name: "Student 2")
+    @student_no_group = user_factory(active_all: true, name: "Student No Group")
+
+    @course4.enroll_student(@student1_group1, enrollment_state: :active)
+    @course4.enroll_student(@student2_group1, enrollment_state: :active)
+    @course4.enroll_student(@student_no_group, enrollment_state: :active)
+
+    # Create group set and groups
+    @group_category = @course4.group_categories.create!(name: "Project Groups")
+    @group1 = @course4.groups.create!(name: "Group 1", group_category: @group_category)
+    @group2 = @course4.groups.create!(name: "Group 2", group_category: @group_category)
+
+    @group1.add_user(@student1_group1)
+    @group1.add_user(@student2_group1)
+    @group2.add_user(@student3)
+  end
+
+  def group_assignment_setup
+    @group_assignment_graded_individually = @course4.assignments.create!(
+      name: "Graded Individually",
+      due_at: 2.days.from_now.end_of_day,
+      submission_types: "online_text_entry",
+      group_category: @group_category,
+      grade_group_students_individually: true,
+      points_possible: 10,
+      only_visible_to_overrides: true
+    )
+    @missing_group_assignment = @course4.assignments.create!(
+      name: "missing Group assignment",
+      due_at: 3.days.ago.end_of_day,
+      submission_types: "online_text_entry",
+      group_category: @group_category,
+      grade_group_students_individually: false,
+      points_possible: 10,
+      only_visible_to_overrides: true
+    )
+    @missing_graded_individually = @course4.assignments.create!(
+      name: "missing Graded Individually group assignment",
+      due_at: 3.days.ago.end_of_day,
+      submission_types: "online_text_entry",
+      group_category: @group_category,
+      grade_group_students_individually: true,
+      points_possible: 10,
+      only_visible_to_overrides: true
+    )
+    create_group_override_for_assignment(@group_assignment_graded_individually, group: @group1)
+    create_group_override_for_assignment(@missing_group_assignment, group: @group1, due_at: 3.days.ago.end_of_day)
+    create_group_override_for_assignment(@missing_graded_individually, group: @group1, due_at: 3.days.ago.end_of_day)
+  end
+
+  def submit_group_assignment
+    @group_assignment.submit_homework(@student1_group1,
+                                      submission_type:
+                                      "online_text_entry",
+                                      body: "Group submission")
+    @group_assignment_graded_individually.submit_homework(@student1_group1,
+                                                          submission_type:
+                                                          "online_text_entry",
+                                                          body: "Individual submission")
+  end
+
+  # Add specific widget to the user's dashboard
+  def add_widget_to_dashboard(user, widget_name, target_column)
+    case widget_name
+    when :inbox
+      widget_id = "inbox-widget"
+      widget_type = "inbox"
+      title = "Inbox"
+    when :recent_grades
+      widget_id = "recent_grades-widget"
+      widget_type = "recent_grades"
+      title = "Recent grades & feedback"
+    when :todo_list
+      widget_id = "todo-list-widget"
+      widget_type = "todo_list"
+      title = "To-do list"
+    when :progress_overview
+      widget_id = "progress_overview-widget"
+      widget_type = "progress_overview"
+      title = "Progress overview"
+    end
+
+    config = user.get_preference(:widget_dashboard_config) || {}
+    layout = config["layout"] || { "columns" => target_column, "widgets" => [] }
+
+    # Add the widget to the layout if not already present
+    widgets = layout["widgets"] || []
+    unless widgets.any? { |w| w["type"] == widget_type }
+      widgets << {
+        "id" => widget_id,
+        "type" => widget_type,
+        "position" => { "col" => 1, "row" => 1, "relative" => 1 },
+        "title" => title
+      }
+    end
+
+    layout["widgets"] = widgets
+    config["layout"] = layout
+    user.set_preference(:widget_dashboard_config, config)
+    user.save!
+  end
+
+  # Create multiple conversations for a user
+  def create_multiple_conversations(user, sender, count, workflow_state)
+    count.times do |i|
+      subject = "Conversation #{i + 1}"
+      body = "This is message #{i + 1}"
+
+      conversation(user, sender, private: false, subject:, body:, workflow_state:)
+    end
   end
 end

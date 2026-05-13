@@ -18,7 +18,7 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
-class WikiPage < ActiveRecord::Base
+class WikiPage < ApplicationRecord
   attr_readonly :wiki_id
   attr_accessor :saved_by
 
@@ -65,6 +65,7 @@ class WikiPage < ActiveRecord::Base
   has_many :wiki_page_lookups, inverse_of: :wiki_page
   has_one :master_content_tag, class_name: "MasterCourses::MasterContentTag", inverse_of: :wiki_page
   has_one :block_editor, as: :context, dependent: :destroy
+  has_one :external_content_reference, dependent: :destroy, inverse_of: :wiki_page
   has_one :estimated_duration, dependent: :destroy, inverse_of: :wiki_page
   has_many :attachment_associations, as: :context, inverse_of: :context
 
@@ -117,9 +118,20 @@ class WikiPage < ActiveRecord::Base
     wiki_ids += Course.where(id: course_ids).pluck(:wiki_id) if course_ids.any?
     wiki_ids += Group.where(id: group_ids).pluck(:wiki_id) if group_ids.any?
     context_pages = where(wiki_id: wiki_ids)
+    candidate_page_ids = context_pages.pluck(:id)
+
+    # Short-circuit if no pages to check (e.g., no pages with todo dates)
+    next context_pages.none if candidate_page_ids.empty?
 
     scope_assignments = context_pages.where.not(assignment_id: nil).pluck(:assignment_id)
-    visible_wiki_pages = WikiPageVisibility::WikiPageVisibilityService.wiki_pages_visible_to_students(user_ids: user_id, course_ids:).map(&:wiki_page_id)
+    visible_wiki_pages = WikiPageVisibility::WikiPageVisibilityService
+                         .wiki_pages_visible_to_students(
+                           user_ids: user_id,
+                           course_ids:,
+                           wiki_page_ids: candidate_page_ids
+                         )
+                         .map(&:wiki_page_id)
+
     visible_assignments = if scope_assignments.empty?
                             []
                           else
@@ -291,14 +303,16 @@ class WikiPage < ActiveRecord::Base
   end
 
   has_a_broadcast_policy
-  simply_versioned exclude: SIMPLY_VERSIONED_EXCLUDE_FIELDS, when: proc { |wp|
-    # always create a version when restoring a deleted page
-    next true if wp.workflow_state_changed? && wp.workflow_state_was == "deleted"
+  simply_versioned exclude: SIMPLY_VERSIONED_EXCLUDE_FIELDS,
+                   when: proc { |wp|
+                     # always create a version when restoring a deleted page
+                     next true if wp.workflow_state_changed? && wp.workflow_state_was == "deleted"
 
-    # :user_id and :updated_at do not merit creating a version, but should be saved
-    exclude_fields = [:user_id, :updated_at].concat(SIMPLY_VERSIONED_EXCLUDE_FIELDS).map(&:to_s)
-    (wp.changes.keys.map(&:to_s) - exclude_fields).present?
-  }
+                     # :user_id and :updated_at do not merit creating a version, but should be saved
+                     exclude_fields = [:user_id, :updated_at].concat(SIMPLY_VERSIONED_EXCLUDE_FIELDS).map(&:to_s)
+                     (wp.changes.keys.map(&:to_s) - exclude_fields).present?
+                   },
+                   versioned_associations: [:attachment_associations]
 
   after_save :remove_changed_flag
 
@@ -763,7 +777,7 @@ class WikiPage < ActiveRecord::Base
 
     # PineClient requires a user object with uuid and global_id, but we don't have a user in this context
     # and the action is more of a system-initiated action than a user-initiated action
-    null_user = Struct.new(:uuid, :global_id, keyword_init: true).new(uuid: nil, global_id: nil)
+    null_user = Struct.new(:uuid, :global_id).new(uuid: nil, global_id: nil)
 
     PineClient.ingest_html(
       html_content: body,
@@ -783,7 +797,6 @@ class WikiPage < ActiveRecord::Base
   def eligible_for_pine_indexing?
     return false unless context.is_a?(Course)
     return false unless context.horizon_course?
-    return false unless context.root_account.feature_enabled?(:horizon_learning_object_ingestion_on_change)
     return false unless PineClient.enabled?
 
     true
@@ -794,7 +807,7 @@ class WikiPage < ActiveRecord::Base
 
     # PineClient requires a user object with uuid and global_id, but we don't have a user in this context
     # and the action is more of a system-initiated action than a user-initiated action
-    null_user = Struct.new(:uuid, :global_id, keyword_init: true).new(uuid: nil, global_id: nil)
+    null_user = Struct.new(:uuid, :global_id).new(uuid: nil, global_id: nil)
 
     delay(
       n_strand: ["horizon_wiki_deletion", context.global_root_account_id],
@@ -818,5 +831,60 @@ class WikiPage < ActiveRecord::Base
   rescue => e
     Rails.logger.error("Failed to delete wiki page #{id} from Pine for context #{context.class.name}:#{context.id}: #{e.message}")
     raise
+  end
+
+  def a11y_scannable_attributes
+    # We need to run the scan on title and workflow_state change as well otherwise AccessibilityResourceScan will be out of date
+    # TODO: RCX-4463 remove title and workflow_state
+    %i[title body workflow_state]
+  end
+
+  def create_block_editor_data(user_uuid:, data:)
+    response = Canvas.retriable(tries: content_service_max_retries) do
+      ContentServiceClient.create_content(
+        root_account_uuid: context.root_account.uuid,
+        user_uuid:,
+        context_type: "WikiPage",
+        context_id: id,
+        data:
+      )
+    end
+    create_external_content_reference(content_id: response.external_content_id)
+  end
+
+  def update_block_editor_data(user_uuid:, data:)
+    ref = external_content_reference
+    if ref
+      Canvas.retriable(tries: content_service_max_retries) do
+        ContentServiceClient.update_content(
+          root_account_uuid: context.root_account.uuid,
+          user_uuid:,
+          external_content_id: ref.content_id,
+          data:
+        )
+      end
+    else
+      create_block_editor_data(user_uuid:, data:)
+    end
+  end
+
+  def get_block_editor_data(user_uuid:)
+    ref = external_content_reference
+    return unless ref
+
+    content = Canvas.retriable(tries: content_service_max_retries) do
+      ContentServiceClient.get_content(
+        root_account_uuid: context.root_account.uuid,
+        user_uuid:,
+        external_content_id: ref.content_id
+      )
+    end
+    content.data
+  end
+
+  private
+
+  def content_service_max_retries
+    Setting.get("content_service_client_max_retries", "3").to_i
   end
 end

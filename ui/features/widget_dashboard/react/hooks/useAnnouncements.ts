@@ -17,14 +17,14 @@
  */
 
 import {useState, useCallback, useEffect, useRef} from 'react'
-import {useInfiniteQuery, useQuery, useQueryClient} from '@tanstack/react-query'
+import {useInfiniteQuery, useQuery, useQueryClient, keepPreviousData} from '@tanstack/react-query'
 import {executeQuery} from '@canvas/graphql'
 import {gql} from 'graphql-tag'
 import type {Announcement} from '../types'
 import {ANNOUNCEMENTS_PAGINATED_KEY} from '../constants'
 import {useWidgetDashboard} from './useWidgetDashboardContext'
 import {widgetDashboardPersister} from '../utils/persister'
-import {useBroadcastQuery} from '@canvas/query/broadcast'
+import {useBroadcastQuery} from '@instructure/platform-query/broadcast'
 
 interface UseAnnouncementsOptions {
   limit?: number
@@ -297,6 +297,7 @@ export function useAnnouncementsPaginated(options: UseAnnouncementsOptions = {})
     staleTime: 5 * 60 * 1000,
     persister: widgetDashboardPersister,
     refetchOnMount: false,
+    placeholderData: keepPreviousData,
   })
 
   // Broadcast announcement updates across tabs
@@ -306,7 +307,8 @@ export function useAnnouncementsPaginated(options: UseAnnouncementsOptions = {})
   })
 
   const error = queryError as Error | null
-  const isLoading = isQueryLoading && !queryData
+  const isLoading = isFetching && !queryData
+  const isPaginationLoading = isFetching && !!queryData
 
   useEffect(() => {
     if (queryData?.pageInfo.totalCount !== null && queryData?.pageInfo.totalCount !== undefined) {
@@ -361,6 +363,7 @@ export function useAnnouncementsPaginated(options: UseAnnouncementsOptions = {})
     resetPagination,
     refetch: resetAndRefetch,
     isLoading,
+    isPaginationLoading,
     error,
     pageSize,
   }

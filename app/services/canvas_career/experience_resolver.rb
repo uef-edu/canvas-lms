@@ -90,7 +90,6 @@ module CanvasCareer
         horizon_account? && learning_provider_in_context?
       elsif @context.is_a?(Course)
         horizon_course? &&
-          @domain_root_account.feature_enabled?(:horizon_learning_provider_app_for_courses) &&
           learning_provider_in_context? &&
           (user_preference.prefers_learning_provider? || !learner_in_context?)
       else # contextless
@@ -179,7 +178,7 @@ module CanvasCareer
       return false if career_unaffiliated_institution?
       return true if career_at_root_account?
 
-      enrollment_types.include?(true) || has_career_account_users?
+      enrollment_types.include?(true) || has_career_account_users? || user_experience_exists?
     end
 
     def has_academic_associations?
@@ -210,7 +209,7 @@ module CanvasCareer
       # Optimization to avoid queries when possible
       return false if career_unaffiliated_institution?
 
-      has_career_enrollment_roles?(LEARNER_ENROLLMENT_TYPES)
+      has_career_enrollment_roles?(LEARNER_ENROLLMENT_TYPES) || user_experience_exists?
     end
 
     def has_career_learning_provider_roles?
@@ -220,19 +219,27 @@ module CanvasCareer
       has_career_enrollment_roles?(LEARNING_PROVIDER_ENROLLMENT_TYPES) || has_career_account_users?
     end
 
+    def user_experience_exists?
+      return @_user_experience_exists unless @_user_experience_exists.nil?
+
+      @_user_experience_exists = UserExperience.active.where(user: @user, root_account: @domain_root_account).exists?
+    end
+
     def has_career_account_users?
       return @_has_career_account_users unless @_has_career_account_users.nil?
 
       @_has_career_account_users = begin
         career_account_ids = @domain_root_account.settings[:horizon_account_ids]
-        return false if career_account_ids.blank? || account_user_account_ids.blank?
-
+        if career_account_ids.blank? || account_user_account_ids.blank?
+          false
         # Check if any directly-set account users are career accounts (optimization to avoid account chain query)
-        return true if account_user_account_ids.intersect?(career_account_ids)
-
-        # Check if any of those accounts' ancestors are career accounts (load the account chain for each
-        # account user and see if any of those are career accounts)
-        account_user_account_chain_ids.values.flatten.intersect?(career_account_ids)
+        elsif account_user_account_ids.intersect?(career_account_ids)
+          true
+        else
+          # Check if any of those accounts' ancestors are career accounts (load the account chain for each
+          # account user and see if any of those are career accounts)
+          account_user_account_chain_ids.values.flatten.intersect?(career_account_ids)
+        end
       end
     end
 
@@ -241,15 +248,17 @@ module CanvasCareer
 
       @_has_academic_account_users = begin
         career_account_ids = @domain_root_account.settings[:horizon_account_ids]
-        return false if account_user_account_ids.blank?
-
-        # Short-circuit if none of their account users are possibly on a career account
-        return true if career_account_ids.blank?
-
-        # For each account user, check if its part of a career account (load the account chain for each account
-        # user - if any chain does not intersect with the career accounts, then it is an academic account)
-        account_user_account_ids.any? do |account_id|
-          !account_user_account_chain_ids[account_id].intersect?(career_account_ids)
+        if account_user_account_ids.blank?
+          false
+        elsif career_account_ids.blank?
+          # Short-circuit if none of their account users are possibly on a career account
+          true
+        else
+          # For each account user, check if its part of a career account (load the account chain for each account
+          # user - if any chain does not intersect with the career accounts, then it is an academic account)
+          account_user_account_ids.any? do |account_id|
+            !account_user_account_chain_ids[account_id].intersect?(career_account_ids)
+          end
         end
       end
     end

@@ -17,7 +17,7 @@
  */
 
 import {extend} from '@canvas/backbone/utils'
-import {each, isEmpty, includes, extend as lodashExtend} from 'lodash'
+import {each, includes, isEmpty, extend as lodashExtend} from 'es-toolkit/compat'
 import Assignment from '@canvas/assignments/backbone/models/Assignment'
 import DialogFormView, {
   isSmallTablet,
@@ -381,10 +381,10 @@ CreateAssignmentView.prototype._validateDueDate = function (data, errors) {
   }
   // need to override default error message to focus only on due date field for quick add/edit
   if (errs.lock_at) {
-    errs.due_at = I18n.t('Due date cannot be after lock date')
+    errs.due_at = I18n.t('Due date cannot be after until date')
   }
   if (errs.unlock_at) {
-    errs.due_at = I18n.t('Due date cannot be before unlock date')
+    errs.due_at = I18n.t('Due date cannot be before available from date')
   }
   errors.due_at = [
     {

@@ -19,23 +19,12 @@
 
 class AccessibilityIssuesController < ApplicationController
   before_action :require_context
-  before_action :require_user
   before_action :check_authorized_action
   before_action :set_issue, only: [:update]
 
-  def show
-    js_bundle :accessibility_issues
-    render html: view_context.tag.div(
-      "",
-      id: "accessibility-issues-page-container",
-      data: { course_id: params[:course_id], issue_id: params[:id] }
-    ),
-           layout: true
-  end
-
   def update
     error = validate_update_params
-    return render json: { error: }, status: :unprocessable_entity if error
+    return render json: { error: }, status: :unprocessable_content if error
 
     @issue.workflow_state = params[:workflow_state]
     @issue.updated_by = @current_user
@@ -55,7 +44,7 @@ class AccessibilityIssuesController < ApplicationController
   private
 
   def check_authorized_action
-    return render_unauthorized_action unless tab_enabled?(Course::TAB_ACCESSIBILITY)
+    return render_unauthorized_action unless tab_enabled?(Course::TAB_ACCESSIBILITY, no_render: true)
 
     authorized_action(@context, @current_user, [:read, :update])
   end
@@ -93,10 +82,10 @@ class AccessibilityIssuesController < ApplicationController
 
     fix_response = Accessibility::Issue::HtmlFixer.new(
       @issue.rule_type,
-      @issue.context,
+      @issue.resource,
       @issue.node_path,
       sanitized_value
-    ).apply_fix!
+    ).apply_fix!(updating_user: @current_user)
 
     if fix_response[:status] != :ok
       render json: fix_response[:json], status: fix_response[:status]

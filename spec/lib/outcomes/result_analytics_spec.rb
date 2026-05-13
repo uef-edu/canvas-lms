@@ -622,6 +622,13 @@ describe Outcomes::ResultAnalytics do
           percents = ra.rating_percents(rollups, context: @course)
           expect(percents).to eq({ 80 => [67, 0, 33, 0, 0] })
         end
+
+        it "includes proficiency context information in mastery_scale_opts" do
+          outcome_proficiency_model(@course)
+          opts = ra.send(:mastery_scale_opts, @course)
+          expect(opts[:proficiency_context_type]).to eq("Course")
+          expect(opts[:proficiency_context_id]).to eq(@course.id.to_s)
+        end
       end
 
       describe "disabled" do
@@ -987,6 +994,175 @@ describe Outcomes::ResultAnalytics do
     end
 
     it "returns rollups in the same format as outcome_results_rollups" do
+      # Create outcome results for comparison
+      assignment = assignment_model(context: @course)
+      alignment = @outcome1.align(assignment, @course)
+
+      result = LearningOutcomeResult.create!(
+        learning_outcome: @outcome1,
+        context: @course,
+        user: @students[0],
+        alignment:,
+        score: 4.5,
+        possible: 5.0
+      )
+
+      # Get rollups from outcome_results_rollups (calculated from results)
+      calculated_rollups = ra.outcome_results_rollups(
+        results: [result],
+        users: [@students[0]],
+        context: @course
+      )
+
+      # Get the actual calculated score to store
+      calculated_score_value = calculated_rollups.first.scores.first.score
+      calculated_count_value = calculated_rollups.first.scores.first.count
+
+      # Store the rollup in the database with the calculated values
+      OutcomeRollup.create!(
+        course: @course,
+        user: @students[0],
+        outcome: @outcome1,
+        calculation_method: "highest",
+        aggregate_score: calculated_score_value,
+        results_count: calculated_count_value,
+        last_calculated_at: Time.zone.now
+      )
+
+      # Get rollups from stored_outcome_rollups (retrieved from database)
+      stored_rollups = ra.stored_outcome_rollups(users: [@students[0]], context: @course)
+
+      # Both should return the same structure
+      expect(stored_rollups.length).to eq(calculated_rollups.length)
+
+      stored_rollup = stored_rollups.first
+      calculated_rollup = calculated_rollups.first
+
+      # Check structure matches
+      expect(stored_rollup).to be_a(Outcomes::ResultAnalytics::Rollup)
+      expect(stored_rollup.context).to eq(calculated_rollup.context)
+      expect(stored_rollup.scores.length).to eq(calculated_rollup.scores.length)
+
+      stored_score = stored_rollup.scores.first
+      calculated_score = calculated_rollup.scores.first
+
+      # Verify both have the same interface
+      expect(stored_score).to respond_to(:outcome)
+      expect(stored_score).to respond_to(:score)
+      expect(stored_score).to respond_to(:count)
+      expect(stored_score).to respond_to(:hide_points)
+
+      # Verify values match
+      expect(stored_score.outcome).to eq(calculated_score.outcome)
+      expect(stored_score.score).to eq(calculated_score.score)
+      expect(stored_score.count).to eq(calculated_score.count)
+    end
+
+    it "populates submitted_at from the rollup record" do
+      submitted_at = 2.days.ago
+
+      OutcomeRollup.create!(
+        course: @course,
+        user: @students[0],
+        outcome: @outcome1,
+        calculation_method: "highest",
+        aggregate_score: 4.5,
+        submitted_at:,
+        last_calculated_at: Time.zone.now
+      )
+
+      rollups = ra.stored_outcome_rollups(users: [@students[0]], context: @course)
+
+      score = rollups.first.scores.first
+      expect(score.submitted_at).to be_within(1.second).of(submitted_at)
+    end
+
+    it "handles nil submitted_at gracefully" do
+      OutcomeRollup.create!(
+        course: @course,
+        user: @students[0],
+        outcome: @outcome1,
+        calculation_method: "highest",
+        aggregate_score: 4.5,
+        submitted_at: nil,
+        last_calculated_at: Time.zone.now
+      )
+
+      rollups = ra.stored_outcome_rollups(users: [@students[0]], context: @course)
+
+      score = rollups.first.scores.first
+      expect(score.submitted_at).to be_nil
+    end
+
+    it "populates title from the rollup record" do
+      OutcomeRollup.create!(
+        course: @course,
+        user: @students[0],
+        outcome: @outcome1,
+        calculation_method: "highest",
+        aggregate_score: 4.5,
+        title: "Math Quiz",
+        last_calculated_at: Time.zone.now
+      )
+
+      rollups = ra.stored_outcome_rollups(users: [@students[0]], context: @course)
+
+      score = rollups.first.scores.first
+      expect(score.title).to eq("Math Quiz")
+    end
+
+    it "handles nil title gracefully" do
+      OutcomeRollup.create!(
+        course: @course,
+        user: @students[0],
+        outcome: @outcome1,
+        calculation_method: "highest",
+        aggregate_score: 4.5,
+        title: nil,
+        last_calculated_at: Time.zone.now
+      )
+
+      rollups = ra.stored_outcome_rollups(users: [@students[0]], context: @course)
+
+      score = rollups.first.scores.first
+      expect(score.title).to be_nil
+    end
+
+    it "populates hide_points from the rollup record when true" do
+      OutcomeRollup.create!(
+        course: @course,
+        user: @students[0],
+        outcome: @outcome1,
+        calculation_method: "highest",
+        aggregate_score: 4.5,
+        hide_points: true,
+        last_calculated_at: Time.zone.now
+      )
+
+      rollups = ra.stored_outcome_rollups(users: [@students[0]], context: @course)
+
+      score = rollups.first.scores.first
+      expect(score.hide_points).to be true
+    end
+
+    it "populates hide_points from the rollup record when false" do
+      OutcomeRollup.create!(
+        course: @course,
+        user: @students[0],
+        outcome: @outcome1,
+        calculation_method: "highest",
+        aggregate_score: 4.5,
+        hide_points: false,
+        last_calculated_at: Time.zone.now
+      )
+
+      rollups = ra.stored_outcome_rollups(users: [@students[0]], context: @course)
+
+      score = rollups.first.scores.first
+      expect(score.hide_points).to be false
+    end
+
+    it "defaults hide_points to false when not set in rollup record" do
       OutcomeRollup.create!(
         course: @course,
         user: @students[0],
@@ -998,15 +1174,121 @@ describe Outcomes::ResultAnalytics do
 
       rollups = ra.stored_outcome_rollups(users: [@students[0]], context: @course)
 
-      expect(rollups.first).to be_a(Outcomes::ResultAnalytics::Rollup)
-      expect(rollups.first.context).to be_a(User)
-      expect(rollups.first.scores).to be_an(Array)
-
       score = rollups.first.scores.first
-      expect(score).to respond_to(:outcome)
-      expect(score).to respond_to(:score)
-      expect(score).to respond_to(:count)
-      expect(score).to respond_to(:hide_points)
+      expect(score.hide_points).to be false
+    end
+  end
+
+  describe "#mastery_distributions" do
+    before(:once) do
+      course_with_teacher
+      @outcome = @course.created_learning_outcomes.create!(title: "outcome", calculation_method: "highest")
+      @rubric = Rubric.create!(context: @course)
+      @rubric.data = [
+        {
+          points: 5,
+          description: "Outcome row",
+          id: "outcome_123",
+          ratings: [
+            { points: 5, description: "Excellent", id: "rat1", color: "#00FF00" },
+            { points: 3, description: "Good", id: "rat2", color: "#FFFF00" },
+            { points: 2, description: "Fair", id: "rat3", color: "#FFA500" },
+            { points: 0, description: "Poor", id: "rat4", color: "#FF0000" }
+          ],
+          learning_outcome_id: @outcome.id
+        }
+      ]
+      @rubric.save!
+      @assignment = @course.assignments.create!(title: "Test Assignment")
+      @alignment = @outcome.align(@assignment, @course)
+    end
+
+    def create_outcome_result(outcome, student, course, score)
+      LearningOutcomeResult.create!(
+        user: student,
+        learning_outcome: outcome,
+        alignment: @alignment,
+        context: course,
+        score:,
+        possible: 5
+      )
+    end
+
+    it "calculates distribution counts for each rating level" do
+      students = create_users(Array.new(10) { |i| { name: "Student #{i}" } }, return_type: :record)
+      students.each { |s| @course.enroll_student(s, enrollment_state: "active") }
+
+      # Create results with different scores (0, 1, 2, 3 pattern)
+      students.each_with_index do |student, idx|
+        create_outcome_result(@outcome, student, @course, idx % 4)
+      end
+
+      results = LearningOutcomeResult.where(learning_outcome: @outcome)
+      rollups = ra.outcome_results_rollups(results:, users: students, context: @course)
+
+      distributions = ra.mastery_distributions(
+        rollups:,
+        outcomes: [@outcome],
+        context: @course
+      )
+
+      dist = distributions[@outcome.id.to_s]
+      expect(dist[:outcome_id]).to eq(@outcome.id.to_s)
+      expect(dist[:total_students]).to eq(10)
+      expect(dist[:ratings]).to be_an(Array)
+
+      # Verify student_ids are tracked
+      all_student_ids = dist[:ratings].flat_map { |r| r[:student_ids] }
+      expect(all_student_ids.length).to eq(10)
+    end
+  end
+
+  describe "#alignment_mastery_distributions" do
+    before(:once) do
+      course_with_teacher
+      @outcome = @course.created_learning_outcomes.create!(title: "outcome")
+      @assignment = @course.assignments.create!(title: "Test Assignment")
+      @alignment = @outcome.align(@assignment, @course)
+    end
+
+    it "calculates distribution counts for each alignment" do
+      students = create_users(Array.new(5) { |i| { name: "Student #{i}" } }, return_type: :record)
+      students.each { |s| @course.enroll_student(s, enrollment_state: "active") }
+
+      # Create results for the alignment
+      students.each_with_index do |student, idx|
+        LearningOutcomeResult.create!(
+          user: student,
+          learning_outcome: @outcome,
+          context: @course,
+          associated_asset: @assignment,
+          alignment: @alignment,
+          score: idx,
+          possible: 5
+        )
+      end
+
+      results = LearningOutcomeResult.where(learning_outcome: @outcome)
+
+      # Wrap ContentTag in AlignmentWithMetadata
+      alignment_with_metadata = AlignmentWithMetadata.new(
+        content_tag: @alignment,
+        alignment_type: AlignmentWithMetadata::AlignmentTypes::DIRECT
+      )
+      alignments_by_outcome = { @outcome.id => [alignment_with_metadata] }
+
+      distributions = ra.alignment_mastery_distributions(
+        outcomes: [@outcome],
+        users: students,
+        context: @course,
+        results:,
+        alignments_by_outcome:
+      )
+
+      dist = distributions[@outcome.id.to_s][alignment_with_metadata.prefixed_id]
+      expect(dist[:alignment_id]).to eq(alignment_with_metadata.prefixed_id)
+      expect(dist[:total_students]).to eq(5)
+      expect(dist[:ratings]).to be_an(Array)
     end
   end
 end

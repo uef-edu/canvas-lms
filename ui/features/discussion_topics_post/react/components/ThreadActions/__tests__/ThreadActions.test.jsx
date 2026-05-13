@@ -22,25 +22,25 @@ import {ThreadActions} from '../ThreadActions'
 import {MockedProvider} from '@apollo/client/testing'
 import {useTranslationStore} from '../../../hooks/useTranslationStore'
 
-const tryTranslate = jest.fn()
-const clearEntry = jest.fn()
-const setModalOpen = jest.fn()
+const tryTranslate = vi.fn()
+const clearEntry = vi.fn()
+const setModalOpen = vi.fn()
 
-jest.mock('../../../hooks/useTranslation', () => ({
+vi.mock('../../../hooks/useTranslation', () => ({
   useTranslation: () => ({
     tryTranslate,
   }),
 }))
 
-jest.mock('../../../hooks/useTranslationStore')
+vi.mock('../../../hooks/useTranslationStore')
 
 const defaultRequiredProps = {
   id: '1',
   entry: {
     id: '1',
   },
-  onMarkAllAsUnread: jest.fn(),
-  onToggleUnread: jest.fn(),
+  onMarkAllAsUnread: vi.fn(),
+  onToggleUnread: vi.fn(),
 }
 
 const defaultMocks = []
@@ -48,15 +48,15 @@ const defaultMocks = []
 const createProps = overrides => {
   return {
     ...defaultRequiredProps,
-    goToParent: jest.fn(),
-    goToTopic: jest.fn(),
-    goToQuotedReply: jest.fn(),
-    onEdit: jest.fn(),
-    onDelete: jest.fn(),
-    onOpenInSpeedGrader: jest.fn(),
-    onMarkAllAsRead: jest.fn(),
-    onMarkThreadAsRead: jest.fn(),
-    onReport: jest.fn(),
+    goToParent: vi.fn(),
+    goToTopic: vi.fn(),
+    goToQuotedReply: vi.fn(),
+    onEdit: vi.fn(),
+    onDelete: vi.fn(),
+    onOpenInSpeedGrader: vi.fn(),
+    onMarkAllAsRead: vi.fn(),
+    onMarkThreadAsRead: vi.fn(),
+    onReport: vi.fn(),
     permalinkId: '1',
     ...overrides,
   }
@@ -192,7 +192,7 @@ describe('ThreadActions', () => {
       })
 
       it('should render Mark as Read button when unread', () => {
-        const props = createProps({onToggleUnread: jest.fn()})
+        const props = createProps({onToggleUnread: vi.fn()})
         const {getByTestId} = setup({...props, isUnread: true})
 
         const menu = getByTestId('thread-actions-menu')
@@ -349,34 +349,14 @@ describe('ThreadActions', () => {
   })
 
   describe('Translate text button', () => {
-    beforeAll(() => {
-      window.ENV.discussion_translation_available = true
-      window.ENV.ai_translation_improvements = true
-    })
-
-    afterAll(() => {
-      delete window.ENV.ai_translation_improvements
-    })
-
     beforeEach(() => {
+      window.ENV.discussion_translation_available = true
       useTranslationStore.mockImplementation(selector =>
         selector({entries: {}, translateAll: false, clearEntry, setModalOpen}),
       )
     })
 
-    it('does not display if the feature flag is off', () => {
-      window.ENV.ai_translation_improvements = false
-      const props = createProps()
-      const {getByTestId, queryByText} = setup(props)
-      fireEvent.click(getByTestId('thread-actions-menu'))
-
-      expect(queryByText('Translate Text')).toBeFalsy()
-
-      window.ENV.ai_translation_improvements = true
-      window.ENV.discussion_translation_available = true
-    })
-
-    it('displays if the feature flag is on', () => {
+    it('displays normally', () => {
       const props = createProps()
       const {getByTestId, queryByText} = setup(props)
       fireEvent.click(getByTestId('thread-actions-menu'))

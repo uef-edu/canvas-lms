@@ -18,7 +18,7 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
-class ContextModule < ActiveRecord::Base
+class ContextModule < ApplicationRecord
   include Workflow
   include SearchTermHelper
   include DuplicatingObjects
@@ -131,7 +131,14 @@ class ContextModule < ActiveRecord::Base
     current_scope.find_in_batches(batch_size: 100) do |progressions|
       context.cache_item_visibilities_for_user_ids(progressions.map(&:user_id))
 
+      concluded_user_ids = concluded_enrollment_user_ids(progressions.map(&:user_id))
+
       progressions.each do |progression|
+        if concluded_user_ids.include?(progression.user_id)
+          progression.update_column(:current, true) unless progression.current
+          next
+        end
+
         progression.context_module = self
         progression.evaluate!
       end
@@ -207,21 +214,30 @@ class ContextModule < ActiveRecord::Base
   end
 
   def send_items_to_stream
-    if saved_change_to_workflow_state? && workflow_state == "active"
-      content_tags.where(content_type: "DiscussionTopic", workflow_state: "active").preload(:content).each do |ct|
-        ct.content.send_items_to_stream
-      end
+    return unless saved_change_to_workflow_state? && workflow_state == "active"
+
+    topics = DiscussionTopic
+             .where(id: content_tags.where(content_type: "DiscussionTopic", workflow_state: "active").select(:content_id))
+             .preload(:stream_item, :assignment_overrides, :discussion_topic_participants, :root_discussion_entries, context_module_tags: { context_module: :context }, context: { enrollments: [:user, :enrollment_state] })
+             .load
+
+    topic_ids_in_unpublished_modules = batch_load_unpublished_topic_ids(topics.map(&:id))
+
+    topics.each do |topic|
+      topic.send_items_to_stream(topic_ids_in_unpublished_modules:)
     end
   end
 
   def clear_discussion_stream_items
-    if saved_change_to_workflow_state? &&
-       ["active", nil].include?(workflow_state_before_last_save) &&
-       workflow_state == "unpublished"
-      content_tags.where(content_type: "DiscussionTopic", workflow_state: "active").preload(:content).each do |ct|
-        ct.content.clear_stream_items
-      end
-    end
+    return unless saved_change_to_workflow_state? &&
+                  ["active", nil].include?(workflow_state_before_last_save) &&
+                  workflow_state == "unpublished"
+
+    topics = content_tags.where(content_type: "DiscussionTopic", workflow_state: "active")
+                         .preload(content: { stream_item: [:context, :stream_item_instances] })
+                         .filter_map(&:content)
+
+    topics.each(&:clear_stream_items)
   end
 
   # This is intended for duplicating a content tag when we are duplicating a module
@@ -374,19 +390,21 @@ class ContextModule < ActiveRecord::Base
 
   alias_method :published?, :active?
 
-  def publish_items!(progress: nil)
-    content_tags.each do |content_tag|
+  def publish_items!(progress: nil, user: nil)
+    user ||= progress&.user
+    content_tags.preload(content: %i[assignment_overrides discussion_topic_section_visibilities sub_assignments context_module_tags]).load.each do |content_tag|
       break if progress&.reload&.failed?
 
-      content_tag.trigger_publish!
+      content_tag.trigger_publish!(user:)
     end
   end
 
-  def unpublish_items!(progress: nil)
-    content_tags.each do |content_tag|
+  def unpublish_items!(progress: nil, user: nil)
+    user ||= progress&.user
+    content_tags.preload(:content).load.each do |content_tag|
       break if progress&.reload&.failed?
 
-      content_tag.trigger_unpublish!
+      content_tag.trigger_unpublish!(user:)
     end
   end
 
@@ -622,7 +640,7 @@ class ContextModule < ActiveRecord::Base
                                             .active
                                             .joins(assignment_sets: :assignment_set_associations)
                                             .group("conditional_release_rules.trigger_assignment_id")
-                                            .having("count(conditional_release_assignment_set_associations.id) >= 3")
+                                            .having("count(conditional_release_assignment_set_associations.id) >= 1")
                                             .pluck(:trigger_assignment_id)
                                             .uniq
 
@@ -966,13 +984,12 @@ class ContextModule < ActiveRecord::Base
     end
   end
 
-  def confirm_valid_requirements(do_save = false)
+  def confirm_valid_requirements
     return if @already_confirmed_valid_requirements
 
     @already_confirmed_valid_requirements = true
     # the write accessor validates for us
     self.completion_requirements = completion_requirements || []
-    save if do_save && completion_requirements_changed?
     completion_requirements
   end
 
@@ -987,6 +1004,15 @@ class ContextModule < ActiveRecord::Base
     progressions += newbies.map { |u| find_or_create_progression(u) }
     progressions.each { |p| p.user = users_hash[p.user_id] }
     progressions.uniq
+  end
+
+  def self.preload_progressions_for_user(modules, user)
+    return {} unless user && modules.any?
+
+    module_ids = modules.map(&:id)
+    ContextModuleProgression
+      .where(user_id: user.id, context_module_id: module_ids)
+      .index_by(&:context_module_id)
   end
 
   def find_or_create_progression(user)
@@ -1012,6 +1038,18 @@ class ContextModule < ActiveRecord::Base
       progression, user = [find_or_create_progression(user_or_progression), user_or_progression]
     end
     return nil unless progression && user
+
+    # Check enrollment state before evaluating
+    # For concluded enrollments, return existing progression without re-evaluating
+    # This prevents completed_at timestamps from being updated after enrollment ends
+    if context.is_a?(Course)
+      enrollments = context.enrollments.for_user(user)
+      if enrollments.any? && enrollments.all? { |e| e.state_based_on_date == :completed }
+        return progression if progression.persisted?
+
+        return nil
+      end
+    end
 
     progression.context_module = self if progression.context_module_id == id
     progression.user = user if progression.user_id == user.id
@@ -1097,5 +1135,33 @@ class ContextModule < ActiveRecord::Base
 
     assignments_quizzes = module_assignments + module_quizzes_and_discussions
     Assignment.where(id: assignments_quizzes)
+  end
+
+  private
+
+  def concluded_enrollment_user_ids(user_ids)
+    return Set.new unless context.is_a?(Course)
+
+    context.enrollments
+           .joins(:enrollment_state)
+           .where(user_id: user_ids)
+           .group(:user_id)
+           .having("COUNT(CASE WHEN enrollment_states.state != 'completed' THEN 1 END) = 0")
+           .pluck(:user_id)
+           .to_set
+  end
+
+  def batch_load_unpublished_topic_ids(topic_ids)
+    unpublished_from_tags = ContentTag.where(content_type: "DiscussionTopic",
+                                             content_id: topic_ids,
+                                             workflow_state: "unpublished")
+                                      .pluck(:content_id)
+    unpublished_from_modules = ContextModule.joins(:content_tags)
+                                            .where(content_tags: { content_type: "DiscussionTopic", content_id: topic_ids })
+                                            .where(workflow_state: "unpublished")
+                                            .where.not(id:)
+                                            .pluck("content_tags.content_id")
+
+    (unpublished_from_tags + unpublished_from_modules).uniq
   end
 end

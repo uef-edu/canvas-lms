@@ -19,7 +19,7 @@
 import {useScope as createI18nScope} from '@canvas/i18n'
 import $ from 'jquery'
 import React from 'react'
-import ReactDOM from 'react-dom'
+import {legacyUnmountComponentAtNode, legacyRender} from '@canvas/react'
 import FileSelectBox from '../react/components/FileSelectBox'
 import UploadForm from '@canvas/files/react/components/UploadForm'
 import CurrentUploads from '@canvas/files/react/components/CurrentUploads'
@@ -36,7 +36,6 @@ import {findLinkForService, getUserServices} from '@canvas/services/findLinkForS
 import '@canvas/jquery/jquery.ajaxJSON'
 import '@canvas/jquery/jquery.instructure_forms' /* formSubmit, ajaxJSONFiles, getFormData, errorBox */
 import 'jqueryui/dialog'
-import '@canvas/util/jquery/fixDialogButtons'
 import '@canvas/jquery/jquery.instructure_misc_helpers' /* replaceTags */
 import '@canvas/jquery/jquery.instructure_misc_plugins' /* showIf */
 import '@canvas/jquery-keycodes'
@@ -51,7 +50,8 @@ import replaceTags from '@canvas/util/replaceTags'
 import {EXTERNAL_CONTENT_READY, EXTERNAL_CONTENT_CANCEL} from '@canvas/external-tools/messages'
 import {onLtiClosePostMessage} from '@canvas/lti/jquery/messages'
 
-// @ts-expect-error
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore - window.INST is a Canvas global not in TS types
 if (!('INST' in window)) window.INST = {}
 
 // Allow unchecked access to ENV variables that should exist in this context
@@ -88,6 +88,11 @@ type SelectContentPlacementType =
 export type LtiLaunchDefinition = {
   definition_type: 'ContextExternalTool' | 'Lti::MessageHandler'
   definition_id: string
+  /**
+   * Context name where the tool is deployed.
+   * Only present when include_context_name=true is passed to the API. (AssetProcessor)
+   */
+  context_name?: string
   name: string
   url: string
   description: string
@@ -105,8 +110,18 @@ let upload_form: UploadForm | undefined
 let currentQuizType: 'graded_quiz' | 'graded_survey' | 'ungraded_survey' = 'graded_quiz'
 let isAnonymousSubmission = false
 
-const isNewQuizzesSurveysEnabled = () => {
-  return ENV?.FEATURES?.new_quizzes_surveys === true
+const MODULE_ITEM_DIALOG_HEIGHT_DEFAULT = 550
+const MODULE_ITEM_DIALOG_HEIGHT_WITH_QUIZ_TYPE_SELECTOR = 650
+
+const resizeModuleItemDialog = (height: number) => {
+  const fullSizeModal = window.matchMedia('(min-width: 770px)').matches
+  if (fullSizeModal) {
+    const $dialog = $('#select_context_content_dialog')
+    if ($dialog.hasClass('ui-dialog-content')) {
+      $dialog.dialog('option', 'height', height)
+      $dialog.dialog('option', 'position', {my: 'center', at: 'center', of: window})
+    }
+  }
 }
 
 export const externalContentReadyHandler = (event: MessageEvent, tool: LtiLaunchDefinition) => {
@@ -523,6 +538,10 @@ export function resetExternalToolFields() {
   $('#external_tool_create_preserve_existing_assignment_name').val('')
 }
 
+export function resetItemTypeSelect() {
+  $('#add_module_item_select').prop('selectedIndex', 0).trigger('change')
+}
+
 export type SelectContentDialogOptions = {
   for_modules?: boolean
   select_button_text?: string
@@ -554,6 +573,8 @@ export const selectContentDialog = function (options?: SelectContentDialogOption
   $dialog.find('.select_item_name').showIf(!options.no_name_input)
   if (allow_external_urls) {
     const $services = $('#content_tag_services').empty()
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore - getUserServices callback type mismatch
     getUserServices('BookmarkService', function (data: any) {
       for (const idx in data) {
         const service = data[idx].user_service
@@ -598,6 +619,13 @@ export const selectContentDialog = function (options?: SelectContentDialogOption
       },
       open() {
         $(this).parent().find('.ui-dialog-titlebar-close').focus()
+
+        const itemType = $('#add_module_item_select').val()
+        const isNewQuizzesChecked = $('#new_quizzes_radio').is(':checked')
+        const isCreatingNew = $('#quizs_select').val() === 'new'
+        if (itemType === 'quiz' && isNewQuizzesChecked && isCreatingNew) {
+          resizeModuleItemDialog(MODULE_ITEM_DIALOG_HEIGHT_WITH_QUIZ_TYPE_SELECTOR)
+        }
       },
       modal: true,
       zIndex: 1000,
@@ -712,6 +740,8 @@ $(document).ready(function () {
         enable_disable_submit_button(true)
       } else {
         submit(item_data)
+        resetExternalToolFields()
+        resetItemTypeSelect()
       }
     } else if (item_type === 'context_module_sub_header') {
       item_data = {
@@ -779,10 +809,11 @@ $(document).ready(function () {
               'assignment[assignment_group_id]': data['quiz[assignment_group_id]'],
               quiz_lti: 1,
             }
-            // Only include New Quizzes params when New Quizzes is selected and feature flag is enabled
+            // Only include New Quizzes params when New Quizzes is selected
             const isNewQuizzesSelected =
-              $('input[name=quiz_engine_selection]:checked').val() === 'assignment'
-            if (isNewQuizzesSelected && isNewQuizzesSurveysEnabled()) {
+              $('input[name=quiz_engine_selection]:checked').val() === 'assignment' ||
+              ENV?.NEW_QUIZZES_BY_DEFAULT === true
+            if (isNewQuizzesSelected) {
               data['assignment[new_quizzes_quiz_type]'] = currentQuizType
               data['assignment[new_quizzes_anonymous_submission]'] = isAnonymousSubmission
             }
@@ -863,7 +894,7 @@ $(document).ready(function () {
               renderFileUploadForm()
             }
             // Unmount progress component to reset state
-            ReactDOM.unmountComponentAtNode($('#module_attachment_upload_progress')[0])
+            legacyUnmountComponentAtNode($('#module_attachment_upload_progress')[0])
             UploadQueue.flush() // if there was an error uploading earlier, the queue has stuff in it we no longer want.
             upload_form?.queueUploads()
             fileSelectBox?.setDirty()
@@ -880,7 +911,8 @@ $(document).ready(function () {
               },
               (data_: unknown) => {
                 $('#select_context_content_dialog').loadingImage('remove')
-                // @ts-expect-error
+                // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+                // @ts-ignore - untyped error response structure
                 if (data_?.errors?.title?.[0]?.message === 'blank') {
                   $('#select_context_content_dialog').errorBox(
                     I18n.t('errors.assignment_name_blank', 'Assignment name cannot be blank.'),
@@ -918,16 +950,22 @@ $(document).ready(function () {
       $('.add_item_button').addClass('disabled').attr('aria-disabled', 'true')
     }
 
+    if (selectedOption !== 'quiz') {
+      resizeModuleItemDialog(MODULE_ITEM_DIALOG_HEIGHT_DEFAULT)
+    }
+
     $('#select_context_content_dialog .module_item_option').hide()
     if ($(this).val() === 'attachment') {
-      // eslint-disable-next-line react/no-render-return-value
-      fileSelectBox = ReactDOM.render(
-        React.createFactory(FileSelectBox)({
-          contextString: ENV.context_asset_string,
-        }),
+      legacyRender(
+        <FileSelectBox
+          ref={(instance: FileSelectBox | null) => {
+            fileSelectBox = instance ?? undefined
+          }}
+          contextString={ENV.context_asset_string}
+        />,
         $('#module_item_select_file')[0],
       )
-      fileSelectBox.refresh()
+      fileSelectBox?.refresh()
       $('#attachment_folder_id').on('change', update_foc)
       renderFileUploadForm()
       if (fileSelectBox?.folderStore?.getState().isLoading) {
@@ -1011,26 +1049,37 @@ $(document).ready(function () {
       )
     }
 
-    if (isEqualOrIsArrayWithEqualValue($(this).val(), 'new')) {
+    const isCreatingNew = isEqualOrIsArrayWithEqualValue($(this).val(), 'new')
+    if (isCreatingNew) {
       $(this).parents('.module_item_option').find('.new').show().focus().select()
+
+      const itemType = $('#add_module_item_select').val()
+      const isNewQuizzesChecked = $('#new_quizzes_radio').is(':checked')
+      const newQuizzesByDefault = ENV?.NEW_QUIZZES_BY_DEFAULT === true
+      if (itemType === 'quiz' && (isNewQuizzesChecked || newQuizzesByDefault)) {
+        resizeModuleItemDialog(MODULE_ITEM_DIALOG_HEIGHT_WITH_QUIZ_TYPE_SELECTOR)
+      }
     } else {
       $(this).parents('.module_item_option').find('.new').hide()
+      resizeModuleItemDialog(MODULE_ITEM_DIALOG_HEIGHT_DEFAULT)
     }
   })
 
   // Handle quiz engine radio button changes
   $('input[name=quiz_engine_selection]').on('change', function (this: HTMLInputElement) {
-    if (!isNewQuizzesSurveysEnabled()) {
-      return
-    }
-
     const isNewQuizzes = $(this).val() === 'assignment'
     const $quizTypeSelectorRow = $('#quiz_type_selector_row')
     const $anonymousSubmissionRow = $('#anonymous_submission_selector_row')
+    const $dialog = $('#select_context_content_dialog')
+    const isCreatingNew = $('#quizs_select').val() === 'new'
 
     if (isNewQuizzes) {
       $quizTypeSelectorRow.show()
       renderQuizTypeSelector()
+
+      if (isCreatingNew) {
+        resizeModuleItemDialog(MODULE_ITEM_DIALOG_HEIGHT_WITH_QUIZ_TYPE_SELECTOR)
+      }
     } else {
       // Hide both quiz type selector and anonymous submission selector
       $quizTypeSelectorRow.hide()
@@ -1041,16 +1090,21 @@ $(document).ready(function () {
       // Reset state
       currentQuizType = 'graded_quiz'
       isAnonymousSubmission = false
+
+      resizeModuleItemDialog(MODULE_ITEM_DIALOG_HEIGHT_DEFAULT)
     }
   })
 
   // Initialize quiz type selector if New Quizzes is already selected on page load
-  if (isNewQuizzesSurveysEnabled()) {
-    const isNewQuizzesChecked = $('#new_quizzes_radio').is(':checked')
-    if (isNewQuizzesChecked) {
-      $('#quiz_type_selector_row').show()
-      renderQuizTypeSelector()
-    }
+  const isNewQuizzesChecked = $('#new_quizzes_radio').is(':checked')
+  const newQuizzesByDefault = ENV?.NEW_QUIZZES_BY_DEFAULT === true
+
+  // Show quiz type selector if:
+  // 1. New Quizzes radio is checked, OR
+  // 2. New Quizzes is by default (radio buttons don't exist)
+  if (isNewQuizzesChecked || newQuizzesByDefault) {
+    $('#quiz_type_selector_row').show()
+    renderQuizTypeSelector()
   }
 })
 
@@ -1075,7 +1129,7 @@ function update_foc() {
     enable_disable_submit_button(numberOrZero(data_input.files?.length) > 0)
     renderFileUploadForm()
     // Unmount progress component to reset state
-    ReactDOM.unmountComponentAtNode($('#module_attachment_upload_progress')[0])
+    legacyUnmountComponentAtNode($('#module_attachment_upload_progress')[0])
   }
 }
 
@@ -1098,6 +1152,8 @@ function getFileUploadFolder() {
     const foundFolder: any = fileSelectBox?.getFolderById(folderId)
     const folder = foundFolder ? {...foundFolder} : {}
     if (folder) {
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-ignore - FilesystemObject constructor type mismatch
       folder.files = (folder.files || []).map((f: any) => new FilesystemObject(f))
     }
     return folder
@@ -1152,15 +1208,20 @@ function renderFileUploadForm() {
     $('#module_attachment_upload_form').show()
     $('#module_attachment_upload_progress').hide()
 
-    upload_form = ReactDOM.render(
-      <UploadForm {...folderProps} />,
+    legacyRender(
+      <UploadForm
+        {...folderProps}
+        ref={(instance: UploadForm | null) => {
+          upload_form = instance ?? undefined
+        }}
+      />,
       $('#module_attachment_upload_form')[0],
-    ) as unknown as UploadForm
+    )
   }
 }
 
 function renderCurrentUploads() {
-  ReactDOM.render(
+  legacyRender(
     <CurrentUploads onUploadChange={handleUploadOnChange} />,
     $('#module_attachment_upload_progress')[0],
   )
@@ -1194,7 +1255,7 @@ function renderQuizTypeSelector() {
     renderQuizTypeSelector()
   }
 
-  ReactDOM.render(
+  legacyRender(
     <QuizTypeSelectorComponent
       quizType={currentQuizType}
       isExistingAssignment={false}
@@ -1208,7 +1269,7 @@ function renderQuizTypeSelector() {
 function unmountQuizTypeSelector() {
   const mountPoint = $('#quiz_type_selector_mount_point')[0]
   if (mountPoint) {
-    ReactDOM.unmountComponentAtNode(mountPoint)
+    legacyUnmountComponentAtNode(mountPoint)
   }
 }
 
@@ -1225,7 +1286,7 @@ function renderAnonymousSubmissionSelector() {
     renderAnonymousSubmissionSelector()
   }
 
-  ReactDOM.render(
+  legacyRender(
     <AnonymousSubmissionComponent
       isAnonymous={isAnonymousSubmission}
       disabled={false}
@@ -1239,7 +1300,7 @@ function renderAnonymousSubmissionSelector() {
 function unmountAnonymousSubmissionSelector() {
   const mountPoint = $('#anonymous_submission_selector_mount_point')[0]
   if (mountPoint) {
-    ReactDOM.unmountComponentAtNode(mountPoint)
+    legacyUnmountComponentAtNode(mountPoint)
   }
 }
 

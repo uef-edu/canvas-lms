@@ -30,10 +30,10 @@ import {
 } from '@canvas/user-sortable-name/jquery/user_utils'
 import type {GlobalEnv} from '@canvas/global/env/GlobalEnv.d'
 import registrationErrors from '@canvas/normalize-registration-errors'
-import Modal from '@canvas/instui-bindings/react/InstuiModal'
+import {InstUIModal as Modal} from '@instructure/platform-instui-bindings'
 import TimeZoneSelect from '@canvas/datetime/react/components/TimeZoneSelect'
 import doFetchApi, {FetchApiError} from '@canvas/do-fetch-api-effect'
-import {showFlashError, showFlashSuccess} from '@canvas/alerts/react/FlashAlert'
+import {showFlashAlert, showFlashError} from '@instructure/platform-alerts'
 import {FormMessage} from '@instructure/ui-form-field'
 
 const I18n = createI18nScope('account_course_user_search')
@@ -190,7 +190,7 @@ export default function CreateOrUpdateUserModal(props: Props) {
 
       if (field === 'user[name]') {
         // shamelessly copypasted from user_sortable_name.js
-        const sortableNameParts = nameParts(trim(updatedUser.sortable_name))
+        const sortableNameParts = nameParts(trim(updatedUser.sortable_name), undefined)
         if (
           !trim(updatedUser.sortable_name) ||
           trim(firstNameFirst(sortableNameParts)) === trim(userFields.name)
@@ -229,7 +229,10 @@ export default function CreateOrUpdateUserModal(props: Props) {
             {userName, wrapper},
           )
         : I18n.t('*%{userName}* saved successfully!', {userName, wrapper})
-      showFlashSuccess(message)()
+      showFlashAlert({
+        message: <span dangerouslySetInnerHTML={{__html: message.toString()}} />,
+        type: 'success',
+      })
     }
   }
 
@@ -243,7 +246,10 @@ export default function CreateOrUpdateUserModal(props: Props) {
       const userName = json.name || I18n.t('New user')
       const wrapper = `<a href='/users/${json.id}'>$1</a>`
       const message = I18n.t('*%{userName}* saved successfully!', {userName, wrapper})
-      showFlashSuccess(message)()
+      showFlashAlert({
+        message: <span dangerouslySetInnerHTML={{__html: message.toString()}} />,
+        type: 'success',
+      })
     }
   }
 
@@ -278,7 +284,7 @@ export default function CreateOrUpdateUserModal(props: Props) {
       try {
         if (error instanceof FetchApiError) {
           const errorJson = await error.response.json()
-          const fetchErrors = registrationErrors(errorJson.errors)
+          const fetchErrors = registrationErrors(errorJson.errors, undefined)
           setErrors(prevErrors => ({
             ...defaultErrors,
             ...prevErrors,

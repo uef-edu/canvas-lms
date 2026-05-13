@@ -16,14 +16,14 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-import {useInfiniteQuery, useQuery, useQueryClient} from '@tanstack/react-query'
+import {useInfiniteQuery, useQuery, useQueryClient, keepPreviousData} from '@tanstack/react-query'
 import {gql} from 'graphql-tag'
 import {useState, useCallback, useMemo, useEffect} from 'react'
 import {getCurrentUserId, executeGraphQLQuery, createUserQueryConfig} from '../utils/graphql'
 import {COURSE_WORK_KEY, QUERY_CONFIG} from '../constants'
 import {useWidgetDashboard} from './useWidgetDashboardContext'
 import {widgetDashboardPersister} from '../utils/persister'
-import {useBroadcastQuery} from '@canvas/query/broadcast'
+import {useBroadcastQuery} from '@instructure/platform-query/broadcast'
 
 export interface CourseWorkItem {
   id: string
@@ -486,6 +486,7 @@ export function useCourseWorkPaginated(options: UseCourseWorkOptions = {}) {
   const {
     data: currentPage,
     isLoading,
+    isFetching,
     error,
     refetch: refetchCurrentPage,
   } = useQuery({
@@ -495,6 +496,7 @@ export function useCourseWorkPaginated(options: UseCourseWorkOptions = {}) {
     staleTime: QUERY_CONFIG.STALE_TIME.STATISTICS * 60 * 1000, // Convert minutes to ms
     persister: widgetDashboardPersister,
     refetchOnMount: false,
+    placeholderData: keepPreviousData,
   })
 
   // Broadcast course work updates across tabs
@@ -526,6 +528,8 @@ export function useCourseWorkPaginated(options: UseCourseWorkOptions = {}) {
     return refetchCurrentPage()
   }, [queryClient, refetchCurrentPage])
 
+  const isPaginationLoading = isFetching && !!currentPage
+
   return {
     currentPage,
     currentPageIndex,
@@ -535,6 +539,7 @@ export function useCourseWorkPaginated(options: UseCourseWorkOptions = {}) {
     resetPagination,
     refetch,
     isLoading,
+    isPaginationLoading,
     error: error as Error | null,
     pageSize,
   }

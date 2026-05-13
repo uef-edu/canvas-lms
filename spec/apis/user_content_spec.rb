@@ -190,13 +190,13 @@ describe UserContent, type: :request do
     context "with precise_link_replacements FF OFF" do
       before { Account.site_admin.disable_feature! :precise_link_replacements }
 
-      include_examples "link translation examples"
+      it_behaves_like "link translation examples"
     end
 
     context "with precise_link_replacements FF ON" do
       before { Account.site_admin.enable_feature! :precise_link_replacements }
 
-      include_examples "link translation examples"
+      it_behaves_like "link translation examples"
     end
   end
 
@@ -519,7 +519,7 @@ describe UserContent, type: :request do
         end
 
         it "adds mathml in a span" do
-          escaped = UserContent.escape(@html, nil, false)
+          escaped = UserContent.escape(@html, nil, use_updated_math_rendering: false)
           node = Nokogiri::HTML5.fragment(escaped).css("img").first.next_sibling
           expect(node.node_name).to eql("span")
           expect(node.inner_html).to eql(Ritex::Parser.new.parse(@latex))

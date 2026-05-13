@@ -69,6 +69,155 @@ describe Accessibility::ResourceScanController do
   end
 
   describe "GET #index" do
+    context "with discussion topics" do
+      before do
+        accessibility_resource_scan_model(
+          course:,
+          context: discussion_topic_model(context: course),
+          workflow_state: "completed",
+          resource_name: "Discussion Topic Resource",
+          resource_workflow_state: :published,
+          issue_count: 1,
+          resource_updated_at: 1.day.ago
+        )
+      end
+
+      it "includes discussion topic scans" do
+        get :index, params: { course_id: course.id }, format: :json
+        expect(response).to have_http_status(:ok)
+
+        json = response.parsed_body
+        resource_types = json.pluck("resource_type")
+        expect(resource_types).to include("DiscussionTopic")
+      end
+
+      it "sorts discussion topics by resource_type" do
+        get :index, params: { course_id: course.id, sort: "resource_type", direction: "asc" }, format: :json
+        expect(response).to have_http_status(:ok)
+
+        json = response.parsed_body
+        discussion_scan = json.find { |scan| scan["resource_type"] == "DiscussionTopic" }
+        expect(discussion_scan).to be_present
+      end
+    end
+
+    context "with announcements" do
+      before do
+        announcement = discussion_topic_model(context: course, type: "Announcement")
+        scan = AccessibilityResourceScan.new(
+          course:,
+          announcement_id: announcement.id,
+          workflow_state: "completed",
+          resource_name: "Announcement Resource",
+          resource_workflow_state: :published,
+          issue_count: 1,
+          resource_updated_at: 1.day.ago
+        )
+        scan.save!
+      end
+
+      it "includes announcement scans" do
+        get :index, params: { course_id: course.id }, format: :json
+        expect(response).to have_http_status(:ok)
+
+        json = response.parsed_body
+        resource_types = json.pluck("resource_type")
+        expect(resource_types).to include("Announcement")
+      end
+
+      it "sorts announcements by resource_type" do
+        get :index, params: { course_id: course.id, sort: "resource_type", direction: "asc" }, format: :json
+        expect(response).to have_http_status(:ok)
+
+        json = response.parsed_body
+        announcement_scan = json.find { |scan| scan["resource_type"] == "Announcement" }
+        expect(announcement_scan).to be_present
+      end
+    end
+
+    context "with syllabus" do
+      before do
+        accessibility_resource_scan_model(
+          course:,
+          is_syllabus: true,
+          workflow_state: "completed",
+          resource_name: "Course Syllabus",
+          resource_workflow_state: :published,
+          issue_count: 2,
+          resource_updated_at: 2.days.ago
+        )
+      end
+
+      it "includes syllabus scans" do
+        get :index, params: { course_id: course.id }, format: :json
+        expect(response).to have_http_status(:ok)
+
+        json = response.parsed_body
+        syllabus_scan = json.find { |scan| scan["resource_type"] == "Syllabus" }
+        expect(syllabus_scan).to be_present
+        expect(syllabus_scan["resource_name"]).to eq("Course Syllabus")
+      end
+
+      it "sorts syllabus by resource_type" do
+        get :index, params: { course_id: course.id, sort: "resource_type", direction: "asc" }, format: :json
+        expect(response).to have_http_status(:ok)
+
+        json = response.parsed_body
+        # Syllabus should come after 's' but before 'w' (wiki_page)
+        resource_types = json.pluck("resource_type")
+        syllabus_index = resource_types.index("Syllabus")
+        expect(syllabus_index).not_to be_nil
+      end
+
+      it "returns resource_scan_path only for syllabus" do
+        get :index, params: { course_id: course.id }, format: :json
+        expect(response).to have_http_status(:ok)
+
+        json = response.parsed_body
+        syllabus_scan = json.find { |scan| scan["resource_type"] == "Syllabus" }
+        expect(syllabus_scan).to be_present
+
+        # Verify that syllabus has resource_scan_path
+        expect(syllabus_scan["resource_url"]).to eq("/courses/#{course.id}/assignments/syllabus")
+        expect(syllabus_scan).to have_key("resource_scan_path")
+        expect(syllabus_scan["resource_scan_path"]).to eq("/courses/#{course.id}/syllabus")
+
+        # Verify that non-syllabus resources have nil resource_scan_path
+        non_syllabus_scan = json.find { |scan| scan["resource_type"] != "Syllabus" }
+        expect(non_syllabus_scan).to be_present
+        expect(non_syllabus_scan).to have_key("resource_scan_path")
+        expect(non_syllabus_scan["resource_scan_path"]).to be_nil
+      end
+    end
+
+    it "sorts wiki pages before syllabus when sorting by resource_type ascending" do
+      # Create a wiki page scan and a syllabus scan to test sort order
+      accessibility_resource_scan_model(
+        course:,
+        is_syllabus: true,
+        workflow_state: "completed",
+        resource_name: "Syllabus Resource",
+        resource_workflow_state: :published,
+        issue_count: 1,
+        resource_updated_at: 1.day.ago
+      )
+
+      get :index, params: { course_id: course.id, sort: "resource_type", direction: "asc" }, format: :json
+      expect(response).to have_http_status(:ok)
+
+      json = response.parsed_body
+      resource_types = json.pluck("resource_type")
+
+      # Wiki pages sort as 'page', syllabus sorts as 'syllabus'
+      # 'page' comes before 'syllabus' alphabetically
+      wiki_page_index = resource_types.index("WikiPage")
+      syllabus_index = resource_types.index("Syllabus")
+
+      expect(wiki_page_index).not_to be_nil
+      expect(syllabus_index).not_to be_nil
+      expect(wiki_page_index).to be < syllabus_index
+    end
+
     %w[resource_name resource_type resource_workflow_state resource_updated_at issue_count].each do |sort_param|
       it "sorts by #{sort_param} ascending and descending" do
         # Ascending order
@@ -88,6 +237,313 @@ describe Accessibility::ResourceScanController do
         desc_values = desc_json.pluck(sort_param)
 
         expect(desc_values).to eq(asc_values.reverse)
+      end
+    end
+
+    context "when sorting by issue_count with closed issues as tie-breaker" do
+      let(:wiki_page1) { wiki_page_model(course:) }
+      let(:wiki_page2) { wiki_page_model(course:) }
+      let(:wiki_page3) { wiki_page_model(course:) }
+
+      let!(:scan1) do
+        accessibility_resource_scan_model(
+          course:,
+          context: wiki_page1,
+          workflow_state: "completed",
+          resource_name: "Scan with 5 active, 10 closed",
+          issue_count: 5
+        )
+      end
+
+      let!(:scan2) do
+        accessibility_resource_scan_model(
+          course:,
+          context: wiki_page2,
+          workflow_state: "completed",
+          resource_name: "Scan with 5 active, 3 closed",
+          issue_count: 5
+        )
+      end
+
+      let!(:scan3) do
+        accessibility_resource_scan_model(
+          course:,
+          context: wiki_page3,
+          workflow_state: "completed",
+          resource_name: "Scan with 2 active, 20 closed",
+          issue_count: 2
+        )
+      end
+
+      before do
+        Account.site_admin.enable_feature!(:a11y_checker_close_issues)
+        Account.site_admin.enable_feature!(:a11y_checker_ga2_features)
+
+        10.times do
+          accessibility_issue_model(
+            course:,
+            accessibility_resource_scan: scan1,
+            rule_type: Accessibility::Rules::HeadingsStartAtH2Rule.id,
+            workflow_state: "closed"
+          )
+        end
+
+        # Create 3 closed issues for scan2
+        3.times do
+          accessibility_issue_model(
+            course:,
+            accessibility_resource_scan: scan2,
+            rule_type: Accessibility::Rules::HeadingsStartAtH2Rule.id,
+            workflow_state: "closed"
+          )
+        end
+
+        # Create 20 closed issues for scan3
+        20.times do
+          accessibility_issue_model(
+            course:,
+            accessibility_resource_scan: scan3,
+            rule_type: Accessibility::Rules::HeadingsStartAtH2Rule.id,
+            workflow_state: "closed"
+          )
+        end
+      end
+
+      it "sorts by issue_count DESC, then closed_issue_count DESC when feature flag enabled" do
+        get :index, params: { course_id: course.id, sort: "issue_count", direction: "desc" }, format: :json
+        expect(response).to have_http_status(:ok)
+
+        json = response.parsed_body
+        # Filter to just our test scans
+        test_scans = json.select { |s| [scan1.id, scan2.id, scan3.id].include?(s["id"]) }
+
+        # Expected order:
+        # 1. scan1 (5 active, 10 closed)
+        # 2. scan2 (5 active, 3 closed) - same active count as scan1, but fewer closed
+        # 3. scan3 (2 active, 20 closed) - fewer active issues
+        expect(test_scans[0]["id"]).to eq(scan1.id)
+        expect(test_scans[1]["id"]).to eq(scan2.id)
+        expect(test_scans[2]["id"]).to eq(scan3.id)
+      end
+
+      it "sorts by issue_count ASC, then closed_issue_count ASC when feature flag enabled" do
+        get :index, params: { course_id: course.id, sort: "issue_count", direction: "asc" }, format: :json
+        expect(response).to have_http_status(:ok)
+
+        json = response.parsed_body
+        # Filter to just our test scans
+        test_scans = json.select { |s| [scan1.id, scan2.id, scan3.id].include?(s["id"]) }
+
+        # Expected order (ascending):
+        # 1. scan3 (2 active, 20 closed)
+        # 2. scan2 (5 active, 3 closed) - more active than scan3, fewer closed than scan1
+        # 3. scan1 (5 active, 10 closed) - same active count as scan2, but more closed
+        expect(test_scans[0]["id"]).to eq(scan3.id)
+        expect(test_scans[1]["id"]).to eq(scan2.id)
+        expect(test_scans[2]["id"]).to eq(scan1.id)
+      end
+
+      it "sorts by issue_count only when feature flag disabled" do
+        Account.site_admin.disable_feature!(:a11y_checker_close_issues)
+
+        get :index, params: { course_id: course.id, sort: "issue_count", direction: "desc" }, format: :json
+        expect(response).to have_http_status(:ok)
+
+        json = response.parsed_body
+        test_scans = json.select { |s| [scan1.id, scan2.id, scan3.id].include?(s["id"]) }
+
+        # Expected order when not considering closed count:
+        # scan1 and scan2 both have 5 active issues, so order between them may vary
+        # scan3 has 2 active issues, so it should be last
+        expect(test_scans.length).to eq(3)
+        first_two_ids = [test_scans[0]["id"], test_scans[1]["id"]]
+        expect(first_two_ids).to contain_exactly(scan1.id, scan2.id)
+        expect(test_scans[2]["id"]).to eq(scan3.id)
+      end
+
+      it "includes closed_issue_count in response" do
+        get :index, params: { course_id: course.id }, format: :json
+        expect(response).to have_http_status(:ok)
+
+        json = response.parsed_body
+        scan1_json = json.find { |s| s["id"] == scan1.id }
+        scan2_json = json.find { |s| s["id"] == scan2.id }
+        scan3_json = json.find { |s| s["id"] == scan3.id }
+
+        expect(scan1_json["closed_issue_count"]).to eq(10)
+        expect(scan2_json["closed_issue_count"]).to eq(3)
+        expect(scan3_json["closed_issue_count"]).to eq(20)
+      end
+    end
+
+    context "id tiebreaker when sort values are equal" do
+      context "resource_name tiebreaker" do
+        let!(:tied_scan_a) do
+          accessibility_resource_scan_model(
+            course:,
+            context: wiki_page_model(course:),
+            workflow_state: "completed",
+            resource_name: "Tied Name",
+            issue_count: 0
+          )
+        end
+
+        let!(:tied_scan_b) do
+          accessibility_resource_scan_model(
+            course:,
+            context: wiki_page_model(course:),
+            workflow_state: "completed",
+            resource_name: "Tied Name",
+            issue_count: 0
+          )
+        end
+
+        it "orders tied resource_name asc results by id asc" do
+          get :index, params: { course_id: course.id, sort: "resource_name", direction: "asc" }, format: :json
+          expect(response).to have_http_status(:ok)
+
+          json = response.parsed_body
+          tied = json.select { |s| [tied_scan_a.id, tied_scan_b.id].include?(s["id"]) }
+          expect(tied.pluck("id")).to eq([tied_scan_a.id, tied_scan_b.id])
+        end
+
+        it "orders tied resource_name desc results by id asc" do
+          get :index, params: { course_id: course.id, sort: "resource_name", direction: "desc" }, format: :json
+          expect(response).to have_http_status(:ok)
+
+          json = response.parsed_body
+          tied = json.select { |s| [tied_scan_a.id, tied_scan_b.id].include?(s["id"]) }
+          expect(tied.pluck("id")).to eq([tied_scan_a.id, tied_scan_b.id])
+        end
+      end
+
+      context "resource_type tiebreaker (all wiki pages)" do
+        let!(:tied_scan_a) do
+          accessibility_resource_scan_model(
+            course:,
+            context: wiki_page_model(course:),
+            workflow_state: "completed",
+            resource_name: "Page Alpha",
+            issue_count: 0
+          )
+        end
+
+        let!(:tied_scan_b) do
+          accessibility_resource_scan_model(
+            course:,
+            context: wiki_page_model(course:),
+            workflow_state: "completed",
+            resource_name: "Page Beta",
+            issue_count: 0
+          )
+        end
+
+        it "orders tied resource_type asc results by id asc" do
+          get :index, params: { course_id: course.id, sort: "resource_type", direction: "asc" }, format: :json
+          expect(response).to have_http_status(:ok)
+
+          json = response.parsed_body
+          tied = json.select { |s| [tied_scan_a.id, tied_scan_b.id].include?(s["id"]) }
+          expect(tied.pluck("id")).to eq([tied_scan_a.id, tied_scan_b.id])
+        end
+      end
+
+      context "issue_count tiebreaker (close_issues feature OFF)" do
+        let!(:tied_scan_a) do
+          accessibility_resource_scan_model(
+            course:,
+            context: wiki_page_model(course:),
+            workflow_state: "completed",
+            resource_name: "Issue Count Tied A",
+            issue_count: 4
+          )
+        end
+
+        let!(:tied_scan_b) do
+          accessibility_resource_scan_model(
+            course:,
+            context: wiki_page_model(course:),
+            workflow_state: "completed",
+            resource_name: "Issue Count Tied B",
+            issue_count: 4
+          )
+        end
+
+        before do
+          Account.site_admin.disable_feature!(:a11y_checker_close_issues)
+        end
+
+        it "orders tied issue_count asc results by id asc" do
+          get :index, params: { course_id: course.id, sort: "issue_count", direction: "asc" }, format: :json
+          expect(response).to have_http_status(:ok)
+
+          json = response.parsed_body
+          tied = json.select { |s| [tied_scan_a.id, tied_scan_b.id].include?(s["id"]) }
+          expect(tied.pluck("id")).to eq([tied_scan_a.id, tied_scan_b.id])
+        end
+
+        it "orders tied issue_count desc results by id asc" do
+          get :index, params: { course_id: course.id, sort: "issue_count", direction: "desc" }, format: :json
+          expect(response).to have_http_status(:ok)
+
+          json = response.parsed_body
+          tied = json.select { |s| [tied_scan_a.id, tied_scan_b.id].include?(s["id"]) }
+          expect(tied.pluck("id")).to eq([tied_scan_a.id, tied_scan_b.id])
+        end
+      end
+
+      context "issue_count tiebreaker (close_issues feature ON, same issue_count and same closed count)" do
+        let!(:tied_scan_a) do
+          accessibility_resource_scan_model(
+            course:,
+            context: wiki_page_model(course:),
+            workflow_state: "completed",
+            resource_name: "Close Issues Tied A",
+            issue_count: 3
+          )
+        end
+
+        let!(:tied_scan_b) do
+          accessibility_resource_scan_model(
+            course:,
+            context: wiki_page_model(course:),
+            workflow_state: "completed",
+            resource_name: "Close Issues Tied B",
+            issue_count: 3
+          )
+        end
+
+        before do
+          Account.site_admin.enable_feature!(:a11y_checker_close_issues)
+          Account.site_admin.enable_feature!(:a11y_checker_ga2_features)
+
+          2.times do
+            accessibility_issue_model(
+              course:,
+              accessibility_resource_scan: tied_scan_a,
+              rule_type: Accessibility::Rules::HeadingsStartAtH2Rule.id,
+              workflow_state: "closed"
+            )
+          end
+
+          2.times do
+            accessibility_issue_model(
+              course:,
+              accessibility_resource_scan: tied_scan_b,
+              rule_type: Accessibility::Rules::HeadingsStartAtH2Rule.id,
+              workflow_state: "closed"
+            )
+          end
+        end
+
+        it "orders tied issue_count asc results by id asc when closed counts are also tied" do
+          get :index, params: { course_id: course.id, sort: "issue_count", direction: "asc" }, format: :json
+          expect(response).to have_http_status(:ok)
+
+          json = response.parsed_body
+          tied = json.select { |s| [tied_scan_a.id, tied_scan_b.id].include?(s["id"]) }
+          expect(tied.pluck("id")).to eq([tied_scan_a.id, tied_scan_b.id])
+        end
       end
     end
 
@@ -149,14 +605,18 @@ describe Accessibility::ResourceScanController do
 
         expected_json = {
           "id" => scan_with_issues.id,
+          "course_id" => course.id,
           "resource_id" => scan_with_issues.wiki_page_id,
           "resource_type" => "WikiPage",
           "resource_name" => "Tutorial",
           "resource_workflow_state" => "published",
           "resource_updated_at" => "2025-07-19T02:18:00Z",
           "resource_url" => "/courses/#{course.id}/pages/#{wiki_page.id}",
+          "resource_scan_path" => nil,
           "workflow_state" => "completed",
           "error_message" => "",
+          "closed_at" => nil,
+          "closed_issue_count" => 0,
           "issue_count" => 1,
           "issues" => [
             {
@@ -228,6 +688,74 @@ describe Accessibility::ResourceScanController do
           expect(json.all? { |scan| scan["resource_type"] == "Assignment" }).to be true
         end
 
+        context "with syllabus filter" do
+          before do
+            accessibility_resource_scan_model(
+              course:,
+              is_syllabus: true,
+              workflow_state: "completed",
+              resource_name: "Course Syllabus",
+              resource_workflow_state: :published,
+              issue_count: 0
+            )
+          end
+
+          it "filters by syllabus resource type" do
+            get :index, params: { course_id: course.id, filters: { artifactTypes: ["syllabus"] } }, format: :json
+            expect(response).to have_http_status(:ok)
+
+            json = response.parsed_body
+            expect(json.length).to eq(1)
+            expect(json.first["resource_type"]).to eq("Syllabus")
+          end
+        end
+
+        context "with discussion topics" do
+          before do
+            accessibility_resource_scan_model(
+              course:,
+              context: discussion_topic_model(context: course),
+              workflow_state: "completed",
+              resource_name: "Discussion",
+              resource_workflow_state: :published,
+              issue_count: 0
+            )
+          end
+
+          it "filters by discussion_topic resource type" do
+            get :index, params: { course_id: course.id, filters: { artifactTypes: ["discussion_topic"] } }, format: :json
+            expect(response).to have_http_status(:ok)
+
+            json = response.parsed_body
+            expect(json.length).to eq(1)
+            expect(json.first["resource_type"]).to eq("DiscussionTopic")
+          end
+        end
+
+        context "with announcements" do
+          before do
+            announcement = discussion_topic_model(context: course, type: "Announcement")
+            scan = AccessibilityResourceScan.new(
+              course:,
+              announcement_id: announcement.id,
+              workflow_state: "completed",
+              resource_name: "Announcement",
+              resource_workflow_state: :published,
+              issue_count: 0
+            )
+            scan.save!
+          end
+
+          it "filters by announcement resource type" do
+            get :index, params: { course_id: course.id, filters: { artifactTypes: ["announcement"] } }, format: :json
+            expect(response).to have_http_status(:ok)
+
+            json = response.parsed_body
+            expect(json.length).to eq(1)
+            expect(json.first["resource_type"]).to eq("Announcement")
+          end
+        end
+
         it "filters by workflow states" do
           get :index, params: { course_id: course.id, filters: { workflowStates: ["published"] } }, format: :json
           expect(response).to have_http_status(:ok)
@@ -253,6 +781,183 @@ describe Accessibility::ResourceScanController do
           json = response.parsed_body
           expect(json.length).to eq(2)
           expect(json.first["resource_name"]).to eq("Completed Resource")
+        end
+
+        context "when combining filters with sorting" do
+          let(:wiki_page1) { wiki_page_model(course:) }
+          let(:wiki_page2) { wiki_page_model(course:) }
+          let(:wiki_page3) { wiki_page_model(course:) }
+
+          let!(:scan_high_count) do
+            accessibility_resource_scan_model(
+              course:,
+              context: wiki_page1,
+              workflow_state: "completed",
+              resource_name: "High Issue Count Page",
+              resource_workflow_state: "published",
+              issue_count: 10
+            )
+          end
+
+          let!(:scan_medium_count) do
+            accessibility_resource_scan_model(
+              course:,
+              context: wiki_page2,
+              workflow_state: "completed",
+              resource_name: "Medium Issue Count Page",
+              resource_workflow_state: "published",
+              issue_count: 5
+            )
+          end
+
+          let!(:scan_low_count) do
+            accessibility_resource_scan_model(
+              course:,
+              context: wiki_page3,
+              workflow_state: "completed",
+              resource_name: "Low Issue Count Page",
+              resource_workflow_state: "published",
+              issue_count: 2
+            )
+          end
+
+          before do
+            3.times do
+              accessibility_issue_model(
+                course:,
+                accessibility_resource_scan: scan_high_count,
+                rule_type: "img-alt"
+              )
+            end
+
+            2.times do
+              accessibility_issue_model(
+                course:,
+                accessibility_resource_scan: scan_medium_count,
+                rule_type: "img-alt"
+              )
+            end
+
+            accessibility_issue_model(
+              course:,
+              accessibility_resource_scan: scan_low_count,
+              rule_type: "img-alt"
+            )
+
+            2.times do
+              accessibility_issue_model(
+                course:,
+                accessibility_resource_scan: scan_high_count,
+                rule_type: "img-alt-filename"
+              )
+            end
+
+            accessibility_issue_model(
+              course:,
+              accessibility_resource_scan: scan_medium_count,
+              rule_type: "img-alt-filename"
+            )
+
+            accessibility_issue_model(
+              course:,
+              accessibility_resource_scan: scan_high_count,
+              rule_type: "img-alt-length"
+            )
+          end
+
+          it "filters by multiple rule types and sorts by issue_count descending" do
+            get :index,
+                params: {
+                  course_id: course.id,
+                  filters: {
+                    ruleTypes: %w[img-alt img-alt-filename img-alt-length],
+                    artifactTypes: %w[wiki_page]
+                  },
+                  sort: "issue_count",
+                  direction: "desc"
+                },
+                format: :json
+
+            expect(response).to have_http_status(:ok)
+
+            json = response.parsed_body
+            test_scans = json.select { |s| [scan_high_count.id, scan_medium_count.id, scan_low_count.id].include?(s["id"]) }
+
+            expect(test_scans.length).to eq(3)
+
+            expect(test_scans[0]["id"]).to eq(scan_high_count.id)
+            expect(test_scans[1]["id"]).to eq(scan_medium_count.id)
+            expect(test_scans[2]["id"]).to eq(scan_low_count.id)
+          end
+
+          it "filters by multiple rule types and sorts by issue_count ascending" do
+            get :index,
+                params: {
+                  course_id: course.id,
+                  filters: {
+                    ruleTypes: %w[img-alt img-alt-filename],
+                    artifactTypes: %w[wiki_page]
+                  },
+                  sort: "issue_count",
+                  direction: "asc"
+                },
+                format: :json
+
+            expect(response).to have_http_status(:ok)
+
+            json = response.parsed_body
+            test_scans = json.select { |s| [scan_high_count.id, scan_medium_count.id, scan_low_count.id].include?(s["id"]) }
+
+            expect(test_scans.length).to eq(3)
+
+            expect(test_scans[0]["id"]).to eq(scan_low_count.id)
+            expect(test_scans[1]["id"]).to eq(scan_medium_count.id)
+            expect(test_scans[2]["id"]).to eq(scan_high_count.id)
+          end
+
+          it "filters by single rule type with artifact type and sorts by resource_type" do
+            get :index,
+                params: {
+                  course_id: course.id,
+                  filters: {
+                    ruleTypes: %w[img-alt],
+                    artifactTypes: %w[wiki_page]
+                  },
+                  sort: "resource_type",
+                  direction: "asc"
+                },
+                format: :json
+
+            expect(response).to have_http_status(:ok)
+
+            json = response.parsed_body
+            test_scans = json.select { |s| [scan_high_count.id, scan_medium_count.id, scan_low_count.id].include?(s["id"]) }
+
+            expect(test_scans.length).to eq(3)
+            expect(test_scans.all? { |s| s["resource_type"] == "WikiPage" }).to be true
+          end
+
+          it "combines rule type filter, artifact type filter, and resource_name sort" do
+            get :index,
+                params: {
+                  course_id: course.id,
+                  filters: {
+                    ruleTypes: %w[img-alt-filename],
+                    artifactTypes: %w[wiki_page]
+                  },
+                  sort: "resource_name",
+                  direction: "asc"
+                },
+                format: :json
+
+            expect(response).to have_http_status(:ok)
+
+            json = response.parsed_body
+            test_scans = json.select { |s| [scan_high_count.id, scan_medium_count.id].include?(s["id"]) }
+
+            expect(test_scans.length).to eq(2)
+            expect(test_scans.pluck("resource_name")).to eq(["High Issue Count Page", "Medium Issue Count Page"])
+          end
         end
 
         it "returns all scans if filters are empty" do
@@ -484,6 +1189,7 @@ describe Accessibility::ResourceScanController do
       expect(scan_json).to have_key("resource_workflow_state")
       expect(scan_json).to have_key("resource_updated_at")
       expect(scan_json).to have_key("resource_url")
+      expect(scan_json).to have_key("resource_scan_path")
       expect(scan_json).to have_key("workflow_state")
       expect(scan_json).to have_key("error_message")
     end
@@ -559,6 +1265,99 @@ describe Accessibility::ResourceScanController do
 
       # Clean up setting
       Setting.remove("accessibility_resource_scan_poll_max_ids")
+    end
+  end
+
+  describe "PATCH #close_issues" do
+    let(:user) { user_model }
+    let(:wiki_page) { wiki_page_model(course:) }
+    let(:scan) do
+      accessibility_resource_scan_model(
+        course:,
+        context: wiki_page,
+        workflow_state: "completed"
+      )
+    end
+
+    before do
+      allow_any_instance_of(described_class).to receive(:require_user) do
+        controller.instance_variable_set(:@current_user, user)
+        true
+      end
+      allow_any_instance_of(described_class).to receive(:check_authorized_action) do
+        controller.instance_variable_set(:@context, course)
+        true
+      end
+      allow_any_instance_of(described_class).to receive(:check_close_issues_feature_flag).and_return(true)
+    end
+
+    context "when a11y_checker_close_issues feature flag disabled" do
+      it "renders forbidden" do
+        expect(Accessibility::BulkCloseIssuesService).not_to receive(:call)
+
+        allow_any_instance_of(described_class).to receive(:check_close_issues_feature_flag).and_call_original
+        # allow(course).to receive(:a11y_checker_enabled?).and_return(false)
+
+        patch :close_issues, params: { course_id: course.id, id: scan.id, close: true }, format: :json
+        expect(response).to have_http_status(:forbidden)
+      end
+    end
+
+    it "returns 200 and calls service with correct params" do
+      expect(Accessibility::BulkCloseIssuesService).to receive(:call).with(
+        scan:,
+        user_id: user.id,
+        close: true
+      )
+
+      patch :close_issues, params: { course_id: course.id, id: scan.id, close: true }, format: :json
+      expect(response).to have_http_status(:ok)
+    end
+
+    it "returns 404 when scan does not exist" do
+      patch :close_issues, params: { course_id: course.id, id: 999_999, close: true }, format: :json
+      expect(response).to have_http_status(:not_found)
+
+      json = response.parsed_body
+      expect(json["error"]).to eq("Scan not found")
+    end
+
+    it "returns 404 when scan belongs to different course" do
+      other_course = course_model
+      other_scan = accessibility_resource_scan_model(
+        course: other_course,
+        context: wiki_page_model(course: other_course),
+        workflow_state: "completed"
+      )
+
+      patch :close_issues, params: { course_id: course.id, id: other_scan.id, close: true }, format: :json
+      expect(response).to have_http_status(:not_found)
+
+      json = response.parsed_body
+      expect(json["error"]).to eq("Scan not found")
+    end
+
+    it "returns 422 when service raises exception" do
+      allow(Accessibility::BulkCloseIssuesService).to receive(:call).and_raise(StandardError, "Something went wrong")
+
+      patch :close_issues, params: { course_id: course.id, id: scan.id, close: true }, format: :json
+      expect(response).to have_http_status(:unprocessable_content)
+
+      json = response.parsed_body
+      expect(json["error"]).to eq("Something went wrong")
+    end
+
+    it "returns scan attributes in response" do
+      allow(Accessibility::BulkCloseIssuesService).to receive(:call)
+
+      patch :close_issues, params: { course_id: course.id, id: scan.id, close: true }, format: :json
+      expect(response).to have_http_status(:ok)
+
+      json = response.parsed_body
+      expect(json).to have_key("id")
+      expect(json).to have_key("resource_id")
+      expect(json).to have_key("workflow_state")
+      expect(json).to have_key("closed_at")
     end
   end
 end

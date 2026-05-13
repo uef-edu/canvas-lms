@@ -35,9 +35,9 @@ describe FeatureFlags::Hooks do
     end
 
     def stub_root_account_membership(root_account, is_member)
-      where_relation = double("where_relation", exists?: is_member)
-      active_relation = double("active_relation", where: where_relation)
-      account_users = double("account_users", active: active_relation)
+      where_relation = instance_double(ActiveRecord::Relation, exists?: is_member)
+      active_relation = instance_double(ActiveRecord::Relation, where: where_relation)
+      account_users = class_double(AccountUser, active: active_relation)
       allow(root_account).to receive(:account_users).and_return(account_users)
     end
 
@@ -284,16 +284,16 @@ describe FeatureFlags::Hooks do
     end
 
     def stub_root_account_membership(root_account, is_member)
-      where_relation = double("where_relation", exists?: is_member)
-      active_relation = double("active_relation", where: where_relation)
-      account_users = double("account_users", active: active_relation)
+      where_relation = instance_double(ActiveRecord::Relation, exists?: is_member)
+      active_relation = instance_double(ActiveRecord::Relation, where: where_relation)
+      account_users = class_double(AccountUser, active: active_relation)
       allow(root_account).to receive(:account_users).and_return(account_users)
     end
 
     def stub_subaccount_membership(account, is_member)
-      where_relation = double("where_relation", exists?: is_member)
-      active_relation = double("active_relation", where: where_relation)
-      account_users = double("account_users", active: active_relation)
+      where_relation = instance_double(ActiveRecord::Relation, exists?: is_member)
+      active_relation = instance_double(ActiveRecord::Relation, where: where_relation)
+      account_users = class_double(AccountUser, active: active_relation)
       allow(account).to receive(:account_users).and_return(account_users)
     end
 
@@ -571,6 +571,164 @@ describe FeatureFlags::Hooks do
 
         expect(result).to be false
       end
+    end
+  end
+
+  describe "oak_visible_on_hook" do
+    let(:context) { account_model }
+    let(:database_server) { instance_double(DatabaseServer, config: { region: "us-east-1" }) }
+    let(:oak_predicate) { instance_double(FeatureFlags::OakPredicate) }
+
+    before do
+      allow(context.shard).to receive(:database_server).and_return(database_server)
+      allow(FeatureFlags::OakPredicate).to receive(:new).and_return(oak_predicate)
+      allow(oak_predicate).to receive(:call)
+    end
+
+    context "when tier_2_visible_on_hook returns false" do
+      before do
+        allow(FeatureFlags::Hooks).to receive(:tier_2_visible_on_hook).and_return(false)
+      end
+
+      it "returns false without calling OakPredicate" do
+        expect(FeatureFlags::OakPredicate).not_to receive(:new)
+        expect(FeatureFlags::Hooks.oak_visible_on_hook(context)).to be false
+      end
+    end
+
+    context "when tier_2_visible_on_hook returns true" do
+      before do
+        allow(FeatureFlags::Hooks).to receive(:tier_2_visible_on_hook).and_return(true)
+      end
+
+      it "creates a new OakPredicate with context and region" do
+        expect(FeatureFlags::OakPredicate).to receive(:new).with(context, "us-east-1")
+
+        FeatureFlags::Hooks.oak_visible_on_hook(context)
+      end
+
+      it "calls .call on the OakPredicate instance" do
+        expect(oak_predicate).to receive(:call)
+
+        FeatureFlags::Hooks.oak_visible_on_hook(context)
+      end
+    end
+  end
+
+  describe "oak_for_users_visible_on_hook" do
+    let(:domain_root_account) { account_model }
+
+    before do
+      allow(Account).to receive(:current_domain_root_account).and_return(domain_root_account)
+      allow(Oak::PermissionChecker).to receive(:user_permitted?).and_return(true)
+    end
+
+    context "when context is not a User" do
+      context "with Account context" do
+        let(:context) { account_model }
+
+        it "returns false" do
+          result = FeatureFlags::Hooks.oak_for_users_visible_on_hook(context)
+
+          expect(result).to be false
+        end
+      end
+
+      context "with Course context" do
+        let(:context) { course_model }
+
+        it "returns false" do
+          result = FeatureFlags::Hooks.oak_for_users_visible_on_hook(context)
+
+          expect(result).to be false
+        end
+      end
+    end
+
+    context "when oak_visible_on_hook returns false" do
+      let(:context) { user_model }
+
+      before do
+        allow(FeatureFlags::Hooks).to receive(:oak_visible_on_hook).and_return(false)
+      end
+
+      it "returns false without checking permission" do
+        expect(Oak::PermissionChecker).not_to receive(:user_permitted?)
+
+        result = FeatureFlags::Hooks.oak_for_users_visible_on_hook(context)
+
+        expect(result).to be false
+      end
+    end
+
+    context "when oak_visible_on_hook returns true" do
+      let(:context) { user_model }
+
+      before do
+        allow(FeatureFlags::Hooks).to receive(:oak_visible_on_hook).and_return(true)
+      end
+
+      it "checks user_permitted? with proper parameters" do
+        expect(Oak::PermissionChecker).to receive(:user_permitted?).with(context, domain_root_account)
+
+        FeatureFlags::Hooks.oak_for_users_visible_on_hook(context)
+      end
+
+      it "returns true when user has oak permission" do
+        allow(Oak::PermissionChecker).to receive(:user_permitted?).and_return(true)
+
+        result = FeatureFlags::Hooks.oak_for_users_visible_on_hook(context)
+
+        expect(result).to be true
+      end
+
+      it "returns false when user does not have oak permission" do
+        allow(Oak::PermissionChecker).to receive(:user_permitted?).and_return(false)
+
+        result = FeatureFlags::Hooks.oak_for_users_visible_on_hook(context)
+
+        expect(result).to be false
+      end
+    end
+  end
+
+  describe "oak_for_teachers_visible_on_hook" do
+    let(:context) { instance_double(Account) }
+
+    it "returns true when oak_for_admins feature is enabled" do
+      allow(context).to receive(:feature_enabled?).with(:oak_for_admins).and_return(true)
+
+      result = FeatureFlags::Hooks.oak_for_teachers_visible_on_hook(context)
+
+      expect(result).to be true
+    end
+
+    it "returns false when oak_for_admins feature is disabled" do
+      allow(context).to receive(:feature_enabled?).with(:oak_for_admins).and_return(false)
+
+      result = FeatureFlags::Hooks.oak_for_teachers_visible_on_hook(context)
+
+      expect(result).to be false
+    end
+  end
+
+  describe "study_assist_visible_on_hook" do
+    let(:context) { instance_double(Account) }
+
+    it "returns true when study_assist feature is enabled" do
+      allow(context).to receive(:feature_enabled?).with(:study_assist).and_return(true)
+
+      result = FeatureFlags::Hooks.study_assist_visible_on_hook(context)
+
+      expect(result).to be true
+    end
+
+    it "returns false when study_assist feature is disabled" do
+      allow(context).to receive(:feature_enabled?).with(:study_assist).and_return(false)
+
+      result = FeatureFlags::Hooks.study_assist_visible_on_hook(context)
+
+      expect(result).to be false
     end
   end
 end

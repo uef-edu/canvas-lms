@@ -18,8 +18,6 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
-require_relative "../../../spec_helper"
-
 module Api
   module Html
     describe Content do
@@ -75,7 +73,7 @@ module Api
           host = "somelink.com"
           port = 80
           expect(Html::Link).to receive(:new).with("http://somelink.com", host:, port:).and_return(
-            double(to_corrected_s: "http://otherlink.com")
+            instance_double(Html::Link, to_corrected_s: "http://otherlink.com")
           )
           html = Content.new(string, host:, port:).modified_html
           expect(html).to match(/otherlink.com/)
@@ -97,7 +95,7 @@ module Api
               <li><img class='nothing_special'></li>
             </ul></div>
           HTML
-          url_helper = double(rewrite_api_urls: nil)
+          url_helper = instance_double(UrlProxy, rewrite_api_urls: nil)
           html = Content.new(string).rewritten_html(url_helper)
           expected = <<~HTML
             <div><ul>
@@ -111,21 +109,21 @@ module Api
 
         it "inserts css/js if it is supposed to" do
           string = "<div>stuff</div>"
-          url_helper = double
+          url_helper = instance_double(UrlProxy)
           html = Content.new(string).rewritten_html(url_helper)
           expect(html).to eq("<div>stuff</div>")
         end
 
         it "re-writes root-relative urls to be absolute" do
           string = "<p><a href=\"/blah\"></a></p><source srcset=\"/img.src\">"
-          url_helper = UrlProxy.new(double, double(shard: nil), "example.com", "https")
+          url_helper = UrlProxy.new(instance_double(ApplicationController), instance_double(Course, shard: nil), "example.com", "https")
           html = Content.new(string).rewritten_html(url_helper)
           expect(html).to eq("<p><a href=\"https://example.com/blah\"></a></p><source srcset=\"https://example.com/img.src\">")
         end
 
         it "does not re-write root-relative urls to be absolute if requested not to" do
           string = "<p><a href=\"/blah\"></a></p>"
-          url_helper = UrlProxy.new(double, double(shard: nil), "example.com", "https")
+          url_helper = UrlProxy.new(instance_double(ApplicationController), instance_double(Course, shard: nil), "example.com", "https")
           html = Content.new(string, rewrite_api_urls: false).rewritten_html(url_helper)
           expect(html).to eq("<p><a href=\"/blah\"></a></p>")
         end
@@ -241,6 +239,47 @@ module Api
           notastring = { bob: "is your uncle" }
           expect(Content.collect_attachment_ids(notastring)).to eq([])
         end
+
+        it "filters out external URLs that happen to have Canvas-like paths" do
+          string = <<~HTML
+            <html>
+              <body>
+                <a href="/files/123/download">link</a>
+                <a href="https://external.example.edu/files/456/document.pdf">link</a>
+                <a href="https://another-site.com/files/789/download">link</a>
+                <iframe src="/media_attachments_iframe/111">
+              </body>
+            </html>
+          HTML
+
+          results = Content.collect_attachment_ids(string)
+
+          expect(results).to include("123", "111")
+          expect(results).not_to include("456", "789")
+        end
+
+        it "includes absolute Canvas URLs" do
+          allow(HostUrl).to receive(:default_host).and_return("canvas.example.com")
+          ad = Account.default.account_domains.find_or_initialize_by(host: "canvas.example.com")
+          ad.save(validate: false) if ad.new_record?
+          AccountDomain.reload
+          MultiCache.delete(AccountDomain.domain_lookup_cache_key("canvas.example.com", force_current_test_cluster: false))
+
+          string = <<~HTML
+            <html>
+              <body>
+                <a href="/files/123/download">Relative Canvas link</a>
+                <a href="https://canvas.example.com/files/456/download">Absolute Canvas link</a>
+                <a href="https://external.edu/files/789/document.pdf">External link</a>
+              </body>
+            </html>
+          HTML
+
+          results = Content.collect_attachment_ids(string)
+
+          expect(results).to include("123", "456")
+          expect(results).not_to include("789")
+        end
       end
 
       describe "#add_youtube_banner_if_needed" do
@@ -326,7 +365,7 @@ module Api
 
         context "integration with rewritten_html" do
           it "includes YouTube banner in the final output for native mobile app" do
-            url_helper = double(rewrite_api_urls: nil)
+            url_helper = instance_double(UrlProxy, rewrite_api_urls: nil)
             content = Content.new(html_with_youtube, account, is_native_mobile_app: true)
             result = content.rewritten_html(url_helper)
 
@@ -336,7 +375,7 @@ module Api
           end
 
           it "does not include YouTube banner for non-native mobile app" do
-            url_helper = double(rewrite_api_urls: nil)
+            url_helper = instance_double(UrlProxy, rewrite_api_urls: nil)
             content = Content.new(html_with_youtube, account, is_native_mobile_app: false)
             result = content.rewritten_html(url_helper)
 

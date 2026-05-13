@@ -17,9 +17,11 @@
  */
 
 import {Assignment as ApiAssignment, WorkflowState} from 'api.d'
-import {Assignment} from './getAssignments'
+import {Assignment, PeerReviewSubAssignmentData} from './getAssignments'
 
-export const transformAssignment = (it: Assignment): ApiAssignment => {
+const transformAssignmentBase = (
+  it: PeerReviewSubAssignmentData,
+): Omit<ApiAssignment, 'peer_review_sub_assignment'> => {
   return {
     allowed_attempts: it.allowedAttempts ?? -1,
     allowed_extensions: it.allowedExtensions ?? [],
@@ -38,7 +40,7 @@ export const transformAssignment = (it: Assignment): ApiAssignment => {
     graded_submissions_exist: it.gradedSubmissionsExist ?? false,
     grades_published: it.gradesPublished ?? false,
     grading_standard_id: it.gradingStandardId,
-    grading_type: it.gradingType,
+    grading_type: it.gradingType as ApiAssignment['grading_type'],
     group_category_id: it.groupCategoryId ? it.groupCategoryId.toString() : null,
     has_rubric: it.hasRubric,
     has_sub_assignments: it.hasSubAssignments,
@@ -111,6 +113,17 @@ export const transformAssignment = (it: Assignment): ApiAssignment => {
     unpublishable: undefined as any,
     // Using default false since this property is required by the API type
     suppress_assignment: false,
+  }
+}
+
+export const transformAssignment = (it: Assignment): ApiAssignment => {
+  return {
+    ...transformAssignmentBase(it),
+    peer_review_sub_assignment: it.peerReviewSubAssignment
+      ? (transformAssignmentBase(
+          it.peerReviewSubAssignment,
+        ) as ApiAssignment['peer_review_sub_assignment'])
+      : null,
   }
 }
 

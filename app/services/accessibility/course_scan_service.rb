@@ -18,6 +18,8 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
 class Accessibility::CourseScanService < ApplicationService
+  include Accessibility::Concerns::CourseStatisticsQueueable
+
   SCAN_TAG = "course_accessibility_scan"
 
   class ScanLimitExceededError < StandardError; end
@@ -36,9 +38,9 @@ class Accessibility::CourseScanService < ApplicationService
 
     progress = Progress.create!(tag: SCAN_TAG, context: course)
 
-    # By default this will be 1 concurrent run / course, which is fine
     n_strand = [SCAN_TAG, course.global_id]
-    progress.process_job(self, :scan, { n_strand: })
+    singleton = "#{SCAN_TAG}_#{course.global_id}"
+    progress.process_job(self, :scan, { n_strand:, singleton: })
     progress
   end
 
@@ -47,6 +49,7 @@ class Accessibility::CourseScanService < ApplicationService
     service.scan_course
     progress.set_results({})
     progress.complete!
+    service.queue_course_statistics(progress.context)
   rescue => e
     progress.fail!
     ErrorReport.log_exception(
@@ -77,14 +80,76 @@ class Accessibility::CourseScanService < ApplicationService
   def initialize(course:)
     super()
     @course = course
+    @root_account = course.root_account
   end
 
   def scan_course
-    @course.wiki_pages.not_deleted.find_each do |resource|
-      Accessibility::ResourceScannerService.call(resource:)
+    scan_resources(@course.wiki_pages.not_deleted, :wiki_page_id)
+    scan_resources(@course.assignments.active.not_excluded_from_accessibility_scan.except(:order), :assignment_id)
+
+    if @course.a11y_checker_additional_resources?
+      scan_resources(@course.discussion_topics.scannable.except(:order), :discussion_topic_id)
+      scan_resources(@course.announcements.active.except(:order), :announcement_id)
+      scan_syllabus
     end
-    @course.assignments.active.except(:order).find_each do |resource|
-      Accessibility::ResourceScannerService.call(resource:)
+  end
+
+  private
+
+  def scan_resources(resources, resource_id_column)
+    batch_size = Setting.get("accessibility_scan_batch_size", "200").to_i
+
+    resources.in_batches(of: batch_size) do |resource_batch|
+      loaded_resource_batch = resource_batch.to_a
+      resource_batch_ids = loaded_resource_batch.map(&:id)
+
+      scans_by_resource_id = AccessibilityResourceScan
+                             .where(root_account: @root_account)
+                             .where(resource_id_column => resource_batch_ids)
+                             .index_by(&resource_id_column)
+
+      loaded_resource_batch.each do |resource|
+        scan = scans_by_resource_id[resource.id]
+
+        next unless needs_scan?(resource, scan)
+
+        resource_scanner_service = Accessibility::ResourceScannerService.new(resource:)
+        if scan
+          resource_scanner_service.scan_resource(scan:)
+        else
+          resource_scanner_service.call_sync
+        end
+      end
     end
+  end
+
+  def scan_syllabus
+    # Skip if syllabus is empty
+    return if @course.syllabus_body.blank?
+
+    scan = AccessibilityResourceScan.find_by(course_id: @course.id, is_syllabus: true)
+
+    return unless needs_scan?(@course, scan)
+
+    resource = Accessibility::SyllabusResource.new(@course)
+
+    resource_scanner_service = Accessibility::ResourceScannerService.new(resource:)
+    if scan
+      resource_scanner_service.scan_resource(scan:)
+    else
+      resource_scanner_service.call_sync
+    end
+  end
+
+  def needs_scan?(resource, scan)
+    return true if scan.nil?
+
+    return false if scan.workflow_state.in?(%w[queued in_progress])
+
+    return true unless Account.site_admin.feature_enabled?(:a11y_checker_course_scan_conditional_resource_scan)
+
+    # scan.resource_updated_at is not used here purposefully to avoid issues with clock skew
+    # when after_commit triggers scans on updates. Instead, we rely on the scan's updated_at timestamp.
+    resource.updated_at > scan.updated_at
   end
 end

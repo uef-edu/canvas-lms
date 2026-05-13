@@ -22,8 +22,8 @@ module Accessibility
     include AccessibilityFilters
 
     before_action :require_context
-    before_action :require_user
     before_action :check_authorized_action
+    before_action :check_close_issues_feature_flag, only: [:close_issues]
 
     ALLOWED_SORTS = %w[resource_name resource_type resource_workflow_state resource_updated_at issue_count].freeze
 
@@ -36,8 +36,8 @@ module Accessibility
               .preload(:accessibility_issues)
               .where(course_id: @context.id)
 
-      scans = apply_sorting(scans)
       scans = apply_accessibility_filters(scans, params[:filters], params[:search]) if params[:filters].present? || params[:search].present?
+      scans = apply_sorting(scans)
 
       base_url = resource_scan_course_accessibility_index_path(@context)
       paginated = Api.paginate(scans, self, base_url)
@@ -66,12 +66,42 @@ module Accessibility
       render json: { scans: scans.map { |scan| scan_attributes(scan) } }
     end
 
+    # PATCH /courses/:course_id/accessibility/resource_scan/:id/close_issues
+    # Params:
+    #   id – scan ID
+    #   close – boolean (true = close, false = reopen)
+    def close_issues
+      scan = AccessibilityResourceScan.find(params[:id])
+
+      unless scan.course_id == @context.id
+        return render json: { error: "Scan not found" }, status: :not_found
+      end
+
+      close = ["true", true].include?(params[:close])
+
+      Accessibility::BulkCloseIssuesService.call(
+        scan:,
+        user_id: @current_user.id,
+        close:
+      )
+
+      render json: scan_attributes(scan.reload), status: :ok
+    rescue ActiveRecord::RecordNotFound
+      render json: { error: "Scan not found" }, status: :not_found
+    rescue => e
+      render json: { error: e.message }, status: :unprocessable_content
+    end
+
     private
 
     def check_authorized_action
       return render status: :forbidden unless @context.try(:a11y_checker_enabled?)
 
       authorized_action(@context, @current_user, [:read, :update])
+    end
+
+    def check_close_issues_feature_flag
+      render_unauthorized_action unless @context.try(:a11y_checker_close_issues?)
     end
 
     # Apply sorting to the supplied ActiveRecord::Relation of AccessibilityResourceScan
@@ -86,48 +116,82 @@ module Accessibility
 
       direction = (params[:direction].to_s.downcase == "desc") ? "DESC" : "ASC"
 
-      order_clause = case sort
-                     when "resource_type"
-                       type_case = <<~SQL.squish
-                         CASE
-                           WHEN wiki_page_id IS NOT NULL THEN 'wiki_page'
-                           WHEN assignment_id IS NOT NULL THEN 'assignment'
-                           WHEN attachment_id IS NOT NULL THEN 'attachment'
-                         END
-                       SQL
-                       Arel.sql("#{type_case} #{direction}")
-                     else
-                       { sort => direction.downcase.to_sym }
-                     end
+      case sort
+      when "resource_type"
+        scans_table = AccessibilityResourceScan.quoted_table_name
+        type_case = <<~SQL.squish
+          CASE
+            WHEN #{scans_table}.is_syllabus = true THEN 'syllabus'
+            WHEN #{scans_table}.wiki_page_id IS NOT NULL THEN 'page'
+            WHEN #{scans_table}.assignment_id IS NOT NULL THEN 'assignment'
+            WHEN #{scans_table}.attachment_id IS NOT NULL THEN 'attachment'
+            WHEN #{scans_table}.discussion_topic_id IS NOT NULL THEN 'discussion_topic'
+            WHEN #{scans_table}.announcement_id IS NOT NULL THEN 'announcement'
+          END
+        SQL
+        relation.select("#{scans_table}.*", "#{type_case} AS resource_type_sort")
+                .order(Arel.sql("resource_type_sort #{direction}"))
+      when "issue_count"
+        scans_table = AccessibilityResourceScan.quoted_table_name
 
-      relation.order(order_clause)
+        if @context.try(:a11y_checker_close_issues?)
+          issues_table = AccessibilityIssue.quoted_table_name
+          closed_count_subquery = <<~SQL.squish
+            (SELECT COUNT(*) FROM #{issues_table}
+             WHERE #{issues_table}.accessibility_resource_scan_id = #{scans_table}.id
+             AND #{issues_table}.workflow_state = 'closed')
+          SQL
+          relation.select("#{scans_table}.*", "#{scans_table}.issue_count", "#{closed_count_subquery} AS closed_count_sort")
+                  .order(Arel.sql("issue_count #{direction}, closed_count_sort #{direction}"))
+        else
+          relation.select("#{scans_table}.*", "#{scans_table}.issue_count")
+                  .order(Arel.sql("issue_count #{direction}"))
+        end
+      else
+        relation.order({ sort => direction.downcase.to_sym })
+      end.order(id: :asc)
     end
 
     # Returns a hash representation of the scan, for JSON rendering.
     # @param scan [AccessibilityResourceScan] the scan record
     # @return [Hash] the scan attributes
     def scan_attributes(scan)
-      resource = scan.context
+      resource = scan.resource
       resource_id = resource&.id
-      resource_type = resource&.class&.name
+      # rubocop:disable Lint/RedundantSafeNavigation
+      # False positive: We need &. because resource could be nil, and we're checking
+      # different conditions: resource exists AND has method vs resource exists WITHOUT method
+      resource_type = if resource&.respond_to?(:resource_class_name)
+                        resource.resource_class_name
+                      elsif resource
+                        resource.class.name
+                      else
+                        nil
+                      end
+      # rubocop:enable Lint/RedundantSafeNavigation
       scan_completed = scan.workflow_state == "completed"
 
       result = {
         id: scan.id,
+        course_id: scan.course_id,
         resource_id:,
         resource_type:,
         resource_name: scan.resource_name,
         resource_workflow_state: scan.resource_workflow_state,
         resource_updated_at: scan.resource_updated_at&.iso8601 || "",
         resource_url: scan.context_url,
+        resource_scan_path: scan.resource_scan_path,
         workflow_state: scan.workflow_state,
-        error_message: scan.error_message || ""
+        error_message: scan.error_message || "",
+        closed_at: scan.closed_at&.iso8601
       }
 
       # Only include issue-related data when the scan is completed
       if scan_completed
+        accessibility_issues = scan.accessibility_issues
         result[:issue_count] = scan.issue_count
-        result[:issues] = scan.accessibility_issues.select(&:active?).map { |issue| issue_attributes(issue) }
+        result[:closed_issue_count] = accessibility_issues.count(&:closed?)
+        result[:issues] = accessibility_issues.select(&:active?).map { |issue| issue_attributes(issue) }
       end
 
       result

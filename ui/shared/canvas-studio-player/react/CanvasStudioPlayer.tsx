@@ -26,7 +26,7 @@ import {CaptionMetaData, StudioPlayer, type StudioPlayerProps} from '@instructur
 import {Alert} from '@instructure/ui-alerts'
 import {Flex} from '@instructure/ui-flex'
 import {Spinner} from '@instructure/ui-spinner'
-import getCookie from '@instructure/get-cookie'
+import {getCookie} from '@instructure/platform-get-cookie'
 import {asJson, defaultFetchOptions} from '@canvas/util/xhr'
 import {type GlobalEnv} from '@canvas/global/env/GlobalEnv.d'
 import {type MediaSource} from 'api'
@@ -72,15 +72,13 @@ const isCaptionMetaData = (track: MediaTrack | CaptionMetaData): track is Captio
 const convertMediaTracksIfNeeded = (
   tracks: MediaTrack[] | CaptionMetaData[],
 ): CaptionMetaData[] => {
-  // @ts-expect-error
-  return tracks.map(track => {
+  return tracks.map((track): CaptionMetaData => {
     if (isCaptionMetaData(track)) return track
     return {
-      locale: track.locale,
       language: captionLanguageForLocale(track.locale),
-      inherited: track.inherited,
       label: captionLanguageForLocale(track.locale),
       src: track.url,
+      type: 'vtt',
     }
   })
 }
@@ -112,6 +110,9 @@ interface BaseCanvasStudioPlayerProps {
   tabs?: StudioPlayerProps['tabs']
   emptyTranscriptsComponent?: StudioPlayerProps['emptyTranscriptsComponent']
   rollingTranscriptElement?: StudioPlayerProps['rollingTranscriptElement']
+  onTranscriptEdit?: StudioPlayerProps['onTranscriptEdit']
+  onConfirmEditChanges?: StudioPlayerProps['onConfirmEditChanges']
+  onTrackEvent?: StudioPlayerProps['onTrackEvent']
 }
 
 type CanvasStudioPropsWithMediaIdOrAttachmentId =
@@ -142,6 +143,9 @@ export default function CanvasStudioPlayer({
   tabs,
   emptyTranscriptsComponent,
   rollingTranscriptElement,
+  onTranscriptEdit,
+  onConfirmEditChanges,
+  onTrackEvent,
 }: CanvasStudioPropsWithMediaIdOrAttachmentId) {
   const [mediaId, setMediaId] = useState(media_id)
   const captions: CaptionMetaData[] | undefined = Array.isArray(media_captions)
@@ -151,10 +155,20 @@ export default function CanvasStudioPlayer({
   const [mediaCaptions, setMediaCaptions] = useState<CaptionMetaData[] | undefined>(captions)
   const [retryAttempt, setRetryAttempt] = useState(0)
   const [mediaObjNetworkErr, setMediaObjNetworkErr] = useState(null)
+  const [mediaObjFailed, setMediaObjFailed] = useState(false)
   const [containerWidth, setContainerWidth] = useState(explicitSize?.width || 0)
   const [containerHeight, setContainerHeight] = useState(explicitSize?.height || 0)
   const [isLoading, setIsLoading] = useState(true)
   const [canAddCaptions, setCanAddCaptions] = useState(false)
+
+  useEffect(() => {
+    if (media_id && media_id !== mediaId) {
+      setMediaId(media_id)
+      setMediaSources([])
+      setRetryAttempt(0)
+    }
+  }, [media_id, mediaId])
+
   // the ability to set these makes testing easier
   // hint: set these values in a conditional breakpoint in
   // media_player_iframe_content.js where the CanvasStudioPlayer is rendered
@@ -224,6 +238,7 @@ export default function CanvasStudioPlayer({
       try {
         setIsLoading(true)
         setMediaObjNetworkErr(null)
+        setMediaObjFailed(false)
         resp = await asJson(fetch(url, defaultFetchOptions()))
       } catch (e: any) {
         console.warn(`Error getting ${url}`, e.message)
@@ -236,6 +251,11 @@ export default function CanvasStudioPlayer({
       }
       if (typeof resp?.can_add_captions === 'boolean') {
         setCanAddCaptions(resp.can_add_captions)
+      }
+      if (resp?.status === 'ERROR_IMPORTING' || resp?.status === 'ERROR_CONVERTING') {
+        setMediaObjFailed(true)
+        setIsLoading(false)
+        return
       }
       if (resp?.media_sources?.length) {
         setMediaSources(convertAndSortMediaSources(resp.media_sources))
@@ -260,7 +280,7 @@ export default function CanvasStudioPlayer({
       await fetch(caption.src, {
         method: 'DELETE',
         headers: {
-          'X-CSRF-Token': getCookie('_csrf_token'),
+          'X-CSRF-Token': getCookie('_csrf_token') ?? '',
         },
       })
     }
@@ -299,6 +319,15 @@ export default function CanvasStudioPlayer({
     (document.fullscreenEnabled || document.webkitFullscreenEnabled) && type === 'video'
 
   function renderNoPlayer() {
+    if (mediaObjFailed) {
+      return (
+        <Alert key="failedalert" variant="error" margin="small" liveRegion={liveRegion}>
+          {I18n.t(
+            "This file couldn't be processed. It may be corrupted or in an unsupported format. Please upload a different file.",
+          )}
+        </Alert>
+      )
+    }
     if (mediaObjNetworkErr) {
       if (is_attachment) {
         return (
@@ -385,6 +414,54 @@ export default function CanvasStudioPlayer({
     }
   }, [explicitSize, containerWidth, containerHeight])
 
+  /**
+   * When escape is pressed, if focus is inside the player:
+   * - If in fullscreen: manually exit and restore focus to fullscreen button
+   * - If menu is open: restore focus to the menu button
+   * Why: Chrome loses focus after fullscreen exit, Firefox doesn't
+   */
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    const handleEscapeCapture = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+
+      const target = event.target as HTMLElement
+      if (!container.contains(target)) return
+
+      if (document.fullscreenElement) {
+        event.preventDefault()
+        event.stopPropagation()
+
+        document.exitFullscreen().then(() => {
+          const fullscreenButton = container.querySelector(
+            '[class*="_full-screen-button"]',
+          ) as HTMLElement | null
+          fullscreenButton?.focus()
+        })
+
+        return
+      }
+
+      // Handle menu escape - restore focus to menu button
+      const openMenuButton = container.querySelector(
+        '.controls-button[aria-expanded="true"], #kebab-menu-button[aria-expanded="true"]',
+      ) as HTMLElement | null
+      if (openMenuButton) {
+        setTimeout(() => {
+          openMenuButton.focus()
+        }, 0)
+      }
+    }
+
+    document.addEventListener('keydown', handleEscapeCapture, true)
+
+    return () => {
+      document.removeEventListener('keydown', handleEscapeCapture, true)
+    }
+  }, [])
+
   function renderLoader() {
     if (retryAttempt >= showBePatientMsgAfterAttempts) {
       setIsLoading(false)
@@ -419,11 +496,14 @@ export default function CanvasStudioPlayer({
               src={mediaSources}
               captions={mediaCaptions}
               hideFullScreen={!includeFullscreen}
-              title={getAriaLabel()}
+              title={getAriaLabel() ?? ''}
               onCaptionsDelete={hideCaptionButtons ? undefined : deleteCaption}
               enableSidebar={enableSidebar}
               openSidebar={openSidebar}
               tabs={tabs}
+              onTranscriptEdit={onTranscriptEdit}
+              onConfirmEditChanges={onConfirmEditChanges}
+              onTrackEvent={onTrackEvent}
               emptyTranscriptsComponent={emptyTranscriptsComponent}
               rollingTranscriptElement={rollingTranscriptElement}
               kebabMenuElements={

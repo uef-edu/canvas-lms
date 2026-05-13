@@ -1261,13 +1261,13 @@ describe RubricsController do
   end
 
   describe "ai rubrics" do
-    let(:cedar_response_struct) { Struct.new(:response, keyword_init: true) }
+    let(:cedar_response_struct) { Struct.new(:response) }
     let(:mock_cedar_prompt_response) do
-      Struct.new(:response, keyword_init: true).new(response: "<RUBRIC_DATA>\n</RUBRIC_DATA>")
+      Struct.new(:response).new(response: "<RUBRIC_DATA>\n</RUBRIC_DATA>")
     end
 
     let(:mock_cedar_conversation_response) do
-      Struct.new(:response, keyword_init: true).new(response: '{"criteria": []}')
+      Struct.new(:response).new(response: '{"criteria": []}')
     end
 
     before do
@@ -1296,7 +1296,7 @@ describe RubricsController do
         {
           course_id: @course.id,
           rubric_association: { association_type: "Assignment", association_id: @assignment.id },
-          generate_options: { criteria_count: 2, rating_count: 3, points_per_criterion: 5, use_range: true, grade_level: "college" }
+          generate_options: { criteria_count: 2, rating_count: 3, total_points: 5, use_range: true, grade_level: "college" }
         }
       end
 
@@ -1331,7 +1331,7 @@ describe RubricsController do
              params: {
                course_id: @course.id,
                rubric_association: { association_type: "Assignment", association_id: @assignment.id },
-               generate_options: { criteria_count: 2, rating_count: 3, points_per_criterion: 5, use_range: true, additional_prompt_info: "Focus on content", grade_level: "second" }
+               generate_options: { criteria_count: 2, rating_count: 3, total_points: 5, use_range: true, additional_prompt_info: "Focus on content", grade_level: "second" }
              },
              format: :json
 
@@ -1349,13 +1349,13 @@ describe RubricsController do
       end
 
       context "authorization and feature flags" do
-        include_examples "requires enabled features", "llm_criteria"
-        include_examples "requires manage rubric permission", "llm_criteria"
+        it_behaves_like "requires enabled features", "llm_criteria"
+        it_behaves_like "requires manage rubric permission", "llm_criteria"
       end
 
       context "validation" do
-        include_examples "validates parameter bounds", "llm_criteria"
-        include_examples "validates association", "llm_criteria"
+        it_behaves_like "validates parameter bounds", "llm_criteria"
+        it_behaves_like "validates association", "llm_criteria"
 
         it "accepts request when criteria_count is missing" do
           params = request_params.tap { |p| p[:generate_options].delete(:criteria_count) }
@@ -1373,7 +1373,6 @@ describe RubricsController do
         @course.enable_feature!(:enhanced_rubrics)
         @course.enable_feature!(:ai_rubrics)
 
-        # Set up existing criteria structure
         @existing_criteria = {
           "0" => {
             id: "1",
@@ -1407,7 +1406,7 @@ describe RubricsController do
           course_id: @course.id,
           rubric_association: { association_type: "Assignment", association_id: @assignment.id },
           criteria: @existing_criteria,
-          generate_options: { criteria_count: 2, rating_count: 3, points_per_criterion: 10, use_range: true, grade_level: "higher-ed" }
+          generate_options: { criteria_count: 2, rating_count: 3, total_points: 10, use_range: true, grade_level: "higher-ed" }
         }
       end
 
@@ -1443,7 +1442,7 @@ describe RubricsController do
                criteria: @existing_criteria,
                additional_user_prompt: "Make this more comprehensive",
                regenerate_options: { additional_user_prompt: "Make this more comprehensive" },
-               generate_options: { criteria_count: 2, rating_count: 3, points_per_criterion: 10, use_range: true, grade_level: "college" }
+               generate_options: { criteria_count: 2, rating_count: 3, total_points: 10, use_range: true, grade_level: "college" }
              },
              format: :json
         expect(response).to be_successful
@@ -1481,7 +1480,7 @@ describe RubricsController do
                generate_options: {
                  criteria_count: 2,
                  rating_count: 3,
-                 points_per_criterion: 20,
+                 total_points: 20,
                  use_range: false,
                  grade_level: "higher-ed"
                }
@@ -1504,7 +1503,6 @@ describe RubricsController do
 
       context "criteria count management" do
         it "extends criteria when criteria_count is higher than original, keeping old IDs untouched" do
-          # Add a 3rd criterion to the existing criteria
           existing_criteria_with_three = @existing_criteria.merge(
             "2" => {
               id: "3",
@@ -1558,7 +1556,7 @@ describe RubricsController do
                  course_id: @course.id,
                  rubric_association: { association_type: "Assignment", association_id: @assignment.id },
                  criteria: existing_criteria_with_three,
-                 generate_options: { criteria_count: 3, rating_count: 3, points_per_criterion: 10 }
+                 generate_options: { criteria_count: 3, rating_count: 3, total_points: 10 }
                },
                format: :json
 
@@ -1573,7 +1571,6 @@ describe RubricsController do
         end
 
         it "preserves all incoming criteria count even when generate_options specifies different count" do
-          # Start with 3 criteria
           existing_criteria_with_three = @existing_criteria.merge(
             "2" => {
               id: "3",
@@ -1627,7 +1624,7 @@ describe RubricsController do
                  course_id: @course.id,
                  rubric_association: { association_type: "Assignment", association_id: @assignment.id },
                  criteria: existing_criteria_with_three,
-                 generate_options: { criteria_count: 2, rating_count: 3, points_per_criterion: 10 }
+                 generate_options: { criteria_count: 2, rating_count: 3, total_points: 10 }
                },
                format: :json
 
@@ -1636,20 +1633,19 @@ describe RubricsController do
           run_jobs
           progress = Progress.find(json["id"])
 
-          # Verify it preserved all 3 criteria (incoming count takes precedence over generate_options)
           expect(progress.results[:criteria].length).to eq 3
           expect(progress.results[:criteria].pluck(:id)).to include("1", "2", "3")
         end
       end
 
       context "authorization and feature flags" do
-        include_examples "requires enabled features", "llm_regenerate_criteria"
-        include_examples "requires manage rubric permission", "llm_regenerate_criteria"
+        it_behaves_like "requires enabled features", "llm_regenerate_criteria"
+        it_behaves_like "requires manage rubric permission", "llm_regenerate_criteria"
       end
 
       context "parameter validation" do
-        include_examples "validates parameter bounds", "llm_regenerate_criteria"
-        include_examples "validates association", "llm_regenerate_criteria"
+        it_behaves_like "validates parameter bounds", "llm_regenerate_criteria"
+        it_behaves_like "validates association", "llm_regenerate_criteria"
 
         context "string length limits" do
           it "returns error when additional_user_prompt is too long" do
@@ -1659,7 +1655,7 @@ describe RubricsController do
             )
             post "llm_regenerate_criteria", params:, format: :json
             expect(response).to be_bad_request
-            expect(response.parsed_body["error"]).to eq "additional_user_prompt must be less than 1000 characters"
+            expect(response.parsed_body["error"]).to eq "additional_user_prompt must be 1000 characters or less"
           end
 
           it "returns error when additional_prompt_info is too long in generate_options" do
@@ -1669,17 +1665,17 @@ describe RubricsController do
             )
             post "llm_regenerate_criteria", params:, format: :json
             expect(response).to be_bad_request
-            expect(response.parsed_body["error"]).to eq "additional_prompt_info must be less than 1000 characters"
+            expect(response.parsed_body["error"]).to eq "additional_prompt_info must be 1000 characters or less"
           end
 
           it "returns error when standard in regenerate_options is too long" do
             long_standard = "s" * 1001
             params = request_params.deep_merge(
-              regenerate_options: { standard: long_standard }
+              generate_options: { standard: long_standard }
             )
             post "llm_regenerate_criteria", params:, format: :json
             expect(response).to be_bad_request
-            expect(response.parsed_body["error"]).to eq "standard must be less than 1000 characters"
+            expect(response.parsed_body["error"]).to eq "standard must be 1000 characters or less"
           end
         end
 
@@ -1711,7 +1707,7 @@ describe RubricsController do
             }
             params = request_params.merge(criteria: malformed_criteria)
             post "llm_regenerate_criteria", params:, format: :json
-            # Controller accepts it, validation happens in service layer
+
             expect(response).to be_successful
           end
         end
@@ -1733,7 +1729,7 @@ describe RubricsController do
             generate_options: {
               criteria_count: 5,
               rating_count: 4,
-              points_per_criterion: 20,
+              total_points: 20,
               use_range: false,
               grade_level: "higher-ed"
             }
@@ -1768,10 +1764,10 @@ describe RubricsController do
       context "LLM response error handling" do
         before do
           allow(LLMConfigs).to receive(:config_for).with("rubric_regenerate_criteria").and_return(
-            double("LLMConfig",
-                   name: "rubric-regenerate-criteriaV2",
-                   model_id: "anthropic.claude-3-haiku-20240307-v1:0",
-                   generate_prompt_and_options: ["PROMPT", { temperature: 1.0 }])
+            instance_double(LLMConfig,
+                            name: "rubric-regenerate-criteriaV2",
+                            model_id: "anthropic.claude-3-haiku-20240307-v1:0",
+                            generate_prompt_and_options: ["PROMPT", { temperature: 1.0 }])
           )
         end
 
@@ -1850,10 +1846,8 @@ describe RubricsController do
           cedar_response_struct.new(response: llm_response_payload.to_json[1..])
         )
 
-        # Record initial LLMResponse count
         initial_llm_response_count = LLMResponse.count
 
-        # Test the controller endpoint
         post "llm_criteria",
              params: {
                course_id: @course.id,
@@ -1861,7 +1855,7 @@ describe RubricsController do
                generate_options: {
                  criteria_count: 2,
                  rating_count: 4,
-                 points_per_criterion: 25,
+                 total_points: 25,
                  use_range: true,
                  additional_prompt_info: "Focus on academic writing skills",
                  grade_level: "college"
@@ -1873,19 +1867,15 @@ describe RubricsController do
         json = response.parsed_body
         expect(json["workflow_state"]).to eq "queued"
 
-        # Execute the background job - this is where LLMResponse gets created
         run_jobs
 
-        # Verify Progress object completion
         progress = Progress.find(json["id"])
         expect(progress.workflow_state).to eq "completed"
         expect(progress.results).to have_key(:criteria)
         expect(progress.results[:criteria].length).to eq 2
 
-        # Verify LLMResponse was created during job execution
         expect(LLMResponse.count).to eq(initial_llm_response_count + 1)
 
-        # Verify LLMResponse was persisted correctly
         llm_response = LLMResponse.last
         expect(llm_response.prompt_name).to eq "rubric-create-V3"
         expect(llm_response.prompt_model_id).to eq "anthropic.claude-3-haiku-20240307-v1:0"
@@ -1895,15 +1885,13 @@ describe RubricsController do
         expect(llm_response.output_tokens).to eq 0
         expect(llm_response.raw_response).to include("Evidence-Based Reasoning")
 
-        # Verify generated criteria structure
         first_criterion = progress.results[:criteria].first
         expect(first_criterion[:description]).to eq "Evidence-Based Reasoning"
         expect(first_criterion[:long_description]).to eq "Demonstrates use of credible sources and logical reasoning"
         expect(first_criterion[:criterion_use_range]).to be true
-        expect(first_criterion[:points]).to eq 25
+        expect(first_criterion[:points]).to eq 12.5
         expect(first_criterion[:ratings].length).to eq 4
 
-        # Verify ratings are properly sorted by points
         points = first_criterion[:ratings].pluck(:points)
         expect(points).to eq points.sort.reverse
       end
@@ -1922,22 +1910,20 @@ describe RubricsController do
         @course.enable_feature!(:enhanced_rubrics)
         @course.enable_feature!(:ai_rubrics)
 
-        # Set up LLM config mocks for both full regeneration and single criterion regeneration
         allow(LLMConfigs).to receive(:config_for).with("rubric_regenerate_criteria").and_return(
-          double("LLMConfig",
-                 name: "rubric-regenerate-criteriaV2",
-                 model_id: "anthropic.claude-3-haiku-20240307-v1:0",
-                 generate_prompt_and_options: ["PROMPT", { temperature: 1.0 }])
+          instance_double(LLMConfig,
+                          name: "rubric-regenerate-criteriaV2",
+                          model_id: "anthropic.claude-3-haiku-20240307-v1:0",
+                          generate_prompt_and_options: ["PROMPT", { temperature: 1.0 }])
         )
 
         allow(LLMConfigs).to receive(:config_for).with("rubric_regenerate_criterion").and_return(
-          double("LLMConfig",
-                 name: "rubric-regenerate-criterionV2",
-                 model_id: "anthropic.claude-3-haiku-20240307-v1:0",
-                 generate_prompt_and_options: ["PROMPT", { temperature: 1.0 }])
+          instance_double(LLMConfig,
+                          name: "rubric-regenerate-criterionV2",
+                          model_id: "anthropic.claude-3-haiku-20240307-v1:0",
+                          generate_prompt_and_options: ["PROMPT", { temperature: 1.0 }])
         )
 
-        # Set up existing criteria structure for regeneration (3 criteria)
         @existing_criteria = {
           "0" => {
             id: "existing_c1",
@@ -2023,16 +2009,14 @@ describe RubricsController do
           cedar_response_struct.new(response: llm_regeneration_response)
         )
 
-        # Record initial LLMResponse count
         initial_llm_response_count = LLMResponse.count
 
-        # Test the controller endpoint for full criteria regeneration
         post "llm_regenerate_criteria",
              params: {
                course_id: @course.id,
                rubric_association: { association_type: "Assignment", association_id: @assignment.id },
                criteria: @existing_criteria,
-               generate_options: { criteria_count: 3, rating_count: 4, points_per_criterion: 25, use_range: true, grade_level: "higher-ed" },
+               generate_options: { criteria_count: 3, rating_count: 4, total_points: 25, use_range: true, grade_level: "higher-ed" },
                regenerate_options: { additional_user_prompt: "Make the criteria more detailed and add writing mechanics" }
              },
              format: :json
@@ -2041,19 +2025,15 @@ describe RubricsController do
         progress_id = response.parsed_body["id"]
         expect(progress_id).to be_present
 
-        # Execute the background job
         run_jobs
 
-        # Verify job completion and results
         progress = Progress.find(progress_id)
         expect(progress.workflow_state).to eq "completed"
         expect(progress.results[:criteria]).to be_present
         expect(progress.results[:criteria].length).to eq 3
 
-        # Verify LLMResponse was created during job execution
         expect(LLMResponse.count).to eq(initial_llm_response_count + 1)
 
-        # Verify LLMResponse was persisted correctly
         llm_response = LLMResponse.last
         expect(llm_response.prompt_name).to eq "rubric-regenerate-criteriaV2"
         expect(llm_response.prompt_model_id).to eq "anthropic.claude-3-haiku-20240307-v1:0"
@@ -2063,31 +2043,30 @@ describe RubricsController do
         expect(llm_response.output_tokens).to eq 0
         expect(llm_response.raw_response).to include("Enhanced Argument Development")
 
-        # Verify regenerated criteria structure preserved existing IDs and added new ones
         criteria_results = progress.results[:criteria]
 
-        # First criterion should be updated but keep existing ID
         first_criterion = criteria_results.find { |c| c[:id] == "existing_c1" }
         expect(first_criterion).to be_present
         expect(first_criterion[:description]).to eq "Enhanced Argument Development"
         expect(first_criterion[:long_description]).to eq "Develops sophisticated and nuanced arguments with clear thesis"
         expect(first_criterion[:criterion_use_range]).to be true
-        expect(first_criterion[:points]).to eq 25
+        expect(first_criterion[:points]).to eq 8.33
         expect(first_criterion[:ratings].length).to eq 4
 
-        # Second criterion should be updated but keep existing ID
         second_criterion = criteria_results.find { |c| c[:id] == "existing_c2" }
         expect(second_criterion).to be_present
         expect(second_criterion[:description]).to eq "Research Integration"
+        expect(second_criterion[:points]).to eq 8.33
+        expect(second_criterion[:ratings].length).to eq 4
         expect(second_criterion[:long_description]).to eq "Effectively integrates research to support arguments"
 
-        # Third criterion should be new with generated ID
         third_criterion = criteria_results.find { |c| c[:description] == "Writing Mechanics" }
         expect(third_criterion).to be_present
         expect(third_criterion[:id]).not_to start_with("_new_c_") # Should have real generated ID
         expect(third_criterion[:long_description]).to eq "Demonstrates command of grammar, syntax, and style"
+        expect(third_criterion[:points]).to eq 8.34
+        expect(third_criterion[:ratings].length).to eq 4
 
-        # Verify all ratings are properly sorted by points descending
         criteria_results.each do |criterion|
           points = criterion[:ratings].pluck(:points)
           expect(points).to eq points.sort.reverse
@@ -2114,17 +2093,15 @@ describe RubricsController do
           cedar_response_struct.new(response: llm_criterion_response)
         )
 
-        # Record initial LLMResponse count
         initial_llm_response_count = LLMResponse.count
 
-        # Test the controller endpoint for single criterion regeneration
         post "llm_regenerate_criteria",
              params: {
                course_id: @course.id,
                rubric_association: { association_type: "Assignment", association_id: @assignment.id },
                criteria: @existing_criteria,
-               generate_options: { criteria_count: 3, rating_count: 4, points_per_criterion: 20, use_range: false },
-               regenerate_options: { criterion_id: "existing_c1", standard: "Focus on logical reasoning and evidence quality" }
+               generate_options: { criteria_count: 3, rating_count: 4, total_points: 60, use_range: false, standard: "Focus on logical reasoning and evidence quality" },
+               regenerate_options: { criterion_id: "existing_c1" }
              },
              format: :json
 
@@ -2132,19 +2109,15 @@ describe RubricsController do
         progress_id = response.parsed_body["id"]
         expect(progress_id).to be_present
 
-        # Execute the background job
         run_jobs
 
-        # Verify job completion and results
         progress = Progress.find(progress_id)
         expect(progress.workflow_state).to eq "completed"
         expect(progress.results[:criteria]).to be_present
         expect(progress.results[:criteria].length).to eq 3
 
-        # Verify LLMResponse was created during job execution with single criterion config
         expect(LLMResponse.count).to eq(initial_llm_response_count + 1)
 
-        # Verify LLMResponse was persisted correctly for single criterion regeneration
         llm_response = LLMResponse.last
         expect(llm_response.prompt_name).to eq "rubric-regenerate-criterionV2"
         expect(llm_response.prompt_model_id).to eq "anthropic.claude-3-haiku-20240307-v1:0"
@@ -2154,30 +2127,28 @@ describe RubricsController do
         expect(llm_response.output_tokens).to eq 0
         expect(llm_response.raw_response).to include("Refined Argument Quality")
 
-        # Verify regenerated criteria structure
         criteria_results = progress.results[:criteria]
 
-        # First criterion should be updated
         first_criterion = criteria_results.find { |c| c[:id] == "existing_c1" }
         expect(first_criterion).to be_present
         expect(first_criterion[:description]).to eq "Refined Argument Quality"
         expect(first_criterion[:long_description]).to eq "Constructs well-reasoned arguments with clear evidence"
-        expect(first_criterion[:criterion_use_range]).to be false
+        expect(first_criterion[:criterion_use_range]).to be true
         expect(first_criterion[:points]).to eq 20
         expect(first_criterion[:ratings].length).to eq 4
+        expect(first_criterion[:generated]).to be true
 
-        # Verify existing ratings were preserved and updated
         ratings = first_criterion[:ratings]
         expect(ratings.find { |r| r[:id] == "existing_r1" }[:description]).to eq "Outstanding"
         expect(ratings.find { |r| r[:id] == "existing_r2" }[:description]).to eq "Proficient"
         expect(ratings.find { |r| r[:id] == "existing_r3" }[:description]).to eq "Developing"
         expect(ratings.find { |r| r[:id] == "existing_r4" }[:description]).to eq "Inadequate"
 
-        # Second criterion should remain unchanged
         second_criterion = criteria_results.find { |c| c[:id] == "existing_c2" }
         expect(second_criterion).to be_present
         expect(second_criterion[:description]).to eq "Original Evidence"
         expect(second_criterion[:long_description]).to eq "Uses credible sources effectively"
+        expect(second_criterion[:criterion_use_range]).to be true
       end
     end
   end

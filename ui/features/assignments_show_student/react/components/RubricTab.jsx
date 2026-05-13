@@ -17,7 +17,7 @@
  */
 import React, {useState} from 'react'
 import {arrayOf, bool, func} from 'prop-types'
-import CanvasSelect from '@canvas/instui-bindings/react/Select'
+import {CanvasSelect} from '@instructure/platform-instui-bindings'
 import {fillAssessment} from '@canvas/rubrics/react/helpers'
 import {useScope as createI18nScope} from '@canvas/i18n'
 import {ProficiencyRating} from '@canvas/assignments/graphql/student/ProficiencyRating'
@@ -29,7 +29,6 @@ import {Text} from '@instructure/ui-text'
 import {ToggleDetails} from '@instructure/ui-toggle-details'
 import {Alert} from '@instructure/ui-alerts'
 import {View} from '@instructure/ui-view'
-import {Flex} from '@instructure/ui-flex'
 import useStore from './stores/index'
 import {RubricAssessmentTray, TraditionalView} from '@canvas/rubrics/react/RubricAssessment'
 import {Button} from '@instructure/ui-buttons'
@@ -146,6 +145,7 @@ export default function RubricTab(props) {
     return enhancedRubricsEnabled ? (
       <TraditionalView
         criteria={rubricCriteria}
+        customRatings={props.proficiencyRatings}
         hidePoints={hidePoints}
         isPreviewMode={true}
         isAiEvaluated={props.isAiEvaluated}
@@ -171,7 +171,7 @@ export default function RubricTab(props) {
 
   return (
     <div data-testid="rubric-tab">
-      <View as="div" margin="none none medium">
+      <View as="div" margin="none none medium" maxWidth="100%" data-testid="rubric-content-wrapper">
         {props.peerReviewModeEnabled && !hasSubmittedAssessment && (
           <Alert variant="info" hasShadow={false} data-testid="peer-review-rubric-alert">
             {I18n.t(
@@ -250,8 +250,9 @@ export default function RubricTab(props) {
                 </CanvasSelect>
               </div>
             )}
-
-            {renderRubricPreview()}
+            <View as="div" maxWidth="100%" overflowX="scroll" data-testid="rubric-preview">
+              {renderRubricPreview()}
+            </View>
           </ToggleDetails>
         )}
       </View>

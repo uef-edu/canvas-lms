@@ -16,48 +16,32 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-import {createElement} from 'react'
-import doFetchApi from '@canvas/do-fetch-api-effect'
 import {render, screen, fireEvent, waitFor} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import {setupServer} from 'msw/node'
+import {http, HttpResponse} from 'msw'
 
-import {
-  AccessibilityCheckerContext,
-  type AccessibilityCheckerContextType,
-} from '../../../../contexts/AccessibilityCheckerContext'
 import {FormType, IssueWorkflowState} from '../../../../types'
-import {getAsAccessibilityResourceScan} from '../../../../utils/apiData'
-import TextInputForm from '../TextInput'
+import TextInputForm from '../TextInputForm'
 import {useAccessibilityScansStore} from '../../../../stores/AccessibilityScansStore'
 
-// Mock the Button component to handle ai-primary color
-jest.mock('@instructure/ui-buttons', () => {
-  const originalModule = jest.requireActual('@instructure/ui-buttons')
-  return {
-    ...originalModule,
-    Button: (props: any) => {
-      // Convert ai-primary to primary for testing
-      const testProps = {
-        ...props,
-        color: props.color === 'ai-primary' ? 'primary' : props.color,
-      }
-      return createElement(originalModule.Button, testProps)
-    },
-  }
+const server = setupServer()
+
+vi.mock('../../../../stores/AccessibilityScansStore')
+
+beforeAll(() => server.listen())
+afterAll(() => server.close())
+
+beforeEach(() => {
+  server.resetHandlers()
+  vi.resetAllMocks()
+  ;(useAccessibilityScansStore as unknown as any).mockImplementation((selector: any) => {
+    const state = {isAiTableCaptionGenerationEnabled: true, selectedScan: null}
+    return selector(state)
+  })
 })
 
-jest.mock('@canvas/do-fetch-api-effect')
-
-jest.mock('../../../../stores/AccessibilityScansStore')
-
 describe('TextInputForm', () => {
-  beforeEach(() => {
-    jest.resetAllMocks()
-    ;(useAccessibilityScansStore as unknown as jest.Mock).mockImplementation((selector: any) => {
-      const state = {aiGenerationEnabled: true}
-      return selector(state)
-    })
-  })
   const defaultProps = {
     issue: {
       id: 'test-id',
@@ -74,24 +58,8 @@ describe('TextInputForm', () => {
       },
     },
     value: '',
-    onChangeValue: jest.fn(),
-  }
-
-  // Create a fully typed mock context
-  const mockContextValue: AccessibilityCheckerContextType = {
-    selectedItem: getAsAccessibilityResourceScan({
-      id: 123,
-      type: 'Page' as any, // Using string literal that matches ContentItemType.WikiPage
-      title: 'Mock Page',
-      published: true,
-      updatedAt: '2023-01-01',
-      count: 0,
-      url: 'http://example.com',
-      editUrl: 'http://example.com/edit',
-    }),
-    setSelectedItem: jest.fn(),
-    isTrayOpen: false,
-    setIsTrayOpen: jest.fn(),
+    onChangeValue: vi.fn(),
+    onValidationChange: vi.fn(),
   }
 
   const propsWithGenerateOption = {
@@ -101,26 +69,17 @@ describe('TextInputForm', () => {
       form: {
         ...defaultProps.issue.form,
         canGenerateFix: true,
-        generateButtonLabel: 'Generate Alt Text',
       },
     },
   }
 
   it('renders without crashing', () => {
-    render(
-      <AccessibilityCheckerContext.Provider value={mockContextValue}>
-        <TextInputForm {...propsWithGenerateOption} />
-      </AccessibilityCheckerContext.Provider>,
-    )
+    render(<TextInputForm {...defaultProps} />)
     expect(screen.getByTestId('text-input-form')).toBeInTheDocument()
   })
 
   it('displays the correct label', () => {
-    render(
-      <AccessibilityCheckerContext.Provider value={mockContextValue}>
-        <TextInputForm {...propsWithGenerateOption} />
-      </AccessibilityCheckerContext.Provider>,
-    )
+    render(<TextInputForm {...defaultProps} />)
     expect(screen.getByText('Test Label')).toBeInTheDocument()
   })
 
@@ -129,111 +88,230 @@ describe('TextInputForm', () => {
       ...defaultProps,
       value: 'test value',
     }
-    render(
-      <AccessibilityCheckerContext.Provider value={mockContextValue}>
-        <TextInputForm {...propsWithValue} />
-      </AccessibilityCheckerContext.Provider>,
-    )
+    render(<TextInputForm {...propsWithValue} />)
     const input = screen.getByTestId('text-input-form')
     expect(input).toHaveValue('test value')
   })
 
   it('calls onChangeValue when the input value changes', async () => {
-    render(
-      <AccessibilityCheckerContext.Provider value={mockContextValue}>
-        <TextInputForm {...propsWithGenerateOption} />
-      </AccessibilityCheckerContext.Provider>,
-    )
+    render(<TextInputForm {...defaultProps} />)
     const input = screen.getByTestId('text-input-form')
     await userEvent.type(input, 'a')
     expect(defaultProps.onChangeValue).toHaveBeenCalledWith('a')
   })
 
-  it('displays the error message when an error is provided', () => {
-    const propsWithError = {
-      ...defaultProps,
-      error: 'Error message',
-    }
-    render(
-      <AccessibilityCheckerContext.Provider value={mockContextValue}>
-        <TextInputForm {...propsWithError} />
-      </AccessibilityCheckerContext.Provider>,
-    )
-    expect(screen.getByText('Error message')).toBeInTheDocument()
-  })
-
-  it('handles errors when generate API call fails', async () => {
-    // Mock API failure
-    ;(doFetchApi as jest.Mock).mockImplementation(options => {
-      // Test that the path contains "/generate"
-      expect(options.path).toContain('/generate')
-      // Return a rejected promise
-      return Promise.reject(new Error('API Error'))
-    })
-
-    render(
-      <AccessibilityCheckerContext.Provider value={mockContextValue}>
-        <TextInputForm {...propsWithGenerateOption} />
-      </AccessibilityCheckerContext.Provider>,
-    )
-
-    // Click the generate button
-    const generateButton = screen.getByText('Generate Alt Text')
-    fireEvent.click(generateButton)
-
-    // Verify loading indicator appears
-    expect(screen.getByText('Generating...')).toBeInTheDocument()
-
-    // Wait for the loading state to be cleared after the error
-    await waitFor(() => {
-      expect(screen.queryByText('Generating...')).not.toBeInTheDocument()
-    })
-
-    // Verify that onChangeValue was not called (since the API failed)
-    expect(defaultProps.onChangeValue).not.toHaveBeenCalled()
-  })
-
   it('focuses the input when the form is refocused', () => {
-    const {container} = render(
-      <AccessibilityCheckerContext.Provider value={mockContextValue}>
-        <TextInputForm {...propsWithGenerateOption} />
-      </AccessibilityCheckerContext.Provider>,
-    )
+    const {container} = render(<TextInputForm {...propsWithGenerateOption} />)
     const input = container.querySelector('input')
     expect(input).not.toHaveFocus()
     input?.focus()
     expect(input).toHaveFocus()
   })
 
-  describe('AI generation feature flag', () => {
-    it('shows generate button when feature flag is enabled', () => {
-      ;(useAccessibilityScansStore as unknown as jest.Mock).mockImplementation((selector: any) => {
-        const state = {aiGenerationEnabled: true}
-        return selector(state)
-      })
-
-      render(
-        <AccessibilityCheckerContext.Provider value={mockContextValue}>
-          <TextInputForm {...propsWithGenerateOption} />
-        </AccessibilityCheckerContext.Provider>,
-      )
-
-      expect(screen.getByText('Generate Alt Text')).toBeInTheDocument()
+  describe('generate button', () => {
+    it('shows initial generate caption label', () => {
+      render(<TextInputForm {...propsWithGenerateOption} />)
+      expect(screen.getByTestId('initial-label')).toHaveTextContent('Generate caption')
     })
 
-    it('hides generate button when feature flag is disabled', () => {
-      ;(useAccessibilityScansStore as unknown as jest.Mock).mockImplementation((selector: any) => {
-        const state = {aiGenerationEnabled: false}
-        return selector(state)
+    describe('during generation loading', () => {
+      beforeEach(() => {
+        server.use(
+          http.post('**/generate/table_caption', async () => {
+            await new Promise(resolve => setTimeout(resolve, 100))
+            return HttpResponse.json({value: 'Generated caption'})
+          }),
+        )
       })
 
-      render(
-        <AccessibilityCheckerContext.Provider value={mockContextValue}>
-          <TextInputForm {...propsWithGenerateOption} />
-        </AccessibilityCheckerContext.Provider>,
+      it('shows loading label and disables input during generation', async () => {
+        render(<TextInputForm {...propsWithGenerateOption} />)
+
+        const generateButton = screen.getByTestId('generate-button')
+        fireEvent.click(generateButton)
+
+        expect(screen.getByTestId('loading-label')).toHaveTextContent('Generating caption...')
+
+        const input = screen.getByTestId('text-input-form')
+        expect(input).toBeDisabled()
+
+        await waitFor(() => {
+          expect(screen.getByTestId('loaded-label')).toHaveTextContent('Regenerate caption')
+        })
+      })
+
+      it('uses aria-disabled on button during loading', async () => {
+        render(<TextInputForm {...propsWithGenerateOption} />)
+
+        const generateButton = screen.getByTestId('generate-button')
+        fireEvent.click(generateButton)
+
+        expect(generateButton).toHaveAttribute('aria-disabled', 'true')
+        expect(generateButton).toHaveAttribute('aria-busy', 'true')
+        expect(generateButton).not.toBeDisabled()
+
+        await waitFor(() => {
+          expect(screen.getByTestId('loaded-label')).toHaveTextContent('Regenerate caption')
+        })
+      })
+    })
+
+    it('handles errors when generate API call fails', async () => {
+      server.use(
+        http.post('**/generate/table_caption', () => {
+          return new HttpResponse(null, {status: 500})
+        }),
       )
 
-      expect(screen.queryByText('Generate Alt Text')).not.toBeInTheDocument()
+      render(<TextInputForm {...propsWithGenerateOption} />)
+
+      const generateButton = screen.getByTestId('generate-button')
+      fireEvent.click(generateButton)
+
+      expect(screen.getByTestId('loading-label')).toHaveTextContent('Generating caption...')
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(
+            'There was an error generating table caption. Please try again, or enter it manually.',
+          ),
+        ).toBeInTheDocument()
+      })
+
+      expect(defaultProps.onChangeValue).not.toHaveBeenCalled()
+    })
+
+    it('renders a screen reader announcement in the DOM after AI generation', async () => {
+      server.use(
+        http.post('**/generate/table_caption', () => {
+          return HttpResponse.json({value: 'Mushroom Harvesting Log'})
+        }),
+      )
+
+      render(<TextInputForm {...propsWithGenerateOption} />)
+
+      fireEvent.click(screen.getByTestId('generate-button'))
+
+      await waitFor(() => {
+        expect(screen.getByText('Caption generated: Mushroom Harvesting Log')).toBeInTheDocument()
+      })
+    })
+
+    it('does not render a screen reader announcement before generation', () => {
+      render(<TextInputForm {...propsWithGenerateOption} />)
+
+      expect(screen.queryByText(/Caption generated:/)).not.toBeInTheDocument()
+    })
+
+    it('renders data-pendo="AiTableCaptionButtonPushed" on the generate button', () => {
+      render(<TextInputForm {...propsWithGenerateOption} />)
+      expect(screen.getByTestId('generate-button')).toHaveAttribute(
+        'data-pendo',
+        'AiTableCaptionButtonPushed',
+      )
+    })
+
+    describe('AI generation feature flag', () => {
+      it('shows generate button when feature flag is enabled', () => {
+        ;(useAccessibilityScansStore as unknown as any).mockImplementation((selector: any) => {
+          const state = {isAiTableCaptionGenerationEnabled: true, selectedScan: null}
+          return selector(state)
+        })
+
+        render(<TextInputForm {...propsWithGenerateOption} />)
+
+        expect(screen.getByTestId('generate-button')).toBeInTheDocument()
+      })
+
+      it('hides generate button when feature flag is disabled', () => {
+        ;(useAccessibilityScansStore as unknown as any).mockImplementation((selector: any) => {
+          const state = {isAiTableCaptionGenerationEnabled: false, selectedScan: null}
+          return selector(state)
+        })
+
+        render(<TextInputForm {...propsWithGenerateOption} />)
+
+        expect(screen.queryByTestId('generate-button')).not.toBeInTheDocument()
+      })
+    })
+  })
+
+  describe('Error display', () => {
+    it('does not show errors when error prop is not provided', () => {
+      render(<TextInputForm {...defaultProps} />)
+
+      expect(screen.queryByText('Caption cannot be empty.')).not.toBeInTheDocument()
+    })
+
+    it('shows error message when error prop is provided', () => {
+      const propsWithError = {
+        ...defaultProps,
+        error: 'Caption cannot be empty.',
+      }
+      render(<TextInputForm {...propsWithError} />)
+
+      expect(screen.getByText('Caption cannot be empty.')).toBeInTheDocument()
+    })
+
+    it('does not show validation errors on initial mount with empty input', () => {
+      render(<TextInputForm {...defaultProps} />)
+
+      expect(screen.queryByText('Caption cannot be empty.')).not.toBeInTheDocument()
+    })
+
+    it('does not show error when user enters non-empty text', async () => {
+      render(<TextInputForm {...defaultProps} />)
+
+      const input = screen.getByTestId('text-input-form')
+      await userEvent.type(input, 'Valid caption')
+
+      expect(screen.queryByText('Caption cannot be empty.')).not.toBeInTheDocument()
+    })
+
+    it('shows error when user clears the input', async () => {
+      const propsWithValue = {
+        ...defaultProps,
+        value: 'Some text',
+      }
+
+      render(<TextInputForm {...propsWithValue} />)
+
+      const input = screen.getByTestId('text-input-form')
+      await userEvent.clear(input)
+
+      expect(defaultProps.onValidationChange).toHaveBeenCalledWith(
+        false,
+        'Caption cannot be empty.',
+      )
+    })
+
+    it('shows error when user enters only whitespace', async () => {
+      render(<TextInputForm {...defaultProps} />)
+
+      const input = screen.getByTestId('text-input-form')
+      await userEvent.type(input, '   ')
+
+      expect(defaultProps.onValidationChange).toHaveBeenCalledWith(
+        false,
+        'Caption cannot be empty.',
+      )
+    })
+
+    it('clears error when user enters valid text after error', async () => {
+      render(<TextInputForm {...defaultProps} />)
+
+      const input = screen.getByTestId('text-input-form')
+
+      await userEvent.type(input, '   ')
+      expect(defaultProps.onValidationChange).toHaveBeenCalledWith(
+        false,
+        'Caption cannot be empty.',
+      )
+
+      await userEvent.clear(input)
+      await userEvent.type(input, 'Valid caption')
+
+      expect(defaultProps.onValidationChange).toHaveBeenLastCalledWith(true)
     })
   })
 })

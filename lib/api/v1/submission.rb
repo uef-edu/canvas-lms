@@ -37,7 +37,7 @@ module Api::V1::Submission
     context = nil,
     includes = [],
     params = {},
-    avatars = false,
+    avatars: false,
     preloaded_enrollments_by_user_id: nil
   )
     context ||= assignment.context
@@ -53,7 +53,7 @@ module Api::V1::Submission
         result = Checkpoints::SubAssignmentSubmissionSerializer.serialize(assignment:, user_id: submission.user_id)
 
         sub_assignment_submissions = result[:submissions]&.filter_map do |sub_assignment_submission|
-          sub_assignment_submission_json(sub_assignment_submission, sub_assignment_submission.assignment, current_user, session, context, includes, params, avatars)
+          sub_assignment_submission_json(sub_assignment_submission, sub_assignment_submission.assignment, current_user, session, context, includes, params, avatars:)
         end
 
         hash["has_sub_assignment_submissions"] = result[:has_active_submissions]
@@ -61,6 +61,22 @@ module Api::V1::Submission
       else
         hash["has_sub_assignment_submissions"] = false
         hash["sub_assignment_submissions"] = []
+      end
+    end
+
+    if includes.include?("peer_review_submissions") && context.feature_enabled?(:peer_review_allocation_and_grading)
+      if assignment.peer_reviews? && assignment.peer_review_sub_assignment.present? && !assignment.is_a?(PeerReviewSubAssignment)
+        result = PeerReview::PeerReviewSubmissionSerializer.serialize(assignment:, user_id: submission.user_id)
+
+        peer_review_submission_data = if result[:submission]
+                                        peer_review_submission_json(result[:submission], result[:submission].assignment, current_user, session, context, includes, params, avatars:)
+                                      end
+
+        hash["has_peer_review_submission"] = result[:has_peer_review_submission]
+        hash["peer_review_submission"] = peer_review_submission_data
+      else
+        hash["has_peer_review_submission"] = false
+        hash["peer_review_submission"] = nil
       end
     end
 
@@ -300,10 +316,10 @@ module Api::V1::Submission
                                                                                       .include?("webhook_info")
     end
 
-    if attempt.vericite_data(false).present? &&
+    if attempt.vericite_data(lookup_data: false).present? &&
        attempt.can_view_plagiarism_report("vericite", @current_user, session) &&
        attempt.assignment.vericite_enabled?
-      vericite_hash = attempt.vericite_data(false).dup
+      vericite_hash = attempt.vericite_data(lookup_data: false).dup
       hash["vericite_data"] = vericite_hash.except(:last_processed_attempt, :webhook_info)
     end
 
@@ -327,7 +343,6 @@ module Api::V1::Submission
               enable_annotations: true,
               enrollment_type: user_type(context, user, preloaded_enrollments_by_user_id),
               include: includes,
-              moderated_grading_allow_list: attempt.moderated_grading_allow_list(user),
               skip_permission_checks: true,
               submission_id: attempt.id
             }
@@ -435,9 +450,9 @@ module Api::V1::Submission
     context = nil,
     includes = [],
     params = {},
-    avatars = false
+    avatars: false
   )
-    json = submission_json(submission, assignment, current_user, session, context, includes, params, avatars)
+    json = submission_json(submission, assignment, current_user, session, context, includes, params, avatars:)
 
     # we want to make a clear distinction between a submission and a sub assignment submission, we will do this by
     # keeping the sub assignment submission json as minimal as possible, only keeping exactly what clients need
@@ -461,6 +476,21 @@ module Api::V1::Submission
     sub_assignment_json["published_grade"] = submission.published_grade
     sub_assignment_json["published_score"] = submission.published_score
     sub_assignment_json
+  end
+
+  def peer_review_submission_json(
+    submission,
+    assignment,
+    current_user,
+    session,
+    context = nil,
+    includes = [],
+    params = {},
+    avatars: false
+  )
+    # Remove peer_review_submissions from includes to prevent infinite recursion
+    filtered_includes = includes.reject { |inc| inc == "peer_review_submissions" }
+    submission_json(submission, assignment, current_user, session, context, filtered_includes, params, avatars:)
   end
 
   # Create an attachment with a ZIP archive of an assignment's submissions.

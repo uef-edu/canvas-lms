@@ -608,10 +608,17 @@ class ExternalToolsController < ApplicationController
   class InvalidSettingsError < StandardError; end
 
   before_action :require_context, except: [:all_visible_nav_tools]
-  before_action :require_tool_create_rights, only: [:create, :create_tool_from_tool_config]
-  before_action :require_tool_configuration, only: [:create_tool_from_tool_config]
+  before_action :require_tool_create_rights, only: :create
   before_action :require_access_to_context, except: %i[index sessionless_launch all_visible_nav_tools]
-  before_action :require_user, only: [:generate_sessionless_launch]
+  skip_before_action :require_user, only: %i[all_visible_nav_tools
+                                             finished
+                                             index
+                                             jwt_token
+                                             resource_selection
+                                             retrieve
+                                             sessionless_launch
+                                             show
+                                             visible_course_nav_tools]
   before_action :get_context, only: %i[retrieve show resource_selection]
   before_action :parse_context_codes, only: [:all_visible_nav_tools]
   before_action :set_extra_csp_frame_ancestor!, only: %i[retrieve resource_selection]
@@ -697,6 +704,25 @@ class ExternalToolsController < ApplicationController
         prefer_1_1: !!params[:prefer_1_1]
       )
       @tool = tool
+      native_nq_redirect = @tool.quiz_lti? &&
+                           params[:assignment_id] &&
+                           new_quizzes_native_experience_enabled? &&
+                           new_quizzes_native_experience_sessionless_enabled?
+      if native_nq_redirect
+        @assignment = @context.assignments.find(params[:assignment_id])
+        redirect_params = { context: @context, assignment: @assignment, sessionless_launch: true, **request.query_parameters }
+        redirect_params[:content_only] = true if params[:borderless] || params[:display] == "borderless"
+
+        # Forward participant_session_id and quiz_session_id from the submission URL
+        # so quiz_lti can detect result/grading launches
+        if params[:url].present?
+          tool_url_params = Rack::Utils.parse_query(URI.parse(params[:url]).query)
+          redirect_params[:participant_session_id] = tool_url_params["participant_session_id"] if tool_url_params["participant_session_id"]
+          redirect_params[:quiz_session_id] = tool_url_params["quiz_session_id"] if tool_url_params["quiz_session_id"]
+        end
+
+        return redirect_to Services::NewQuizzes::Routes::Redirects.assignment_launch(**redirect_params)
+      end
       placement = placement_from_params
       add_crumb(@tool.name)
       @lti_launch = lti_launch(
@@ -874,12 +900,22 @@ class ExternalToolsController < ApplicationController
       @lti_launch.params = launch_settings["tool_settings"]
       @lti_launch.link_text =  launch_settings["tool_name"]
       @lti_launch.analytics_id = launch_settings["analytics_id"]
+      assignment_id = launch_settings.dig("tool_settings", "custom_canvas_assignment_id")
 
       tool = Lti::ToolFinder.find_by(id: launch_settings.dig("metadata", "tool_id")) ||
              Lti::ToolFinder.from_url(launch_settings["launch_url"], @context)
       if tool
+        if tool.quiz_lti? && assignment_id && new_quizzes_native_experience_enabled? && new_quizzes_native_experience_sessionless_enabled?
+          @assignment = @context.assignments.find(assignment_id)
+          return redirect_to Services::NewQuizzes::Routes::Redirects.assignment_launch(
+            context: @context,
+            assignment: @assignment,
+            content_only: true,
+            sessionless_launch: true
+          )
+        end
         # Use domain-specific URL for environment overrides
-        launch_url_with_overrides = tool.url_with_environment_overrides(launch_settings["launch_url"])
+        launch_url_with_overrides = tool.url_with_environment_overrides(launch_settings["launch_url"], include_launch_url: true)
         @lti_launch.resource_url = launch_url_with_overrides
 
         placement = launch_settings.dig("metadata", "placement")
@@ -914,14 +950,24 @@ class ExternalToolsController < ApplicationController
 
         add_crumb(@tool.label_for(placement, I18n.locale))
 
+        # Redirect to dedicated New Quizzes controller for native item banks experience
+        if item_banks_launch?(@tool, placement) && new_quizzes_native_experience_enabled?
+          return redirect_to Services::NewQuizzes::Routes::Redirects.item_bank_launch(
+            context: @context,
+            tool: @tool
+          )
+        end
+
         @return_url = named_context_url(@context, :context_external_content_success_url, "external_tool_redirect", { include_host: true })
         @redirect_return = true
 
         success_url = tool_return_success_url(placement)
         cancel_url = tool_return_cancel_url(placement) || success_url
-        js_env(redirect_return_success_url: success_url,
-               redirect_return_cancel_url: cancel_url)
-        js_env(course_id: @context.id) if @context.is_a?(Course)
+        js_env({
+                 redirect_return_success_url: success_url,
+                 redirect_return_cancel_url: cancel_url
+               })
+        js_env({ course_id: @context.id }) if @context.is_a?(Course)
 
         set_active_tab @tool.asset_string
         @show_embedded_chat = false if @tool.tool_id == "chat"
@@ -934,7 +980,7 @@ class ExternalToolsController < ApplicationController
         end
 
         # Some LTI apps have tutorial trays. Provide some details to the client to know what tray, if any, to show
-        js_env(LTI_LAUNCH_RESOURCE_URL: @lti_launch.resource_url)
+        js_env({ LTI_LAUNCH_RESOURCE_URL: @lti_launch.resource_url })
         set_tutorial_js_env
 
         Lti::LogService.new(tool: @tool, context: @context, user: @current_user, session_id: session[:session_id], placement:, launch_type: :direct_link, launch_url: @tool.url_with_environment_overrides(launch_url || @tool.url)).call
@@ -946,6 +992,8 @@ class ExternalToolsController < ApplicationController
   end
 
   def migration_info
+    return unless authorized_action(@context, @current_user, :read_as_admin)
+
     # Define tool to be the external tool associated with the external tool id from the route
     tool = ContextExternalTool.find(params[:external_tool_id])
 
@@ -1060,7 +1108,7 @@ class ExternalToolsController < ApplicationController
     log_asset_access(@tool, "external_tools", "external_tools") if post_live_event
 
     @tool_form_id = random_lti_tool_form_id
-    js_env(LTI_TOOL_FORM_ID: @tool_form_id)
+    js_env({ LTI_TOOL_FORM_ID: @tool_form_id })
 
     case message_type
     when "ContentItemSelectionResponse", "ContentItemSelection"
@@ -1317,7 +1365,7 @@ class ExternalToolsController < ApplicationController
       lti_launch.resource_url,
       tool.consumer_key,
       tool.shared_secret,
-      @context.root_account.feature_enabled?(:disable_lti_post_only) || tool.extension_setting(:oauth_compliant)
+      disable_lti_post_only: @context.root_account.feature_enabled?(:disable_lti_post_only) || tool.extension_setting(:oauth_compliant)
     )
     lti_launch.link_text = tool.label_for(placement.to_sym)
     lti_launch.analytics_id = tool.tool_id
@@ -1491,6 +1539,12 @@ class ExternalToolsController < ApplicationController
     verify_uniqueness = params.dig(:external_tool, :verify_uniqueness).present?
     if params.key?(:client_id)
       raise ActiveRecord::RecordInvalid unless developer_key.usable_in_context?(@context)
+
+      if @context.root_account.feature_enabled?(:lock_lti_registrations) &&
+         developer_key.lti_registration&.lock_deploying?
+        return render json: { errors: [{ message: "This app has been locked by an administrator and cannot be installed via client ID." }] },
+                      status: :forbidden
+      end
 
       @tool = developer_key.lti_registration.new_external_tool(@context, verify_uniqueness:, current_user: @current_user)
     else
@@ -1811,10 +1865,7 @@ class ExternalToolsController < ApplicationController
   def external_tools_json_for_courses(courses)
     courses.reduce([]) do |all_results, course|
       tabs = course.tabs_available(@current_user, course_subject_tabs: true)
-      tool_ids = []
-      tabs.select { |t| t[:external] }.each do |t|
-        tool_ids << t[:args][1] if t[:args] && t[:args][1]
-      end
+      tool_ids = tabs.filter_map { |t| Lti::ExternalToolTab.tool_id_for_tab(t) }
       @tools = ContextExternalTool.where(id: tool_ids)
       @tools = tool_ids.filter_map { |id| @tools.find { |t| t[:id] == id } }
       results = external_tools_json(@tools, course, @current_user, session).map do |result|
@@ -2085,12 +2136,6 @@ class ExternalToolsController < ApplicationController
     authorized_action(@context, @current_user, :manage_lti_add)
   end
 
-  def require_tool_configuration
-    return if developer_key.tool_configuration.present?
-
-    head :not_found
-  end
-
   def developer_key
     @_developer_key = DeveloperKey.nondeleted.find(params[:client_id])
   end
@@ -2120,5 +2165,27 @@ class ExternalToolsController < ApplicationController
     @_whitelisted_query_params ||= WHITELISTED_QUERY_PARAMS.each_with_object({}) do |query_param, h|
       h[query_param] = params[query_param] if params.key?(query_param)
     end
+  end
+
+  def item_banks_launch?(tool, placement)
+    return false unless tool.quiz_lti?
+    return false unless %w[course_navigation account_navigation].include?(placement)
+
+    nav_settings = tool.extension_setting(placement.to_sym)
+    return false unless nav_settings
+
+    custom_fields = nav_settings[:custom_fields] || {}
+    custom_fields[:item_banks].present?
+  end
+
+  def new_quizzes_native_experience_sessionless_enabled?
+    param = params[:new_quizzes_native_experience_sessionless]
+    if param.present? && %w[true false].include?(param)
+      return param == "true"
+    end
+
+    return false unless @context.respond_to?(:feature_enabled?)
+
+    @context.feature_enabled?(:new_quizzes_native_experience_sessionless)
   end
 end

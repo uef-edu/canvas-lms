@@ -17,160 +17,115 @@
  */
 
 import {useEffect, useRef} from 'react'
-
-type AdaEmbed = {
-  start: (config: any) => Promise<void>
-  getInfo: () => Promise<{isChatOpen: boolean; hasActiveChatter: boolean}>
-  toggle: () => void
-  subscribeEvent: (eventKey: string, callback: (data: any) => void) => Promise<number>
-}
+import {openWindow} from '@canvas/util/globalUtils'
 
 type AdaChatbotProps = {
   onDialogClose: () => void
 }
 
-const CHAT_CLOSED_KEY = 'persistedAdaClosed' // User explicitly ended conversation
-const DRAWER_OPEN_KEY = 'persistedAdaDrawerOpen' // Drawer was open (vs minimized)
+// Canvas-hosted popup page — Ada SDK loads here and receives metadata via
+// postMessage. PII never appears in a URL.
+const ADA_POPUP_PATH = '/ada_chat_popup'
 
-let initializationPromise: Promise<void> | null = null
-let initializedAdaEmbed: AdaEmbed | null = null
-
-function getAdaEmbed(): AdaEmbed | null {
-  return (window as any).adaEmbed ?? null
-}
-
-function wasClosedByUser(): boolean {
-  return localStorage.getItem(CHAT_CLOSED_KEY) === 'true'
-}
-
-function markChatClosed(): void {
-  localStorage.setItem(CHAT_CLOSED_KEY, 'true')
-}
-
-function markChatActive(): void {
-  localStorage.setItem(CHAT_CLOSED_KEY, 'false')
-}
-
-function wasDrawerOpen(): boolean {
-  return localStorage.getItem(DRAWER_OPEN_KEY) === 'true'
-}
-
-function markDrawerOpen(): void {
-  localStorage.setItem(DRAWER_OPEN_KEY, 'true')
-}
-
-function markDrawerClosed(): void {
-  localStorage.setItem(DRAWER_OPEN_KEY, 'false')
-}
-
-async function initializeAda(): Promise<void> {
-  const adaEmbed = getAdaEmbed()
-
-  // Return cached promise if we're already initializing the same instance
-  if (initializationPromise && initializedAdaEmbed === adaEmbed) {
-    return initializationPromise
-  }
-
-  if (!adaEmbed) return
-
-  initializedAdaEmbed = adaEmbed
-
-  initializationPromise = adaEmbed.start({
-    ...((window as any).adaSettings || {}),
-    handle: 'instructure-gen',
-    onAdaEmbedLoaded: () => {
-      adaEmbed.subscribeEvent('ada:end_conversation', () => {
-        markChatClosed()
-        markDrawerClosed()
-      })
-    },
-    adaReadyCallback: async () => {
-      try {
-        const info = await adaEmbed.getInfo()
-        const shouldRestoreDrawer = !wasClosedByUser() && wasDrawerOpen()
-
-        if (info.hasActiveChatter) {
-          ;(window as any).adaSettings = {
-            ...(window as any).adaSettings,
-            hideMask: true,
-          }
-        }
-
-        if (shouldRestoreDrawer && !info.isChatOpen) {
-          adaEmbed.toggle()
-        }
-
-        if (info.isChatOpen || shouldRestoreDrawer) {
-          markChatActive()
-          markDrawerOpen()
-        } else {
-          markDrawerClosed()
-        }
-      } catch (error) {
-        console.warn('Ada ready callback failed:', error)
-      }
-    },
-    toggleCallback: (isOpen: boolean) => {
-      if (isOpen) {
-        markChatActive()
-        markDrawerOpen()
-      } else {
-        markDrawerClosed()
-      }
-    },
-  })
-
-  return initializationPromise
-}
-
-async function openAda(onDialogClose?: () => void): Promise<void> {
-  try {
-    const adaEmbed = getAdaEmbed()
-    if (!adaEmbed) throw new Error('Ada embed script not available')
-
-    await initializeAda()
-
-    const info = await adaEmbed.getInfo()
-    if (!info.isChatOpen) {
-      adaEmbed.toggle()
-    }
-    markChatActive()
-    markDrawerOpen()
-  } catch (error) {
-    console.error('Failed to open Ada chatbot:', error)
-  } finally {
-    onDialogClose?.()
-  }
-}
+// Keep in sync with the string literals in app/views/ada_chat_popup/show.html.erb
+export const ADA_MSG_POPUP_READY = 'ADA_POPUP_READY' as const
+export const ADA_MSG_META_FIELDS = 'ADA_META_FIELDS' as const
 
 /**
- * Auto-restore Ada if it was open in a previous session.
- * This should be called after the main app initialization.
+ * Checks if Ada chatbot is enabled via feature flag.
  */
-
-let hasAutoRestored = false
-export function autoRestoreAda(): void {
-  if (!hasAutoRestored && !wasClosedByUser()) {
-    hasAutoRestored = true
-    initializeAda().catch(error => console.error('Failed to auto-restore Ada:', error))
+function isAdaEnabled(): boolean {
+  if (typeof window === 'undefined' || !window.ENV) {
+    return false
   }
+  return window.ENV.ADA_CHATBOT_ENABLED === true
 }
 
 /**
- * AdaChatbot opens the Ada chatbot when the user selects it from the help menu.
- * Ada will persist across navigation once started, until the user manually closes it.
+ * Metadata split into plain (metaFields) and encrypted (sensitiveMetaFields) buckets.
+ * Ada encrypts sensitiveMetaFields immediately on receipt and does not persist them.
+ */
+export type AdaMetaFieldsResult = {
+  metaFields: Record<string, string>
+  sensitiveMetaFields: Record<string, string>
+}
+
+/**
+ * Builds Ada metadata split into plain and sensitive buckets.
+ */
+export function getAdaMetaFields(): AdaMetaFieldsResult {
+  const user = window.ENV?.current_user || {}
+  const roles: string[] = window.ENV?.current_user_roles || []
+  const roleSet = new Set(roles)
+  const domainRootAccountUuid = window.ENV?.DOMAIN_ROOT_ACCOUNT_UUID || ''
+
+  return {
+    sensitiveMetaFields: {
+      email: user.email || '',
+      name: user.display_name || '',
+    },
+    metaFields: {
+      launchedUrl: window.location.href,
+      institutionUrl: window.location.origin,
+      canvasRoles: roles.join(','),
+      canvasUUID: domainRootAccountUuid,
+      isRootAdmin: String(roleSet.has('root_admin')),
+      isAdmin: String(roleSet.has('admin')),
+      isTeacher: String(roleSet.has('teacher')),
+      isStudent: String(roleSet.has('student')),
+      isObserver: String(roleSet.has('observer')),
+    },
+  }
+}
+
+// Tracks the pending ready listener so it can be replaced if the popup is
+// already open and won't re-send ADA_POPUP_READY.
+let pendingReadyListener: ((event: MessageEvent) => void) | null = null
+
+/**
+ * Opens the Ada chatbot popup. The popup page is Canvas-hosted; once it
+ * signals ready, metadata is forwarded via same-origin postMessage so PII
+ * is never exposed in a URL.
+ */
+export function launchAdaPopup(): void {
+  if (pendingReadyListener) {
+    window.removeEventListener('message', pendingReadyListener)
+  }
+
+  const {metaFields, sensitiveMetaFields} = getAdaMetaFields()
+  openWindow(ADA_POPUP_PATH, 'AdaChatPopup', 'width=500,height=700,resizable=yes,scrollbars=yes')
+
+  const listener = (event: MessageEvent) => {
+    if (event.origin !== window.location.origin) return
+    if (event.data?.type !== ADA_MSG_POPUP_READY) return
+    window.removeEventListener('message', listener)
+    pendingReadyListener = null
+    const source = event.source as Window | null
+    source?.postMessage(
+      {type: ADA_MSG_META_FIELDS, metaFields, sensitiveMetaFields},
+      window.location.origin,
+    )
+  }
+
+  pendingReadyListener = listener
+  window.addEventListener('message', listener)
+}
+
+/**
+ * AdaChatbot opens the Ada chatbot in a popup window when the user selects it
+ * from the help menu, then closes the help dialog.
  */
 function AdaChatbot({onDialogClose}: AdaChatbotProps) {
-  const onDialogCloseRef = useRef(onDialogClose)
-  useEffect(() => {
-    onDialogCloseRef.current = onDialogClose
-  }, [onDialogClose])
+  const launched = useRef(false)
 
   useEffect(() => {
-    openAda(onDialogCloseRef.current)
-    // Intentionally empty deps so we only open once on mount,
-    // and rely on the ref to always have the latest onDialogClose
-  }, [])
+    if (launched.current) return
+    launched.current = true
+    if (isAdaEnabled()) {
+      launchAdaPopup()
+    }
+    onDialogClose()
+  }, [onDialogClose])
 
   return null
 }

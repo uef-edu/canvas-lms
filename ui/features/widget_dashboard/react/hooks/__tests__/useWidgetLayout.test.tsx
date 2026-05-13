@@ -19,14 +19,46 @@
 import {act} from '@testing-library/react'
 import {renderHook} from '@testing-library/react-hooks'
 import React from 'react'
+import {QueryClient, QueryClientProvider} from '@tanstack/react-query'
+import {setupServer} from 'msw/node'
+import {graphql, HttpResponse} from 'msw'
 import {WidgetLayoutProvider, useWidgetLayout} from '../useWidgetLayout'
 import {WidgetDashboardEditProvider} from '../useWidgetDashboardEdit'
+import {WidgetDashboardProvider} from '../useWidgetDashboardContext'
+import {PlatformTestWrapper} from '../../__tests__/testHelpers'
+
+const server = setupServer()
+
+beforeAll(() => {
+  server.listen({onUnhandledRequest: 'warn'})
+})
+
+afterAll(() => {
+  server.close()
+})
+
+afterEach(() => {
+  server.resetHandlers()
+})
 
 const createWrapper = ({children}: {children: React.ReactNode}) => {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {retry: false},
+      mutations: {retry: false},
+    },
+  })
+
   return (
-    <WidgetDashboardEditProvider>
-      <WidgetLayoutProvider>{children}</WidgetLayoutProvider>
-    </WidgetDashboardEditProvider>
+    <PlatformTestWrapper>
+      <QueryClientProvider client={queryClient}>
+        <WidgetDashboardProvider>
+          <WidgetDashboardEditProvider>
+            <WidgetLayoutProvider>{children}</WidgetLayoutProvider>
+          </WidgetDashboardEditProvider>
+        </WidgetDashboardProvider>
+      </QueryClientProvider>
+    </PlatformTestWrapper>
   )
 }
 
@@ -233,6 +265,266 @@ describe('useWidgetLayout', () => {
       })
 
       expect(JSON.stringify(result.current.config)).toBe(initialConfig)
+    })
+  })
+
+  describe('addWidget', () => {
+    it('adds widget to config with correct properties', () => {
+      const {result} = renderHook(() => useWidgetLayout(), {wrapper: createWrapper})
+
+      const initialWidgetCount = result.current.config.widgets.length
+
+      act(() => {
+        result.current.addWidget('course_work_summary', "Today's course work", 1, 2)
+      })
+
+      expect(result.current.config.widgets).toHaveLength(initialWidgetCount + 1)
+
+      const addedWidget = result.current.config.widgets.find(w =>
+        w.id.startsWith('course_work_summary-widget-'),
+      )
+
+      expect(addedWidget).toBeDefined()
+      expect(addedWidget?.type).toBe('course_work_summary')
+      expect(addedWidget?.position.col).toBe(1)
+      expect(addedWidget?.title).toBe("Today's course work")
+    })
+
+    it('generates unique IDs for widgets', () => {
+      const {result} = renderHook(() => useWidgetLayout(), {wrapper: createWrapper})
+
+      const initialCount = result.current.config.widgets.length
+
+      act(() => {
+        result.current.addWidget('course_work_summary', 'Course Work Summary', 1, 1)
+        result.current.addWidget('announcements', 'Announcements', 1, 2)
+      })
+
+      expect(result.current.config.widgets).toHaveLength(initialCount + 2)
+
+      const addedWidgets = result.current.config.widgets.slice(initialCount)
+      const firstId = addedWidgets[0]?.id
+      const secondId = addedWidgets[1]?.id
+
+      expect(firstId).toBeDefined()
+      expect(secondId).toBeDefined()
+      expect(firstId).not.toBe(secondId)
+    })
+
+    it('normalizes row numbers after adding widget', () => {
+      const {result} = renderHook(() => useWidgetLayout(), {wrapper: createWrapper})
+
+      act(() => {
+        result.current.addWidget('course_work_summary', 'Course Work Summary', 1, 1)
+      })
+
+      const widgetsInColumn1 = result.current.config.widgets.filter(w => w.position.col === 1)
+
+      widgetsInColumn1.forEach((widget, index) => {
+        expect(widget.position.row).toBe(index + 1)
+      })
+    })
+
+    it('recalculates relative positions after adding widget', () => {
+      const {result} = renderHook(() => useWidgetLayout(), {wrapper: createWrapper})
+
+      act(() => {
+        result.current.addWidget('course_work_summary', 'Course Work Summary', 1, 1)
+      })
+
+      result.current.config.widgets.forEach((widget, index) => {
+        expect(widget.position.relative).toBe(index + 1)
+      })
+    })
+
+    it('can add widgets to different columns', () => {
+      const {result} = renderHook(() => useWidgetLayout(), {wrapper: createWrapper})
+
+      act(() => {
+        result.current.addWidget('course_work_summary', 'Course Work Summary', 1, 1)
+        result.current.addWidget('announcements', 'Announcements', 2, 1)
+      })
+
+      const col1Widgets = result.current.config.widgets.filter(w => w.position.col === 1)
+      const col2Widgets = result.current.config.widgets.filter(w => w.position.col === 2)
+
+      const addedToCol1 = col1Widgets.find(w => w.id.startsWith('course_work_summary-widget-'))
+      const addedToCol2 = col2Widgets.find(w => w.id.startsWith('announcements-widget-'))
+
+      expect(addedToCol1).toBeDefined()
+      expect(addedToCol2).toBeDefined()
+    })
+  })
+
+  describe('resetConfig', () => {
+    it('resets config to default when no saved config exists', () => {
+      const {result} = renderHook(() => useWidgetLayout(), {wrapper: createWrapper})
+
+      const widget = result.current.config.widgets[0]
+      act(() => {
+        result.current.removeWidget(widget.id)
+      })
+
+      const modifiedCount = result.current.config.widgets.length
+
+      act(() => {
+        result.current.resetConfig()
+      })
+
+      expect(result.current.config.widgets).toHaveLength(modifiedCount + 1)
+    })
+
+    it('should revert to saved config instead of default when user has custom layout', () => {
+      const savedConfig = {
+        columns: 2,
+        widgets: [
+          {
+            id: 'custom-saved-widget',
+            type: 'announcements',
+            position: {col: 1, row: 1, relative: 1},
+            title: 'My Saved Widget',
+          },
+        ],
+      }
+
+      const createWrapperWithSavedConfig = ({children}: {children: React.ReactNode}) => {
+        const queryClient = new QueryClient({
+          defaultOptions: {
+            queries: {retry: false},
+            mutations: {retry: false},
+          },
+        })
+
+        return (
+          <PlatformTestWrapper>
+            <QueryClientProvider client={queryClient}>
+              <WidgetDashboardProvider
+                preferences={{
+                  dashboard_view: 'cards',
+                  hide_dashcard_color_overlays: false,
+                  custom_colors: {},
+                  widget_dashboard_config: {
+                    layout: savedConfig,
+                  },
+                }}
+              >
+                <WidgetDashboardEditProvider>
+                  <WidgetLayoutProvider>{children}</WidgetLayoutProvider>
+                </WidgetDashboardEditProvider>
+              </WidgetDashboardProvider>
+            </QueryClientProvider>
+          </PlatformTestWrapper>
+        )
+      }
+
+      const {result} = renderHook(() => useWidgetLayout(), {
+        wrapper: createWrapperWithSavedConfig,
+      })
+
+      expect(result.current.config.widgets).toHaveLength(1)
+      expect(result.current.config.widgets[0].id).toBe('custom-saved-widget')
+
+      act(() => {
+        result.current.addWidget('course_grades', 'Grades', 1, 2)
+      })
+
+      expect(result.current.config.widgets).toHaveLength(2)
+
+      act(() => {
+        result.current.resetConfig()
+      })
+
+      expect(result.current.config.widgets).toHaveLength(1)
+      expect(result.current.config.widgets[0].id).toBe('custom-saved-widget')
+    })
+
+    it('should revert to most recently saved config after multiple save/cancel cycles', async () => {
+      server.use(
+        graphql.mutation('UpdateWidgetDashboardLayout', () => {
+          return HttpResponse.json({
+            data: {
+              updateWidgetDashboardLayout: {
+                layout: null,
+                errors: null,
+              },
+            },
+          })
+        }),
+      )
+
+      const initialConfig = {
+        columns: 2,
+        widgets: [
+          {
+            id: 'initial-widget',
+            type: 'announcements',
+            position: {col: 1, row: 1, relative: 1},
+            title: 'Initial Widget',
+          },
+        ],
+      }
+
+      const createWrapperWithInitialConfig = ({children}: {children: React.ReactNode}) => {
+        const queryClient = new QueryClient({
+          defaultOptions: {
+            queries: {retry: false},
+            mutations: {retry: false},
+          },
+        })
+
+        return (
+          <PlatformTestWrapper>
+            <QueryClientProvider client={queryClient}>
+              <WidgetDashboardProvider
+                preferences={{
+                  dashboard_view: 'cards',
+                  hide_dashcard_color_overlays: false,
+                  custom_colors: {},
+                  widget_dashboard_config: {
+                    layout: initialConfig,
+                  },
+                }}
+              >
+                <WidgetDashboardEditProvider>
+                  <WidgetLayoutProvider>{children}</WidgetLayoutProvider>
+                </WidgetDashboardEditProvider>
+              </WidgetDashboardProvider>
+            </QueryClientProvider>
+          </PlatformTestWrapper>
+        )
+      }
+
+      const {result} = renderHook(() => useWidgetLayout(), {
+        wrapper: createWrapperWithInitialConfig,
+      })
+
+      expect(result.current.config.widgets).toHaveLength(1)
+      expect(result.current.config.widgets[0].id).toBe('initial-widget')
+
+      act(() => {
+        result.current.addWidget('course_grades', 'Grades', 1, 2)
+      })
+
+      expect(result.current.config.widgets).toHaveLength(2)
+
+      await act(async () => {
+        await result.current.saveLayout()
+      })
+
+      act(() => {
+        result.current.addWidget('people', 'People', 2, 1)
+      })
+
+      expect(result.current.config.widgets).toHaveLength(3)
+
+      act(() => {
+        result.current.resetConfig()
+      })
+
+      expect(result.current.config.widgets).toHaveLength(2)
+      expect(result.current.config.widgets.some(w => w.id === 'initial-widget')).toBe(true)
+      expect(result.current.config.widgets.some(w => w.type === 'course_grades')).toBe(true)
+      expect(result.current.config.widgets.some(w => w.type === 'people')).toBe(false)
     })
   })
 })

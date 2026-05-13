@@ -19,6 +19,10 @@
 #
 
 module Types
+  # This type represents both Assignment and PeerReviewSubAssignment models
+  # (STI subclasses of AbstractAssignment). Use the `assignment_type` field
+  # to discriminate between them. By default you will only get Assignment
+  # objects unless you specifically query for PeerReviewSubAssignment objects.
   class AssignmentType < ApplicationObjectType
     graphql_name "Assignment"
 
@@ -109,6 +113,18 @@ module Types
         return nil unless object.context.feature_enabled?(:peer_review_allocation_and_grading)
 
         object.peer_review_across_sections
+      end
+      field :points_possible,
+            Float,
+            "Points possible for the peer review sub-assignment",
+            null: true
+      def points_possible
+        return nil unless object.context.feature_enabled?(:peer_review_allocation_and_grading)
+        return nil unless object.peer_reviews
+
+        load_association(:peer_review_sub_assignment).then do |sub_assignment|
+          sub_assignment&.points_possible
+        end
       end
     end
 
@@ -284,6 +300,34 @@ module Types
 
     global_id_field :id
 
+    field :assignment_type,
+          AssignmentTypeEnum,
+          null: false,
+          description: "Discriminator indicating the actual type of this assignment"
+    def assignment_type
+      object.class.name
+    end
+
+    field :parent_assignment,
+          AssignmentType,
+          null: true,
+          description: "The parent assignment (only for PeerReviewSubAssignment)"
+    def parent_assignment
+      return nil unless object.is_a?(PeerReviewSubAssignment)
+
+      load_association(:parent_assignment)
+    end
+
+    field :parent_assignment_id,
+          ID,
+          null: true,
+          description: "The parent assignment ID (only for PeerReviewSubAssignment)"
+    def parent_assignment_id
+      return nil unless object.is_a?(PeerReviewSubAssignment)
+
+      object.parent_assignment_id
+    end
+
     field :name, String, null: true
 
     field :points_possible,
@@ -299,7 +343,7 @@ module Types
       argument :check_extra_permissions, Boolean, "Check extra permissions in RQD method", required: false
     end
     def restrict_quantitative_data(check_extra_permissions: false)
-      assignment.restrict_quantitative_data?(current_user, check_extra_permissions)
+      assignment.restrict_quantitative_data?(current_user, check_extra_permissions:)
     end
 
     field :provisional_grading_locked, Boolean, "Indicates if the user is locked out of provisional grading for this assignment.", null: false
@@ -368,7 +412,36 @@ module Types
 
     field :assessment_requests_for_current_user, [AssessmentRequestType], null: true
     def assessment_requests_for_current_user
-      Loaders::AssessmentRequestLoader.for(current_user:).load(assignment)
+      Loaders::AssessmentRequestLoader.for(current_user:, order_by_id: true).load(assignment)
+    end
+
+    # Use string reference instead of constant to avoid circular dependency
+    # PeerReviewSubAssignmentType inherits from AssignmentType, so referencing
+    # the constant directly would create a loading deadlock
+    field :peer_review_sub_assignment, "Types::PeerReviewSubAssignmentType", null: true
+    def peer_review_sub_assignment
+      return nil unless object.is_a?(Assignment)
+      return nil unless assignment.context.feature_enabled?(:peer_review_allocation_and_grading)
+      return nil unless assignment.peer_reviews
+
+      load_association(:peer_review_sub_assignment)
+    end
+
+    field :assessment_requests_for_user, [AssessmentRequestType], null: true do
+      description "Assessment requests for a specific user where they are the assessor (peer reviewer)"
+      argument :user_id,
+               ID,
+               required: true,
+               prepare: GraphQLHelpers.relay_or_legacy_id_prepare_func("User")
+    end
+    def assessment_requests_for_user(user_id:)
+      return nil unless assignment.grants_right?(current_user, session, :grade)
+
+      Loaders::IDLoader.for(User).load(user_id).then do |assessor|
+        next nil unless assessor
+
+        Loaders::AssessmentRequestLoader.for(current_user: assessor).load(assignment)
+      end
     end
 
     field :moderated_grading, AssignmentModeratedGrading, null: true
@@ -419,12 +492,12 @@ module Types
 
     field :allow_google_docs_submission, Boolean, method: :allow_google_docs_submission?, null: true
     field :anonymize_students, Boolean, method: :anonymize_students?, null: true
-    field :new_quizzes_anonymous_participants, Boolean, method: :new_quizzes_anonymous_participants?, null: true
     field :expects_external_submission, Boolean, method: :expects_external_submission?, null: true
     field :expects_submission, Boolean, method: :expects_submission?, null: true
     field :grades_published_at, String, null: true
     field :important_dates, Boolean, null: true
     field :in_closed_grading_period, Boolean, method: :in_closed_grading_period?, null: true
+    field :new_quizzes_anonymous_participants, Boolean, method: :new_quizzes_anonymous_participants?, null: true
     field :non_digital_submission, Boolean, method: :non_digital_submission?, null: true
     field :submissions_downloads, Int, null: true
     field :time_zone_edited, String, null: true
@@ -439,7 +512,7 @@ module Types
 
     field :has_plagiarism_tool, Boolean, "Indicates if the assignment has LTI 2.0 plagiarism detection tool configured", null: false
     def has_plagiarism_tool
-      assignment.assignment_configuration_tool_lookup_ids.present?
+      assignment.has_non_migrated_tool?
     end
 
     field :muted, Boolean, null: true
@@ -450,7 +523,9 @@ module Types
     def assignment_visibility
       return unless object.course.grants_any_right?(current_user, :read_as_admin, :manage_grades, *RoleOverride::GRANULAR_MANAGE_ASSIGNMENT_PERMISSIONS)
 
-      Loaders::AssignmentVisibilityLoader.load(object.id)
+      Loaders::DatesOverridableLoader.for.load(object).then do |assignment|
+        Loaders::AssignmentVisibilityLoader.load(assignment)
+      end
     end
 
     field :originality_report_visibility, String, null: true
@@ -538,9 +613,14 @@ module Types
 
     field :html_url, UrlType, null: true
     def html_url
+      object_for_url = if object.is_a?(SubAssignment) && object.parent_assignment&.discussion_topic
+                         object.parent_assignment
+                       else
+                         assignment
+                       end
       GraphQLHelpers::UrlHelpers.course_assignment_url(
-        course_id: assignment.context_id,
-        id: assignment.id,
+        course_id: object_for_url.context_id,
+        id: object_for_url.id,
         host: context[:request].host_with_port
       )
     end
@@ -572,15 +652,7 @@ module Types
     def needs_grading_count
       return unless assignment.context.grants_right?(current_user, :manage_grades)
 
-      # NOTE: this query (as it exists right now) is not batch-able.
-      # make this really expensive cost-wise?
-      Assignments::NeedsGradingCountQuery.new(
-        assignment,
-        current_user
-        # TODO: course proxy stuff
-        # (actually for some reason not passing along a course proxy doesn't
-        # seem to matter)
-      ).count
+      Loaders::AssignmentNeedsGradingCountLoader.for(current_user).load(assignment)
     end
 
     field :grading_type, AssignmentGradingType, null: true
@@ -728,6 +800,7 @@ module Types
     end
     def my_sub_assignment_submissions_connection
       return nil if current_user.nil?
+      return nil unless object.is_a?(Assignment)
 
       load_association(:sub_assignment_submissions).then do |submissions|
         submissions.active.where(user_id: current_user)
@@ -751,8 +824,8 @@ module Types
 
       scope = submissions_connection(filter:, order_by:)
       Promise.all([
-                    Loaders::AssociationLoader.for(Assignment, :submissions).load(assignment),
-                    Loaders::AssociationLoader.for(Assignment, :context).load(assignment)
+                    Loaders::AssociationLoader.for(AbstractAssignment, :submissions).load(assignment),
+                    Loaders::AssociationLoader.for(AbstractAssignment, :context).load(assignment)
                   ]).then do
         students = assignment.representatives(user: current_user)
         scope.where(user_id: students)
@@ -791,8 +864,13 @@ module Types
       load_association(:context).then do |course|
         if course.grants_right?(current_user, :read_as_admin)
           object.score_statistic if object.can_view_score_statistics?(current_user)
-        elsif object.can_view_score_statistics?(current_user) && object.submissions.first.eligible_for_showing_score_statistics?
-          object.score_statistic
+        else
+          submission = object.submissions.find_by(user_id: current_user.id)
+          if submission &&
+             object.can_view_score_statistics?(current_user) &&
+             submission.eligible_for_showing_score_statistics?
+            object.score_statistic
+          end
         end
       end
     end
@@ -866,22 +944,30 @@ module Types
       assignment.anonymous_student_identities.values
     end
 
-    field :auto_grade_assignment_issues, Types::EligibilityIssueType, null: true, description: "Issues related to the assignment"
+    field :auto_grade_assignment_issues, Types::EligibilityIssueType, null: true, description: "Issues related to the assignment", deprecation_reason: "Use autoGradeEligibility instead"
     def auto_grade_assignment_issues
       load_association(:context).then do |course|
         next nil unless course.feature_enabled?(:project_lhotse)
 
-        GraphQLHelpers::AutoGradeEligibilityHelper.validate_assignment(assignment:)
+        GraphQLHelpers::AutoGradeEligibilityHelper.validate_assignment(assignment:).first
       end
     end
 
-    field :auto_grade_assignment_errors, [String], null: false, description: "Errors related to the assignment"
+    field :auto_grade_assignment_errors, [String], null: false, description: "Errors related to the assignment", deprecation_reason: "Use autoGradeEligibility instead"
     def auto_grade_assignment_errors
       load_association(:context).then do |course|
         next [] unless course.feature_enabled?(:project_lhotse)
 
-        issues = GraphQLHelpers::AutoGradeEligibilityHelper.validate_assignment(assignment:)
-        issues ? [issues[:message]] : []
+        GraphQLHelpers::AutoGradeEligibilityHelper.validate_assignment(assignment:).pluck(:message)
+      end
+    end
+
+    field :auto_grade_eligibility, Types::AutoGradeEligibilityType, null: true, description: "Eligibility for auto-grading"
+    def auto_grade_eligibility
+      load_association(:context).then do |course|
+        next nil unless course.feature_enabled?(:project_lhotse)
+
+        { issues: GraphQLHelpers::AutoGradeEligibilityHelper.validate_assignment(assignment:) }
       end
     end
 
@@ -951,6 +1037,7 @@ module Types
       description "Allocation rules if peer review is enabled"
     end
     def allocation_rules
+      return nil unless object.is_a?(Assignment)
       return nil unless assignment.grants_right?(current_user, :grade) &&
                         assignment.context.feature_enabled?(:peer_review_allocation_and_grading) &&
                         assignment.peer_reviews

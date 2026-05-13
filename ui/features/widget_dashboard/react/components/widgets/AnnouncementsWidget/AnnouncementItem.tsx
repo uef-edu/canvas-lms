@@ -30,9 +30,9 @@ import {useQueryClient} from '@tanstack/react-query'
 import FriendlyDatetime from '@canvas/datetime/react/components/FriendlyDatetime'
 import type {Announcement} from '../../../types'
 import {useToggleAnnouncementReadState} from '../../../hooks/useToggleAnnouncementReadState'
-import {CourseCode} from '../../shared/CourseCode'
-import {showFlashAlert} from '@canvas/alerts/react/FlashAlert'
+import {showFlashAlert} from '@instructure/platform-alerts'
 import {FilterOption} from './utils'
+import {useWidgetTheme} from '../../../theme/WidgetThemeContext'
 import {ANNOUNCEMENTS_PAGINATED_KEY} from '../../../constants'
 
 const I18n = createI18nScope('widget_dashboard')
@@ -56,9 +56,15 @@ const TruncatedText: React.FC<TruncatedTextProps> = ({children, maxLength = 80})
 interface AnnouncementItemProps {
   announcementItem: Announcement
   filter: FilterOption
+  readOnly?: boolean
 }
 
-const AnnouncementItem: React.FC<AnnouncementItemProps> = ({announcementItem, filter}) => {
+const AnnouncementItem: React.FC<AnnouncementItemProps> = ({
+  announcementItem,
+  filter,
+  readOnly = false,
+}) => {
+  const {isDark} = useWidgetTheme()
   const toggleReadState = useToggleAnnouncementReadState()
   const [announcement, setAnnouncement] = useState(announcementItem)
   const [isLoading, setIsLoading] = useState(false)
@@ -84,12 +90,11 @@ const AnnouncementItem: React.FC<AnnouncementItemProps> = ({announcementItem, fi
           : I18n.t('"%{title}" marked as unread', {title: announcement.title}),
         type: 'success',
       })
-    } catch (error) {
+    } catch {
       showFlashAlert({
         message: I18n.t("An error ocurred while changing the announcement's read state"),
         type: 'error',
       })
-      console.error('Failed to toggle read state:', error)
     } finally {
       setIsLoading(false)
     }
@@ -155,8 +160,9 @@ const AnnouncementItem: React.FC<AnnouncementItemProps> = ({announcementItem, fi
         size="small"
         withBackground={false}
         withBorder={false}
-        onClick={isLoading ? undefined : handleToggleReadState}
-        disabled={isLoading}
+        color={isDark ? 'primary-inverse' : 'secondary'}
+        onClick={isLoading || readOnly ? undefined : handleToggleReadState}
+        disabled={isLoading || readOnly}
         screenReaderLabel={label}
         aria-pressed={isLoading ? undefined : isRead}
         data-testid={testId}
@@ -205,18 +211,7 @@ const AnnouncementItem: React.FC<AnnouncementItemProps> = ({announcementItem, fi
                   </Flex>
                 </Flex.Item>
 
-                {/* Row 2: Course code */}
-                {announcement.course?.courseCode && (
-                  <Flex.Item>
-                    <CourseCode
-                      courseId={announcement.course.id}
-                      overrideCode={announcement.course.courseCode}
-                      size="x-small"
-                    />
-                  </Flex.Item>
-                )}
-
-                {/* Row 3: Author name and posted date */}
+                {/* Row 2: Author name and posted date */}
                 <Flex.Item>
                   <Text
                     size="x-small"
@@ -237,6 +232,19 @@ const AnnouncementItem: React.FC<AnnouncementItemProps> = ({announcementItem, fi
                     />
                   </Text>
                 </Flex.Item>
+
+                {/* Row 3: Course name */}
+                {announcement.course?.name && (
+                  <Flex.Item>
+                    <Text
+                      size="x-small"
+                      color="secondary"
+                      data-testid={`course-name-${announcement.id}`}
+                    >
+                      {announcement.course.name}
+                    </Text>
+                  </Flex.Item>
+                )}
               </Flex>
             </Flex.Item>
           </Flex>

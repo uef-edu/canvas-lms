@@ -28,6 +28,7 @@ import {AccessibilityIssue} from '../../types'
 import {Link} from '@instructure/ui-link'
 import canvas from '@instructure/ui-themes'
 import {ScreenReaderContent} from '@instructure/ui-a11y-content'
+import {COMMUNITY_LINKS} from '../../util/communityLinks'
 
 const I18n = createI18nScope('accessibility_checker')
 
@@ -47,6 +48,7 @@ const WhyMattersPopover = ({issue}: WhyMattersPopoverProps) => {
       shouldCloseOnDocumentClick={true}
       onHideContent={() => setIsShowingContent(false)}
       on="click"
+      screenReaderLabel={I18n.t('Why it matters')}
       renderTrigger={() => (
         <IconButton
           onClick={() => setIsShowingContent(!isShowingContent)}
@@ -71,27 +73,44 @@ const WhyMattersPopover = ({issue}: WhyMattersPopoverProps) => {
             <Flex.Item>
               <CloseButton
                 margin="x-small"
-                screenReaderLabel="close tooltip"
+                screenReaderLabel={I18n.t('Close')}
                 onClick={() => setIsShowingContent(false)}
-              >
-                {I18n.t('Close')}
-              </CloseButton>
+              />
             </Flex.Item>
           </Flex>
         </Flex.Item>
         {why.map((paragraph, index) => (
           <Flex.Item key={index} margin="0 0 x-small 0">
             <Text variant="content">{paragraph}</Text>
+            {COMMUNITY_LINKS[issue.ruleId] && (
+              <Link
+                href={COMMUNITY_LINKS[issue.ruleId].url}
+                target="_blank"
+                rel="noopener noreferrer"
+                iconPlacement="end"
+                renderIcon={<IconExternalLinkLine size="x-small" />}
+              >
+                {COMMUNITY_LINKS[issue.ruleId].label}
+                <ScreenReaderContent>{I18n.t('- Opens in a new tab.')}</ScreenReaderContent>
+              </Link>
+            )}
           </Flex.Item>
         ))}
         {issue.issueUrl && (
           <Flex.Item>
             <Flex direction="column">
               <Flex.Item>
-                <IconWarningSolid fontSize={canvas.typography.legend} color="warning" />{' '}
-                <Text color="warning" weight="bold" size="legend">
-                  {I18n.t('IMPORTANT')}
-                </Text>
+                <Heading
+                  level="h4"
+                  margin="none"
+                  renderIcon={
+                    <IconWarningSolid fontSize={canvas.typography.legend} color="warning" />
+                  }
+                >
+                  <Text color="warning" weight="bold" size="legend">
+                    {I18n.t('IMPORTANT')}
+                  </Text>
+                </Heading>
               </Flex.Item>
               <Flex.Item>
                 <Text variant="contentSmall">

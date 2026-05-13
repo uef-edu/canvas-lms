@@ -20,13 +20,17 @@ import React from 'react'
 import {render, act} from '@testing-library/react'
 import App from '../App'
 
-import * as FlashAlert from '@canvas/alerts/react/FlashAlert'
+import * as FlashAlert from '@instructure/platform-alerts'
 import fakeENV from '@canvas/test-utils/fakeENV'
 
-jest.mock('@canvas/alerts/react/FlashAlert', () => ({
-  showFlashAlert: jest.fn(() => jest.fn(() => {})),
-  showFlashSuccess: jest.fn(() => jest.fn(() => {})),
-}))
+vi.mock('@instructure/platform-alerts', async () => {
+  const actual = await vi.importActual('@instructure/platform-alerts')
+  return {
+    ...actual,
+    showFlashAlert: vi.fn(() => vi.fn(() => {})),
+    showFlashSuccess: vi.fn(() => vi.fn(() => {})),
+  }
+})
 
 const makeKey = ({id, name, inherited_from = 'global', account_owns_binding = true}) => ({
   id,
@@ -179,6 +183,36 @@ describe('DeveloperKeys App', () => {
         ).toBeInTheDocument()
       })
     })
+
+    describe('when account setting is set', () => {
+      beforeEach(() => {
+        fakeENV.setup({showApiGetWithBodyNotice: true})
+      })
+
+      it('shows get body alert', () => {
+        setup([])
+        expect(
+          getByText('API GET requests with a body instead of query parameters will be blocked', {
+            exact: false,
+          }),
+        ).toBeInTheDocument()
+      })
+    })
+
+    describe('when account setting is not set', () => {
+      beforeEach(() => {
+        fakeENV.setup({showApiGetWithBodyNotice: false})
+      })
+
+      it('does not show get body alert', () => {
+        setup([])
+        expect(
+          queryByText('API GET requests with a body instead of query parameters will be blocked', {
+            exact: false,
+          }),
+        ).not.toBeInTheDocument()
+      })
+    })
   })
 
   describe('inherited tab', () => {
@@ -232,7 +266,7 @@ describe('DeveloperKeys App', () => {
   })
 
   describe('when developer keys saved ', () => {
-    jest.useFakeTimers()
+    vi.useFakeTimers()
     let ref
     beforeEach(() => {
       fakeENV.setup({FEATURES: {developer_key_page_checkboxes: true}})
@@ -242,60 +276,60 @@ describe('DeveloperKeys App', () => {
 
     describe('with list of warnings', () => {
       beforeEach(() => {
-        jest.clearAllMocks()
-        jest.clearAllTimers()
+        vi.clearAllMocks()
+        vi.clearAllTimers()
         ref.current.developerKeySaveSuccessfulHandler(['warning1', 'warning2'])
       })
       it('Alert is shown for each warning message', () => {
-        jest.runOnlyPendingTimers()
+        vi.runOnlyPendingTimers()
         expect(FlashAlert.showFlashAlert).toHaveBeenCalledTimes(2)
       })
     })
 
     describe('with a warning', () => {
       beforeEach(() => {
-        jest.clearAllMocks()
-        jest.clearAllTimers()
+        vi.clearAllMocks()
+        vi.clearAllTimers()
         ref.current.developerKeySaveSuccessfulHandler('warning1')
       })
       it('Alert is shown for each warning message', () => {
-        jest.runOnlyPendingTimers()
+        vi.runOnlyPendingTimers()
         expect(FlashAlert.showFlashAlert).toHaveBeenCalledTimes(1)
       })
     })
 
     describe('without a warning (null)', () => {
       beforeEach(() => {
-        jest.clearAllMocks()
-        jest.clearAllTimers()
+        vi.clearAllMocks()
+        vi.clearAllTimers()
         ref.current.developerKeySaveSuccessfulHandler(null)
       })
       it('No alert is shown', () => {
-        jest.runOnlyPendingTimers()
+        vi.runOnlyPendingTimers()
         expect(FlashAlert.showFlashAlert).not.toHaveBeenCalled()
       })
     })
 
     describe('without a warning (undefined)', () => {
       beforeEach(() => {
-        jest.clearAllMocks()
-        jest.clearAllTimers()
+        vi.clearAllMocks()
+        vi.clearAllTimers()
         ref.current.developerKeySaveSuccessfulHandler(undefined)
       })
       it('No Alert is shown', () => {
-        jest.runOnlyPendingTimers()
+        vi.runOnlyPendingTimers()
         expect(FlashAlert.showFlashAlert).not.toHaveBeenCalled()
       })
     })
 
     describe('without a warning (empty array)', () => {
       beforeEach(() => {
-        jest.clearAllMocks()
-        jest.clearAllTimers()
+        vi.clearAllMocks()
+        vi.clearAllTimers()
         ref.current.developerKeySaveSuccessfulHandler([])
       })
       it('Alert is shown for each warning message', () => {
-        jest.runOnlyPendingTimers()
+        vi.runOnlyPendingTimers()
         expect(FlashAlert.showFlashAlert).not.toHaveBeenCalled()
       })
     })

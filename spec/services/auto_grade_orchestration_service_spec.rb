@@ -18,10 +18,6 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
-require "spec_helper"
-require_relative "../../app/services/auto_grade_orchestration_service"
-require_relative "../../app/services/grade_service"
-require_relative "../../app/services/comments_service"
 require_relative "../factory_bot_spec_helper"
 
 RSpec.describe AutoGradeOrchestrationService do
@@ -95,7 +91,7 @@ RSpec.describe AutoGradeOrchestrationService do
       tag: "auto_grade_submission",
       workflow_state: "running"
     )
-    delayed_job_double = instance_double("Delayed::Job", attempts: 1)
+    delayed_job_double = instance_double(Delayed::Job, attempts: 1)
     allow(progress).to receive(:delayed_job).and_return(delayed_job_double)
     progress
   end
@@ -169,7 +165,7 @@ RSpec.describe AutoGradeOrchestrationService do
             submission:,
             progress:
           )
-        end.to raise_error(Delayed::RetriableError, /Number of graded criteria.*is less than the number of rubric criteria/)
+        end.to raise_error(Delayed::RetriableError, /Grading could not be completed. Please try again./)
       end
 
       it "deduplicates duplicate items from GradeService by description" do
@@ -284,97 +280,98 @@ RSpec.describe AutoGradeOrchestrationService do
     end
   end
 
-  describe "#generate_comments" do
-    context "when generating comments for a submission" do
-      before do
-        allow(CedarClient).to receive(:enabled?).and_return(true)
-        submission.attempt = 1
-        submission.save!
-        rubric_association
+  describe "#handle_grading_failure" do
+    let(:service) { AutoGradeOrchestrationService.new(course:, current_user: user) }
+    let(:error_message) { "Grading failed: something went wrong" }
+
+    context "on terminal failure" do
+      let(:progress) do
+        p = Progress.create!(context: course, tag: "auto_grade_submission", workflow_state: "running")
+        delayed_job_double = instance_double(Delayed::Job, attempts: AutoGradeOrchestrationService::MAX_ATTEMPTS - 1)
+        allow(p).to receive(:delayed_job).and_return(delayed_job_double)
+        p
       end
 
-      it "generates comments for all criteria in the rubric" do
-        service = AutoGradeOrchestrationService.new(course:, current_user: user)
-        comment_service = instance_double(CommentsService)
-
-        auto_grade_result = AutoGradeResult.create!(
-          submission:,
-          attempt: submission.attempt,
-          grade_data: [
-            { "description" => "Content", "rating" => 8, "comments" => "Good content" },
-            { "description" => "Grammar", "rating" => 4 }, # Missing comments
-            { "description" => "Organization", "rating" => 3 } # Missing comments
-          ],
-          root_account_id: root_account.id,
-          grading_attempts: 1
-        )
-
-        allow(CommentsService).to receive(:new).and_return(comment_service)
-        allow(comment_service).to receive(:call).and_return(
-          [
-            { "description" => "Grammar", "rating" => 4, "comments" => "Good grammar" },
-            { "description" => "Organization", "rating" => 3, "comments" => "Well organized" }
-          ]
-        )
-
-        result = service.generate_comments(
-          assignment_text:,
-          root_account_uuid:,
-          submission:,
-          auto_grade_result:,
-          progress:
-        )
-
-        missing_criteria_data = [
-          { "description" => "Grammar", "rating" => 4 },
-          { "description" => "Organization", "rating" => 3 }
-        ]
-
-        expect(CommentsService).to have_received(:new).with(
-          assignment: assignment_text,
-          grade_data: missing_criteria_data,
-          root_account_uuid:,
-          current_user: user
-        )
-        expect(comment_service).to have_received(:call)
-        expect(result.grade_data.all? { |item| item["comments"].present? }).to be true
+      it "sets progress.message to a generic message for non-GraderErrors (retryable: false)" do
+        service.handle_grading_failure(error_message:, submission:, auto_grade_result: nil, progress:, retryable: false)
+        expect(progress.message).to eq("An error occurred while grading. Please try again later.")
       end
 
-      it "raises error when comments are missing for some criteria" do
-        service = AutoGradeOrchestrationService.new(course:, current_user: user)
-        comment_service = instance_double(CommentsService)
+      it "sets progress.message to the specific error message for GraderErrors (retryable: true)" do
+        service.handle_grading_failure(error_message:, submission:, auto_grade_result: nil, progress:, retryable: true)
+        expect(progress.message).to eq(error_message)
+      end
 
-        auto_grade_result = AutoGradeResult.create!(
-          submission:,
-          attempt: submission.attempt,
-          grade_data: [
-            { "description" => "Content", "rating" => 8, "comments" => "Good content" },
-            { "description" => "Grammar", "rating" => 4 }, # Missing comments
-            { "description" => "Organization", "rating" => 3 } # Missing comments
-          ],
-          root_account_id: root_account.id,
-          grading_attempts: 1
-        )
+      it "calls progress.fail!" do
+        expect(progress).to receive(:fail!)
+        service.handle_grading_failure(error_message:, submission:, auto_grade_result: nil, progress:, retryable: false)
+      end
 
-        allow(CommentsService).to receive(:new).and_return(comment_service)
-        allow(comment_service).to receive(:call).and_return([
-                                                              { "description" => "Grammar", "rating" => 4, "comments" => "Good grammar" }
-                                                            ])
-
-        allow(service).to receive(:get_criteria_missing_comments)
-          .with(any_args)
-          .and_return(["Organization"])
-
+      it "does not create an AutoGradeResult if one is not persisted" do
         expect do
-          service.generate_comments(
-            assignment_text:,
-            root_account_uuid:,
-            submission:,
-            auto_grade_result:,
-            progress:
-          )
-        end.to raise_error(Delayed::RetriableError, /Number of comments.*is less than the number of rubric criteria/)
+          service.handle_grading_failure(error_message:, submission:, auto_grade_result: nil, progress:, retryable: false)
+        end.not_to change(AutoGradeResult, :count)
       end
+
+      it "updates error_message and increments grading_attempts on an existing AutoGradeResult" do
+        rubric_association
+        auto_grade_result = AutoGradeResult.create!(
+          submission:,
+          attempt: submission.attempt,
+          grade_data: [{ "description" => "Content", "rating" => { "rating" => 3 } }],
+          root_account_id: root_account.id,
+          grading_attempts: 1
+        )
+
+        service.handle_grading_failure(error_message:, submission:, auto_grade_result:, progress:, retryable: false)
+
+        auto_grade_result.reload
+        expect(auto_grade_result.error_message).to eq(error_message)
+        expect(auto_grade_result.grading_attempts).to eq(2)
+      end
+    end
+
+    context "on retryable failure under AutoGradeOrchestrationService::MAX_ATTEMPTS" do
+      it "raises Delayed::RetriableError" do
+        expect do
+          service.handle_grading_failure(error_message:, submission:, auto_grade_result: nil, progress:, retryable: true)
+        end.to raise_error(Delayed::RetriableError, error_message)
+      end
+
+      it "does not call progress.fail!" do
+        expect(progress).not_to receive(:fail!)
+        begin
+          service.handle_grading_failure(error_message:, submission:, auto_grade_result: nil, progress:, retryable: true)
+        rescue Delayed::RetriableError
+          nil
+        end
+      end
+    end
+  end
+
+  describe "#run_auto_grader" do
+    let(:service) { AutoGradeOrchestrationService.new(course:, current_user: user) }
+
+    it "does not complete progress when get_grade_data returns nil" do
+      allow(service).to receive(:get_grade_data).and_return(nil)
+      expect(progress).not_to receive(:complete!)
+      service.run_auto_grader(progress, submission)
+    end
+
+    it "completes progress with grade_data when get_grade_data returns a result" do
+      rubric_association
+      auto_grade_result = AutoGradeResult.create!(
+        submission:,
+        attempt: submission.attempt,
+        grade_data: [{ "description" => "Content", "rating" => { "rating" => 3 } }],
+        root_account_id: root_account.id,
+        grading_attempts: 1
+      )
+      allow(service).to receive(:get_grade_data).and_return(auto_grade_result)
+
+      expect(progress).to receive(:complete!)
+      service.run_auto_grader(progress, submission)
+      expect(progress.results).to eq(auto_grade_result.grade_data)
     end
   end
 end

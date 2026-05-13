@@ -20,7 +20,6 @@
 module Lti
   class AssetProcessorController < ApplicationController
     before_action { require_feature_enabled :lti_asset_processor }
-    before_action :require_user
     before_action :require_asset_processor, except: [:resubmit_discussion_notices_all]
     before_action :require_context
     before_action :require_access_to_context
@@ -49,7 +48,7 @@ module Lti
 
     def resubmit_discussion_notices_all
       topic = assignment.discussion_topic
-      return render json: { error: "Not a discussion assignment" }, status: :unprocessable_entity unless topic
+      return render json: { error: "Not a discussion assignment" }, status: :unprocessable_content unless topic
       return render status: :forbidden, plain: "invalid_request" unless context.grants_any_right?(@current_user, session, :manage_grades)
 
       entry_ids = topic.discussion_entries.active.where(user_id: student.id).pluck(:id)

@@ -19,14 +19,13 @@
 import {mockIssuesSummary1} from '../../../../shared/react/stores/mockData'
 import {IssueDataPoint} from '../../../../shared/react/types'
 import {
-  getChartData,
   getChartOptions,
   getGroupedFilterForRuleType,
   getSeverityCounts,
   processIssuesToChartData,
 } from '../chart'
 
-jest.mock('@canvas/i18n', () => ({
+vi.mock('@canvas/i18n', () => ({
   useScope: () => ({
     t: (text: string) => text, // mock translation
   }),
@@ -41,7 +40,7 @@ const sampleData: IssueDataPoint[] = [
 const parsedIssueDataPoints: IssueDataPoint[] = [
   {
     id: 'heading-order',
-    issue: 'Heading order',
+    issue: 'Skipped heading level',
     count: 1,
     severity: 'Low',
   },

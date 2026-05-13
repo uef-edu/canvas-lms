@@ -51,13 +51,21 @@ module Lti::IMS
         lti_tool_configuration:,
         scopes:,
         developer_key:,
-        lti_registration: developer_key.lti_registration
+        lti_registration: developer_key.lti_registration,
+        root_account: developer_key.root_account
       }.compact)
     end
     let(:developer_key) { lti_developer_key_model }
 
     it "is soft_deleted when destroy is called" do
       registration.destroy
+      expect(registration.reload.workflow_state).to eq("deleted")
+    end
+
+    it "can be soft-deleted even with an invalid target_link_uri" do
+      registration.lti_tool_configuration["target_link_uri"] = "localhost"
+      registration.save!(validate: false)
+      expect { registration.destroy }.not_to raise_error
       expect(registration.reload.workflow_state).to eq("deleted")
     end
 
@@ -733,7 +741,13 @@ module Lti::IMS
       let(:context) { account_model }
 
       context 'when "disabled_placements" is set' do
-        before { registration.registration_overlay["disabledPlacements"] = ["course_navigation"] }
+        before do
+          Lti::Overlay.create!(
+            registration: registration.developer_key.lti_registration,
+            account: context,
+            data: { "disabled_placements" => ["course_navigation"] }
+          )
+        end
 
         it "does not set the disabled placements" do
           expect(subject.settings.keys).not_to include "course_navigation"
@@ -1024,6 +1038,43 @@ module Lti::IMS
       end
     end
 
+    describe "#reinstall_disabled?" do
+      context "when lti_dr_registrations_update flag is off" do
+        before do
+          registration.root_account.disable_feature!(:lti_dr_registrations_update)
+        end
+
+        it "returns true regardless of the extension value" do
+          expect(registration.reinstall_disabled?).to be true
+        end
+
+        it "returns true even when disable_reinstall extension is false" do
+          lti_tool_configuration[Lti::IMS::Registration::DISABLE_REINSTALL_EXTENSION] = false
+          expect(registration.reinstall_disabled?).to be true
+        end
+      end
+
+      context "when lti_dr_registrations_update flag is on" do
+        before do
+          registration.root_account.enable_feature!(:lti_dr_registrations_update)
+        end
+
+        it "returns true when the disable_reinstall extension is true" do
+          lti_tool_configuration[Lti::IMS::Registration::DISABLE_REINSTALL_EXTENSION] = true
+          expect(registration.reinstall_disabled?).to be true
+        end
+
+        it "returns false when the disable_reinstall extension is not set" do
+          expect(registration.reinstall_disabled?).to be false
+        end
+
+        it "returns false when the disable_reinstall extension is false" do
+          lti_tool_configuration[Lti::IMS::Registration::DISABLE_REINSTALL_EXTENSION] = false
+          expect(registration.reinstall_disabled?).to be false
+        end
+      end
+    end
+
     describe "as_json" do
       subject { registration.as_json }
 
@@ -1033,7 +1084,6 @@ module Lti::IMS
             id
             lti_registration_id
             developer_key_id
-            overlay
             lti_tool_configuration
             application_type
             grant_types

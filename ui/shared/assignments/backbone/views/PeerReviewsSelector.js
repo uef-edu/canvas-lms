@@ -18,7 +18,7 @@
 
 import $ from 'jquery'
 import {extend} from '@canvas/backbone/utils'
-import {includes} from 'lodash'
+import {includes} from 'es-toolkit/compat'
 import Backbone from '@canvas/backbone'
 import numberHelper from '@canvas/i18n/numberHelper'
 import template from '../../jst/PeerReviewsSelector.handlebars'
@@ -86,7 +86,14 @@ PeerReviewsSelector.prototype.afterRender = function () {
 
 PeerReviewsSelector.prototype.toJSON = function () {
   const frozenAttributes = this.parentModel.frozenAttributes()
-  const allocationAndGradingEnabled = ENV.PEER_REVIEW_ALLOCATION_AND_GRADING_ENABLED
+  const peerReviewSubAssignment = this.parentModel.get('peer_review_sub_assignment')
+  const isGradedPeerReviewInLegacyMode =
+    peerReviewSubAssignment != null && !ENV.PEER_REVIEW_ALLOCATION_AND_GRADING_ENABLED
+  const peerReviewsFrozen =
+    includes(frozenAttributes, 'peer_reviews') || isGradedPeerReviewInLegacyMode
+  const showGradedPeerReviewSettings =
+    ENV.PEER_REVIEW_ALLOCATION_AND_GRADING_ENABLED && !this.parentModel.isLegacyPeerReview()
+
   return {
     anonymousPeerReviews: this.parentModel.anonymousPeerReviews(),
     peerReviews: this.parentModel.peerReviews(),
@@ -94,13 +101,14 @@ PeerReviewsSelector.prototype.toJSON = function () {
     peerReviewCount: this.parentModel.peerReviewCount(),
     peerReviewsAssignAt: this.parentModel.peerReviewsAssignAt(),
     frozenAttributes,
-    peerReviewsFrozen: includes(frozenAttributes, 'peer_reviews'),
+    peerReviewsFrozen,
     nested: this.nested,
     prefix: this.nested ? 'assignment' : void 0,
     hideAnonymousPeerReview: this.hideAnonymousPeerReview,
     hasGroupCategory: this.parentModel.groupCategoryId(),
     intraGroupPeerReviews: this.parentModel.intraGroupPeerReviews(),
-    allocationAndGradingEnabled: allocationAndGradingEnabled,
+    showGradedPeerReviewSettings,
+    lockPeerReviewSettings: isGradedPeerReviewInLegacyMode,
   }
 }
 

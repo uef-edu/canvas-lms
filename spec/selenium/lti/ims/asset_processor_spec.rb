@@ -34,13 +34,14 @@ describe "Asset Processor" do
   let(:assignment) { assignment_model(course:, submission_types: "online_text_entry", workflow_state: "published") }
 
   let(:registration) do
+    scopes = [
+      "https://purl.imsglobal.org/spec/lti/scope/noticehandlers",
+      "https://purl.imsglobal.org/spec/lti/scope/asset.readonly",
+      "https://purl.imsglobal.org/spec/lti/scope/report",
+      "https://purl.imsglobal.org/spec/lti/scope/eula/user"
+    ]
     configuration_params = {
-      scopes: [
-        "https://purl.imsglobal.org/spec/lti/scope/noticehandlers",
-        "https://purl.imsglobal.org/spec/lti/scope/asset.readonly",
-        "https://purl.imsglobal.org/spec/lti/scope/report",
-        "https://purl.imsglobal.org/spec/lti/scope/eula/user"
-      ],
+      scopes:,
       redirect_uris: ["#{base_url}/ui"],
       placements: [{
         placement: "ActivityAssetProcessor",
@@ -50,8 +51,11 @@ describe "Asset Processor" do
       public_jwk_url: "#{base_url}/jwks",
       domain: HostUrl.default_host,
     }
+    developer_key_params = {
+      scopes:
+    }
 
-    lti_registration_with_tool(account: course.account, configuration_params:)
+    lti_registration_with_tool(account: course.account, configuration_params:, developer_key_params:)
   end
 
   let(:tool) do
@@ -71,11 +75,11 @@ describe "Asset Processor" do
     course.offer!
     course.root_account.enable_feature!(:lti_asset_processor)
 
-    Lti::UpdateRegistrationService.call(
-      id: registration.id,
+    Lti::AccountBindingService.call(
       account: course.account,
-      updated_by: teacher,
-      binding_params: { workflow_state: "on" }
+      registration:,
+      user: teacher,
+      workflow_state: :on
     )
 
     allow(Lti::KeyStorage).to receive(:present_key).and_return(rsa_key)
@@ -97,7 +101,7 @@ describe "Asset Processor" do
       )
     end
 
-    it "student accepts EULA when viewing assignment for the first time", skip: "INTEROP-9987 2025-11-04" do
+    it "student accepts EULA when viewing assignment for the first time" do
       user_session(student)
       get("/courses/#{course.id}/assignments/#{assignment.id}")
       wait_for_ajaximations
@@ -105,7 +109,7 @@ describe "Asset Processor" do
       expect(f("[role='dialog']")).to be_displayed
 
       # Switch to the EULA iframe and interact with the tool
-      in_frame(f("iframe[title*='EULA']")) do
+      in_frame(f("iframe[title*='EULA']"), "#eula-accept-btn") do
         wait_for_ajaximations
         button = MockLtiToolUi.eula_accept_button
         expect(button).to be_displayed
@@ -134,7 +138,7 @@ describe "Asset Processor" do
       get("/courses/#{course.id}/assignments/#{assignment.id}")
       wait_for_ajaximations
 
-      expect(f("body")).not_to contain_css("[role='dialog']")
+      expect(f("body")).not_to contain_css("iframe[title*='EULA']")
       expect(f("h1")).to include_text(assignment.title)
     end
   end

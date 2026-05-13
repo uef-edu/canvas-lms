@@ -19,6 +19,7 @@
 
 class Accessibility::ResourceScannerService < ApplicationService
   include Accessibility::Issue::ContentChecker
+  include Accessibility::Concerns::CourseStatisticsQueueable
 
   SCAN_TAG = "resource_accessibility_scan"
   MAX_HTML_SIZE = 125.kilobytes
@@ -26,18 +27,26 @@ class Accessibility::ResourceScannerService < ApplicationService
 
   def initialize(resource:)
     super()
-    @resource = resource
+    # When Course is passed directly (from Scannable module), wrap it as SyllabusResource
+    # This is needeed because when the serialization happens we load the object as a Course
+    @resource = resource.is_a?(Course) ? Accessibility::SyllabusResource.new(resource) : resource
   end
 
   def call
-    return if scan_already_queued_or_in_progress?
+    queued_or_in_progress_scan = find_queued_or_in_progress_scan
+    return queued_or_in_progress_scan if queued_or_in_progress_scan
 
     scan = first_or_initialize_scan
+
+    account_id = @resource.course.account.global_id
+    singleton_key = "#{SCAN_TAG}_#{@resource.global_id}_#{@resource.class.name.underscore}"
+
     delay(
-      n_strand: [SCAN_TAG, @resource.course.account.global_id],
-      singleton: "#{SCAN_TAG}_#{@resource.global_id}",
+      n_strand: [SCAN_TAG, account_id],
+      singleton: singleton_key,
       priority: Delayed::LOW_PRIORITY
     ).scan_resource(scan:)
+    scan
   end
 
   def call_sync
@@ -47,7 +56,7 @@ class Accessibility::ResourceScannerService < ApplicationService
   end
 
   def first_or_initialize_scan
-    scan = AccessibilityResourceScan.where(context: @resource).first_or_initialize
+    scan = AccessibilityResourceScan.for_resource(@resource).first_or_initialize
     scan.assign_attributes(
       course_id: @resource.course.id,
       workflow_state: "queued",
@@ -63,19 +72,41 @@ class Accessibility::ResourceScannerService < ApplicationService
 
   def scan_resource(scan:)
     scan.in_progress!
-    @resource = scan.context
 
-    return handle_size_limit_failure(scan) if over_size_limit?
+    # Use the resolved resource from the concern
+    # When called via delayed job, the instance is deserialized without the original @resource.
+    # We must reload it from the scan's polymorphic association or resolved wrapper.
+    @resource = scan.resource
+
+    if @resource.respond_to?(:exceeds_accessibility_scan_limit?)
+      return handle_size_limit_failure(scan) if @resource.exceeds_accessibility_scan_limit?(MAX_HTML_SIZE)
+    elsif over_size_limit?
+      return handle_size_limit_failure(scan)
+    end
 
     issues = scan_resource_for_issues
 
-    scan.accessibility_issues.active.delete_all
+    scan.accessibility_issues.rescannable.delete_all
+
+    if Account.site_admin.feature_enabled?(:a11y_checker_ga2_features) && issues.any?
+      issue_limit = Setting.get("a11y_checker_course_issue_limit", "2500").to_i
+      current_active = AccessibilityIssue.active.where(course_id: scan.course_id).count
+      if current_active + issues.count > issue_limit
+        return handle_issue_limit_reached(scan)
+      end
+    end
+
     scan.accessibility_issues.create!(issues) if issues.any?
 
     scan.update(
       workflow_state: "completed",
-      issue_count: issues.count
+      issue_count: issues.count,
+      closed_at: nil,
+      resource_name: @resource.try(:title),
+      resource_workflow_state:,
+      resource_updated_at: @resource.updated_at
     )
+    queue_course_statistics(scan.course)
     log_to_datadog(scan)
   rescue => e
     error_report = ErrorReport.log_exception(
@@ -109,10 +140,16 @@ class Accessibility::ResourceScannerService < ApplicationService
     tags = Utils::InstStatsdUtils::Tags.tags_for(scan.course.shard)
     InstStatsd::Statsd.distributed_increment("accessibility.resources_scanned", tags:)
 
-    if scan.wiki_page_id?
+    if scan.resource.respond_to?(:scannable_resource_tag)
+      InstStatsd::Statsd.distributed_increment(scan.resource.scannable_resource_tag, tags:)
+    elsif scan.wiki_page_id?
       InstStatsd::Statsd.distributed_increment("accessibility.pages_scanned", tags:)
     elsif scan.assignment_id?
       InstStatsd::Statsd.distributed_increment("accessibility.assignments_scanned", tags:)
+    elsif scan.announcement_id?
+      InstStatsd::Statsd.distributed_increment("accessibility.announcements_scanned", tags:)
+    elsif scan.discussion_topic_id?
+      InstStatsd::Statsd.distributed_increment("accessibility.discussion_topics_scanned", tags:)
     end
 
     if scan.failed?
@@ -121,22 +158,30 @@ class Accessibility::ResourceScannerService < ApplicationService
     end
   end
 
-  def scan_already_queued_or_in_progress?
-    AccessibilityResourceScan.where(context: @resource)
+  def find_queued_or_in_progress_scan
+    AccessibilityResourceScan.for_resource(@resource)
                              .where(workflow_state: %w[queued in_progress])
-                             .exists?
+                             .first
   end
 
   def over_size_limit?
-    case @resource
-    when WikiPage
-      @resource.body.size > MAX_HTML_SIZE
-    when Assignment
-      @resource.description.size > MAX_HTML_SIZE
-    when Attachment
-      @resource.size > MAX_PDF_SIZE
+    # Check if resource implements the new interface
+    if @resource.respond_to?(:exceeds_accessibility_scan_limit?)
+      max_size = @resource.is_a?(Attachment) ? MAX_PDF_SIZE : MAX_HTML_SIZE
+      @resource.exceeds_accessibility_scan_limit?(max_size)
     else
-      false
+      case @resource
+      when WikiPage
+        (@resource.body&.size || 0) > MAX_HTML_SIZE
+      when Assignment
+        (@resource.description&.size || 0) > MAX_HTML_SIZE
+      when Attachment
+        @resource.size > MAX_PDF_SIZE
+      when DiscussionTopic, Announcement
+        (@resource.message&.size || 0) > MAX_HTML_SIZE
+      else
+        false
+      end
     end
   end
 
@@ -162,36 +207,54 @@ class Accessibility::ResourceScannerService < ApplicationService
   end
 
   def resource_workflow_state
-    case @resource
-    when WikiPage
-      @resource.active? ? "published" : "unpublished"
-    when Assignment
-      @resource.published? ? "published" : "unpublished"
-    when Attachment
-      @resource.processed? ? "published" : "unpublished"
+    # Check if resource implements the new interface
+    if @resource.respond_to?(:scannable_workflow_state)
+      @resource.scannable_workflow_state
     else
-      raise ArgumentError, "Unsupported resource type: #{@resource.class.name}"
+      case @resource
+      when WikiPage, DiscussionTopic, Announcement
+        @resource.active? ? "published" : "unpublished"
+      when Assignment
+        @resource.published? ? "published" : "unpublished"
+      when Attachment
+        @resource.processed? ? "published" : "unpublished"
+      else
+        resource_name = @resource.respond_to?(:resource_class_name) ? @resource.resource_class_name : @resource.class.name
+        raise ArgumentError, "Unsupported resource type: #{resource_name}"
+      end
     end
   end
 
   def scan_resource_for_issues
-    raw_issues = case @resource
-                 when WikiPage
-                   check_content_accessibility(@resource.body)
-                 when Assignment
-                   check_content_accessibility(@resource.description)
-                 when Attachment
-                   check_pdf_accessibility(@resource)
+    # Check if resource implements the new interface
+    raw_issues = if @resource.respond_to?(:scannable_content)
+                   # New path for resources using AccessibilityCheckable
+                   content = @resource.scannable_content.to_s
+                   check_content_accessibility(content)
                  else
-                   raise ArgumentError, "Unsupported resource type: #{@resource.class.name}"
+                   # Legacy path for non-migrated resources
+                   case @resource
+                   when WikiPage
+                     check_content_accessibility(@resource.body.to_s)
+                   when Assignment
+                     check_content_accessibility(@resource.description.to_s)
+                   when Attachment
+                     check_pdf_accessibility(@resource)
+                   when DiscussionTopic, Announcement
+                     check_content_accessibility(@resource.message.to_s)
+                   else
+                     resource_name = @resource.respond_to?(:resource_class_name) ? @resource.resource_class_name : @resource.class.name
+                     raise ArgumentError, "Unsupported resource type: #{resource_name}"
+                   end
                  end
     raw_issues[:issues].map { |issue| build_issue_attributes(issue) }
   end
 
   def build_issue_attributes(issue)
-    {
+    is_syllabus = @resource.is_a?(Accessibility::SyllabusResource)
+
+    default_attributes = {
       course_id: @resource.course.id,
-      context: @resource,
       rule_type: issue[:rule_id],
       node_path: issue[:path],
       metadata: {
@@ -199,10 +262,18 @@ class Accessibility::ResourceScannerService < ApplicationService
         form: issue[:form],
       }
     }
+
+    default_attributes[:context] = is_syllabus ? nil : @resource
+    default_attributes[:is_syllabus] = is_syllabus
+    default_attributes
   end
 
   def handle_scan_failure(scan, error_report)
     scan&.update(workflow_state: "failed", error_message: error_report.id)
     log_to_datadog(scan)
+  end
+
+  def handle_issue_limit_reached(scan)
+    scan.update!(workflow_state: "failed", error_message: "issue_limit_reached", issue_count: 0)
   end
 end

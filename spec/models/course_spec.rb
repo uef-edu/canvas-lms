@@ -52,6 +52,17 @@ describe Course do
       it_behaves_like "a learning outcome context"
     end
 
+    describe "accessibility_course_statistic association" do
+      it "has one accessibility course statistic" do
+        @course.save!
+        stat = AccessibilityCourseStatistic.create!(
+          course: @course,
+          active_issue_count: 5
+        )
+        expect(@course.accessibility_course_statistic).to eq(stat)
+      end
+    end
+
     it "re-runs SubmissionLifecycleManager if enrollment term changes" do
       @course.save!
       @course.enrollment_term = EnrollmentTerm.create!(root_account: Account.default, workflow_state: :active)
@@ -485,6 +496,24 @@ describe Course do
       expect(@course.public_syllabus).to be false
     end
 
+    it "versions attachment associations with the course syllabus" do
+      course_model
+      attachment_model(context: @course)
+      @course.update(syllabus_body: "file linke: <a href='/courses/#{@course.id}/files/#{@attachment.id}/download'>file</a>", updating_user: @teacher)
+      @course.reload.update(syllabus_body: "meh", updating_user: @teacher)
+
+      expect(YAML.load(@course.reload.versions.find_by(number: 1).yaml)["attachment_associations"][0]).to include({
+                                                                                                                    attachment_id: @attachment.id,
+                                                                                                                    context_id: @course.id,
+                                                                                                                    context_type: "Course",
+                                                                                                                    root_account_id: @course.root_account_id,
+                                                                                                                    user_id: @teacher.id,
+                                                                                                                    context_concern: "syllabus_body"
+                                                                                                                  })
+
+      expect(YAML.load(@course.reload.versions.find_by(number: 2).yaml)["attachment_associations"]).to eq([])
+    end
+
     it "returns offline web export flag" do
       expect(@course.enable_offline_web_export?).to be false
       account = Account.default
@@ -801,7 +830,38 @@ describe Course do
       it "does not allow updating account to site_admin" do
         course = course_model
         course.root_account = Account.site_admin
-        expect(course).to_not be_valid
+        expect(course).not_to be_valid
+      end
+
+      it "does not allow updating account to a subaccount where roles for existing enrollments don't exist" do
+        account1 = Account.default.sub_accounts.create!
+        role = account1.roles.create! name: "Something", base_role_type: "StudentEnrollment"
+        course = course_model(account: account1)
+        user = user_with_pseudonym(account: Account.default)
+        course.enroll_user(user, "StudentEnrollment", role:)
+
+        account2 = Account.default.sub_accounts.create! name: "Sad Account"
+        course.account = account2
+        expect(course).not_to be_valid
+        expect(course.errors[:account_id]).to include "course roles unavailable in Sad Account: Something"
+      end
+
+      it "maps enrollment roles to matching ones in the new account" do
+        account1 = Account.default.sub_accounts.create!
+        role = account1.roles.create! name: "Something", base_role_type: "StudentEnrollment"
+        course = course_model(account: account1)
+        user = user_with_pseudonym(account: Account.default)
+        enrollment = course.enroll_user(user, "StudentEnrollment", role:)
+
+        account2 = Account.default.sub_accounts.create!
+        # ensure the most specific role is chosen (it should prefer the one in the subaccount)
+        Account.default.roles.create! name: "Something", base_role_type: "StudentEnrollment"
+        # ensure the active role is chosen if there are dups (a unique constraint ensures only one active one can exist)
+        account2.roles.create! name: "Something", workflow_state: "inactive", base_role_type: "StudentEnrollment"
+        role2 = account2.roles.create! name: "Something", workflow_state: "active", base_role_type: "StudentEnrollment"
+        course.account = account2
+        course.save!
+        expect(enrollment.reload.role).to eq role2
       end
 
       it "requires unique sis_source_id" do
@@ -811,7 +871,7 @@ describe Course do
 
         new_course = course_factory
         new_course.sis_source_id = other_course.sis_source_id
-        expect(new_course).to_not be_valid
+        expect(new_course).not_to be_valid
         new_course.sis_source_id = nil
         expect(new_course).to be_valid
       end
@@ -823,7 +883,7 @@ describe Course do
 
         new_course = course_factory
         new_course.integration_id = other_course.integration_id
-        expect(new_course).to_not be_valid
+        expect(new_course).not_to be_valid
         new_course.integration_id = nil
         expect(new_course).to be_valid
       end
@@ -875,7 +935,7 @@ describe Course do
       expect(code).to eql(@course.course_code)
       @course.course_code = nil
       @course.save
-      expect(code).to_not eql(@course.course_code)
+      expect(code).not_to eql(@course.course_code)
     end
 
     it "removes carriage returns from the name" do
@@ -1734,7 +1794,7 @@ describe Course do
     end
 
     it "filters users by section_ids" do
-      visible_users = @course.users_visible_to(@teacher, false, section_ids: [@section1.id, @section2.id])
+      visible_users = @course.users_visible_to(@teacher, section_ids: [@section1.id, @section2.id])
       expect(visible_users.pluck(:id)).to include(@student1.id, @student2.id)
       expect(visible_users.pluck(:id)).not_to include(@student3.id)
     end
@@ -1745,7 +1805,7 @@ describe Course do
     end
 
     it "returns empty when filtering by non-existent section" do
-      visible_users = @course.users_visible_to(@teacher, false, section_ids: [99_999])
+      visible_users = @course.users_visible_to(@teacher, section_ids: [99_999])
       expect(visible_users.count).to eq(0)
     end
 
@@ -1753,12 +1813,58 @@ describe Course do
       @course.enrollments.where(user_id: @student2.id).first.conclude
       visible_users = @course.users_visible_to(
         @teacher,
-        false,
         section_ids: [@section1.id, @section2.id],
         exclude_enrollment_state: "completed"
       )
       expect(visible_users.pluck(:id)).to include(@student1.id)
       expect(visible_users.pluck(:id)).not_to include(@student2.id, @student3.id)
+    end
+  end
+
+  describe "users_visible_to with temporary enrollments" do
+    before :once do
+      Account.default.enable_feature!(:temporary_enrollments)
+      @provider = user_factory(active_all: true)
+      @course = course_with_teacher(active_all: true, user: @provider).course
+      @pairing = TemporaryEnrollmentPairing.create!(root_account: Account.default, created_by: account_admin_user)
+    end
+
+    def create_temp_enrollment(user, start_at: nil, end_at: nil)
+      enrollment = @course.enroll_user(
+        user,
+        "TeacherEnrollment",
+        {
+          role: teacher_role,
+          temporary_enrollment_source_user_id: @provider.id,
+          temporary_enrollment_pairing_id: @pairing.id,
+        }
+      )
+      enrollment.update!(start_at:, end_at:) if start_at
+      enrollment
+    end
+
+    it "includes users with future temporary enrollments" do
+      recipient = user_factory(active_all: true)
+      create_temp_enrollment(recipient, start_at: 1.day.from_now, end_at: 1.week.from_now)
+
+      visible_ids = @course.users_visible_to(@provider).pluck(:id)
+      expect(visible_ids).to include(recipient.id)
+    end
+
+    it "includes users with active temporary enrollments" do
+      recipient = user_factory(active_all: true)
+      create_temp_enrollment(recipient, start_at: 1.day.ago, end_at: 1.week.from_now)
+
+      visible_ids = @course.users_visible_to(@provider).pluck(:id)
+      expect(visible_ids).to include(recipient.id)
+    end
+
+    it "includes users with non-temporary enrollments" do
+      student = user_factory(active_all: true)
+      @course.enroll_student(student, enrollment_state: "active")
+
+      visible_ids = @course.users_visible_to(@provider).pluck(:id)
+      expect(visible_ids).to include(student.id)
     end
   end
 
@@ -1940,17 +2046,17 @@ describe Course do
         participants = @course.participants
         expect(participants).to include(@student)
 
-        expect(@course.participating_students_by_date).to_not include(@student)
+        expect(@course.participating_students_by_date).not_to include(@student)
         expect(@course.participating_admins_by_date).to include(@ta)
 
         by_date = @course.participants(by_date: true)
-        expect(by_date).to_not include(@student)
+        expect(by_date).not_to include(@student)
         expect(by_date).to include(@ta)
 
         @course.enrollment_term.set_overrides(@course.root_account, "TaEnrollment" => { start_at: 3.days.ago, end_at: 2.days.ago })
         @course.reload
-        expect(@course.participants(by_date: true)).to_not include(@ta)
-        expect(@course.participating_admins_by_date).to_not include(@ta)
+        expect(@course.participants(by_date: true)).not_to include(@ta)
+        expect(@course.participating_admins_by_date).not_to include(@ta)
       end
     end
 
@@ -1975,7 +2081,7 @@ describe Course do
       context "excluding specific students" do
         it "rejects observers only following one of the excluded students" do
           partic = @course.participants(include_observers: true, excluded_user_ids: [@student.id, @student_following_observer.id])
-          [@student, @student_following_observer].each { |usr| expect(partic).to_not include(usr) }
+          [@student, @student_following_observer].each { |usr| expect(partic).not_to include(usr) }
         end
 
         it "includes admins and course level observers" do
@@ -1988,7 +2094,7 @@ describe Course do
     it "excludes some student when passed their id" do
       partic = @course.participants(include_observers: false, excluded_user_ids: [@student.id])
       [@ta, @teach].each { |usr| expect(partic).to include(usr) }
-      expect(partic).to_not include(@student)
+      expect(partic).not_to include(@student)
     end
   end
 
@@ -2805,6 +2911,18 @@ describe Course do
         @course.root_account.disable_feature!(:a11y_checker)
       end
 
+      it "returns Accessibility tab if a11y_checker_ga1 feature flag is enabled for teachers" do
+        @course.root_account.enable_feature!(:a11y_checker_ga1)
+        tabs = @course.tabs_available(@user)
+
+        # Checks that Accessibility tab is at the end of the tabs (except for Settings tab)
+        settings_tab_index = tabs.pluck(:id).index(Course::TAB_SETTINGS)
+        accessibility_tab_index = tabs.pluck(:id).index(Course::TAB_ACCESSIBILITY)
+        expect(accessibility_tab_index).to eq(settings_tab_index - 1)
+      ensure
+        @course.root_account.disable_feature!(:a11y_checker_ga1)
+      end
+
       describe "TAB_YOUTUBE_MIGRATION" do
         before do
           @course.enable_feature!(:youtube_migration)
@@ -2933,14 +3051,17 @@ describe Course do
           expect(ai_tab).to be_nil
         end
 
-        it "does not include AI Experiences tab when user lacks permissions" do
+        it "includes AI Experiences tab for students when feature flag is enabled" do
           student = user_factory(active_all: true)
           @course.enroll_student(student, enrollment_state: "active")
 
           tabs = @course.tabs_available(student)
           ai_tab = tabs.find { |t| t[:id] == Course::TAB_AI_EXPERIENCES }
 
-          expect(ai_tab).to be_nil
+          # Tab is visible to all users when feature flag is enabled
+          # Permission checks happen at controller level for what content they can see
+          expect(ai_tab).not_to be_nil
+          expect(ai_tab[:label]).to eq("AI Experiences")
         end
 
         it "includes AI Experiences tab for users with manage_course_content permissions" do
@@ -2995,6 +3116,62 @@ describe Course do
           # Home should be first, AI Experiences should be second
           expect(tab_ids[0]).to eq(Course::TAB_HOME)
           expect(tab_ids[1]).to eq(Course::TAB_AI_EXPERIENCES)
+        end
+      end
+
+      describe "TAB_NOTEBOOK" do
+        let(:student) do
+          user_factory(active_all: true).tap do |s|
+            @course.enroll_student(s, enrollment_state: "active")
+          end
+        end
+
+        before do
+          @course.account.enable_feature!(:notebook)
+        end
+
+        after do
+          @course.account.disable_feature!(:notebook)
+        end
+
+        it "includes Notebook tab for students when feature flag is enabled" do
+          tabs = @course.tabs_available(student)
+          notebook_tab = tabs.find { |t| t[:id] == Course::TAB_NOTEBOOK }
+
+          expect(notebook_tab).not_to be_nil
+        end
+
+        it "does not include Notebook tab when feature flag is disabled" do
+          @course.account.disable_feature!(:notebook)
+
+          tabs = @course.tabs_available(student)
+          expect(tabs.find { |t| t[:id] == Course::TAB_NOTEBOOK }).to be_nil
+        end
+
+        it "does not include Notebook tab for teachers" do
+          tabs = @course.tabs_available(@user)
+          expect(tabs.find { |t| t[:id] == Course::TAB_NOTEBOOK }).to be_nil
+        end
+
+        it "respects a custom tab position when reordered" do
+          @course.tab_configuration = [
+            { id: Course::TAB_NOTEBOOK },
+            { id: Course::TAB_ANNOUNCEMENTS },
+            { id: Course::TAB_ASSIGNMENTS },
+            { id: Course::TAB_DISCUSSIONS },
+            { id: Course::TAB_GRADES },
+            { id: Course::TAB_PAGES },
+            { id: Course::TAB_FILES },
+            { id: Course::TAB_SYLLABUS },
+            { id: Course::TAB_OUTCOMES },
+            { id: Course::TAB_QUIZZES },
+            { id: Course::TAB_MODULES }
+          ]
+          @course.save!
+
+          tab_ids = @course.tabs_available(student).pluck(:id)
+          expect(tab_ids[0]).to eq(Course::TAB_HOME)
+          expect(tab_ids[1]).to eq(Course::TAB_NOTEBOOK)
         end
       end
 
@@ -3114,6 +3291,156 @@ describe Course do
         expect(@course.tabs_available(@user).filter_map { |t| t[:label] }.length).to eql(tab_ids.length)
       end
 
+      describe "nav menu links" do
+        before do
+          @course.root_account.enable_feature!(:nav_menu_links)
+          link
+        end
+
+        let(:link) do
+          NavMenuLink.create!(
+            context: @course,
+            course_nav: true,
+            label: "External Resource",
+            url: "https://example.com"
+          )
+        end
+
+        it "includes nav menu link tabs when feature flag is enabled" do
+          tabs = @course.tabs_available(@user, include_external: true)
+          nav_link_tab = tabs.find { |t| t[:id] == "nav_menu_link_#{link.id}" }
+
+          expect(nav_link_tab[:label]).to eq("External Resource")
+          expect(nav_link_tab[:href]).to eq(:nav_menu_link_url)
+          expect(nav_link_tab[:args]).to eq(["https://example.com"])
+          expect(nav_link_tab[:external]).to be true
+          expect(nav_link_tab[:target]).to eq("_blank")
+        end
+
+        it "does not include nav menu links when feature flag is disabled" do
+          @course.root_account.disable_feature!(:nav_menu_links)
+          tabs = @course.tabs_available(@user)
+          expect(tabs.pluck(:id)).not_to include("nav_menu_link_#{link.id}")
+        end
+
+        it "does not include nav menu links when include_external is false" do
+          tabs = @course.tabs_available(@user, include_external: false)
+          expect(tabs.pluck(:id)).not_to include("nav_menu_link_#{link.id}")
+        end
+
+        it "puts nav menu links in the correct place" do
+          @course.tab_configuration = [
+            { "id" => Course::TAB_HOME },
+            { "id" => Course::TAB_ASSIGNMENTS },
+            { "id" => "nav_menu_link_#{link.id}" }
+          ]
+          @course.save!
+          tabs = @course.tabs_available(@user)
+          expect(tabs.pluck(:id)[0...3]).to eq([
+                                                 Course::TAB_HOME,
+                                                 Course::TAB_ASSIGNMENTS,
+                                                 "nav_menu_link_#{link.id}",
+                                               ])
+        end
+
+        it "shows hidden nav menu link tabs to admins but not students" do
+          @course.tab_configuration = [
+            { "id" => Course::TAB_HOME },
+            { "id" => Course::TAB_ASSIGNMENTS },
+            { "id" => "nav_menu_link_#{link.id}", "hidden" => true }
+          ]
+          @course.save!
+
+          # Teachers/admins can see hidden nav menu links (like regular tabs)
+          tabs = @course.tabs_available(@teacher)
+          nav_link_tab = tabs.find { |t| t[:id] == "nav_menu_link_#{link.id}" }
+          expect(nav_link_tab).to be_present
+          expect(nav_link_tab[:hidden]).to be true
+
+          # Students cannot see hidden nav menu links
+          student_in_course(active_all: true)
+          tabs = @course.tabs_available(@student)
+          expect(tabs.pluck(:id)).not_to include("nav_menu_link_#{link.id}")
+        end
+
+        context "for K5 subject courses" do
+          before do
+            toggle_k5_setting(@course.account)
+            @course.tab_configuration = [
+              { "id" => "nav_menu_link_#{link.id}", "hidden" => true }
+            ]
+            @course.save!
+          end
+
+          context "course_subject_tabs sidebar" do
+            it "shows hidden tab to admins" do
+              tabs = @course.tabs_available(@teacher, course_subject_tabs: true, include_external: true)
+              nav_link_tab = tabs.find { |t| t[:id] == "nav_menu_link_#{link.id}" }
+              expect(nav_link_tab).to be_present
+              expect(nav_link_tab[:hidden]).to be true
+            end
+
+            it "hides hidden tab from students" do
+              student_in_course(active_all: true)
+              student_tabs = @course.tabs_available(@student, course_subject_tabs: true, include_external: true)
+              expect(student_tabs.pluck(:id)).not_to include("nav_menu_link_#{link.id}")
+            end
+
+            it "shows visible tab to students" do
+              @course.tab_configuration = []
+              @course.save!
+              student_in_course(active_all: true)
+              student_tabs = @course.tabs_available(@student, course_subject_tabs: true, include_external: true)
+              expect(student_tabs.pluck(:id)).to include("nav_menu_link_#{link.id}")
+            end
+          end
+
+          context "regular left-nav settings page" do
+            # include_external: true is required here (unlike non-K5 tests)
+            # because the K5 code path starts from tabs=[] and nav_menu_link
+            # tabs only reach the list via the external_tabs append.
+            it "shows hidden tab to admins" do
+              tabs = @course.tabs_available(@teacher, include_external: true)
+              nav_link_tab = tabs.find { |t| t[:id] == "nav_menu_link_#{link.id}" }
+              expect(nav_link_tab).to be_present
+              expect(nav_link_tab[:hidden]).to be true
+            end
+
+            it "hides hidden tab from students" do
+              student_in_course(active_all: true)
+              student_tabs = @course.tabs_available(@student, include_external: true)
+              expect(student_tabs.pluck(:id)).not_to include("nav_menu_link_#{link.id}")
+            end
+
+            it "shows visible tab to students" do
+              @course.tab_configuration = []
+              @course.save!
+              student_in_course(active_all: true)
+              student_tabs = @course.tabs_available(@student, include_external: true)
+              expect(student_tabs.pluck(:id)).to include("nav_menu_link_#{link.id}")
+            end
+          end
+        end
+
+        it "includes link_context_type in tab_configuration" do
+          l2 = NavMenuLink.create!(context: @course.account, course_nav: true, url: "https://example.com", label: "l2")
+          @course.tab_configuration = [
+            { "id" => Course::TAB_HOME },
+            { "id" => "nav_menu_link_#{link.id}" },
+            { "id" => "nav_menu_link_#{l2.id}" },
+          ]
+          @course.save!
+
+          tabs = @course.tabs_available(@teacher)
+          expect(tabs[1][:id]).to eq("nav_menu_link_#{link.id}")
+          expect(tabs[1][:link_context_type]).to eq("course")
+
+          expect(tabs[2][:id]).to eq("nav_menu_link_#{l2.id}")
+          expect(tabs[2][:link_context_type]).to eq("account")
+          expect(tabs[2][:label]).to eq("l2")
+        end
+      end
+
       it "handles hidden_unused correctly for discussions" do
         tabs = @course.uncached_tabs_available(@teacher, include_hidden_unused: true)
         dtab = tabs.detect { |t| t[:id] == Course::TAB_DISCUSSIONS }
@@ -3131,16 +3458,23 @@ describe Course do
         expect(dtab[:hidden_unused]).to be_falsey
       end
 
-      it "does not hide tabs for completed teacher enrollments" do
-        @user.enrollments.where(course_id: @course).first.complete!
-        tab_ids = @course.tabs_available(@user).pluck(:id)
-        expect(tab_ids).to eql(default_tab_ids)
+      # TODO: Remove this context when ai_experiences hits GA
+      context "without ai_experiences feature" do
+        before do
+          @course.root_account.disable_feature!(:ai_experiences)
+        end
+
+        it "does not hide tabs for completed teacher enrollments" do
+          @user.enrollments.where(course_id: @course).first.complete!
+          tab_ids = @course.tabs_available(@user).pluck(:id)
+          expect(tab_ids).to eql(default_tab_ids)
+        end
       end
 
       it "does not include Announcements without read_announcements rights" do
         @course.account.role_overrides.create!(role: teacher_role, permission: "read_announcements", enabled: false)
         tab_ids = @course.uncached_tabs_available(@teacher, include_hidden_unused: true).pluck(:id)
-        expect(tab_ids).to_not include(Course::TAB_ANNOUNCEMENTS)
+        expect(tab_ids).not_to include(Course::TAB_ANNOUNCEMENTS)
       end
 
       it "shows people tab with granular permissions if hidden" do
@@ -3185,6 +3519,23 @@ describe Course do
           tabs = @course.tabs_available(@user, include_external: true).pluck(:label)
 
           expect(tabs).to include("Item Banks")
+        end
+
+        context "and the new_quizzes_native_experience is enabled" do
+          before do
+            @course.enable_feature!(:new_quizzes_native_experience)
+          end
+
+          it "hides item banks tab for students" do
+            student_in_course(active_all: true)
+            tab_ids = @course.tabs_available(@student, include_external: true).pluck(:id)
+            expect(tab_ids).not_to include(Course::TAB_ITEM_BANKS)
+          end
+
+          it "shows item banks tab for teachers" do
+            available_tabs = @course.tabs_available(@user, include_external: true).pluck(:id)
+            expect(available_tabs).to include(Course::TAB_ITEM_BANKS)
+          end
         end
 
         context "and the ams_root_account_integration is enabled" do
@@ -3510,12 +3861,19 @@ describe Course do
         end
       end
 
-      it "returns K-6 tabs if feature flag is enabled for students" do
-        @course.enable_feature!(:canvas_k6_theme)
-        tab_ids = @course.tabs_available(@user).pluck(:id)
-        expect(tab_ids).to eq [Course::TAB_HOME, Course::TAB_GRADES]
-      ensure
-        @course.disable_feature!(:canvas_k6_theme)
+      # TODO: Remove this context when ai_experiences hits GA
+      context "without ai_experiences feature" do
+        before do
+          @course.root_account.disable_feature!(:ai_experiences)
+        end
+
+        it "returns K-6 tabs if feature flag is enabled for students" do
+          @course.enable_feature!(:canvas_k6_theme)
+          tab_ids = @course.tabs_available(@user).pluck(:id)
+          expect(tab_ids).to eq [Course::TAB_HOME, Course::TAB_GRADES]
+        ensure
+          @course.disable_feature!(:canvas_k6_theme)
+        end
       end
 
       it "hides unused tabs if not an admin" do
@@ -3752,7 +4110,7 @@ describe Course do
 
         course_observers = @course.active_course_level_observers
         expect(course_observers).to include(@course_level_observer)
-        expect(course_observers).to_not include(@oe.user)
+        expect(course_observers).not_to include(@oe.user)
       end
     end
 
@@ -4542,8 +4900,8 @@ describe Course do
 
         it "generates valid csv without a grading standard" do
           @course.recompute_student_scores_without_send_later
-          expect(@course.generate_grade_publishing_csv_output(@ase, @user, @pseudonym)).to eq [
-            [@ase.map(&:id), <<~CSV, "text/csv"]]
+          expect(@course.generate_grade_publishing_csv_output(@ase, @user, @pseudonym)).to eq(
+            [[@ase.map(&:id), <<~CSV, "text/csv"]])
               publisher_id,publisher_sis_id,course_id,course_sis_id,section_id,section_sis_id,student_id,student_sis_id,enrollment_id,enrollment_status,score
               #{@user.id},U1,#{@course.id},,#{@ase[0].course_section_id},,#{@ase[0].user.id},,#{@ase[0].id},active,95.0
               #{@user.id},U1,#{@course.id},,#{@ase[1].course_section_id},,#{@ase[1].user.id},,#{@ase[1].id},active,65.0
@@ -4560,8 +4918,8 @@ describe Course do
 
         it "generates valid csv without a publishing pseudonym" do
           @course.recompute_student_scores_without_send_later
-          expect(@course.generate_grade_publishing_csv_output(@ase, @user, nil)).to eq [
-            [@ase.map(&:id), <<~CSV, "text/csv"]]
+          expect(@course.generate_grade_publishing_csv_output(@ase, @user, nil)).to eq(
+            [[@ase.map(&:id), <<~CSV, "text/csv"]])
               publisher_id,publisher_sis_id,course_id,course_sis_id,section_id,section_sis_id,student_id,student_sis_id,enrollment_id,enrollment_status,score
               #{@user.id},,#{@course.id},,#{@ase[0].course_section_id},,#{@ase[0].user.id},,#{@ase[0].id},active,95.0
               #{@user.id},,#{@course.id},,#{@ase[1].course_section_id},,#{@ase[1].user.id},,#{@ase[1].id},active,65.0
@@ -4580,8 +4938,8 @@ describe Course do
           @course_section.sis_source_id = "section1"
           @course_section.save!
           @course.recompute_student_scores_without_send_later
-          expect(@course.generate_grade_publishing_csv_output(@ase, @user, @pseudonym)).to eq [
-            [@ase.map(&:id), <<~CSV, "text/csv"]]
+          expect(@course.generate_grade_publishing_csv_output(@ase, @user, @pseudonym)).to eq(
+            [[@ase.map(&:id), <<~CSV, "text/csv"]])
               publisher_id,publisher_sis_id,course_id,course_sis_id,section_id,section_sis_id,student_id,student_sis_id,enrollment_id,enrollment_status,score
               #{@user.id},U1,#{@course.id},,#{@ase[0].course_section_id},section1,#{@ase[0].user.id},,#{@ase[0].id},active,95.0
               #{@user.id},U1,#{@course.id},,#{@ase[1].course_section_id},section1,#{@ase[1].user.id},,#{@ase[1].id},active,65.0
@@ -4600,8 +4958,8 @@ describe Course do
           @course.grading_standard_id = 0
           @course.save!
           @course.recompute_student_scores_without_send_later
-          expect(@course.generate_grade_publishing_csv_output(@ase, @user, @pseudonym)).to eq [
-            [@ase.map(&:id), <<~CSV, "text/csv"]]
+          expect(@course.generate_grade_publishing_csv_output(@ase, @user, @pseudonym)).to eq(
+            [[@ase.map(&:id), <<~CSV, "text/csv"]])
               publisher_id,publisher_sis_id,course_id,course_sis_id,section_id,section_sis_id,student_id,student_sis_id,enrollment_id,enrollment_status,score,grade
               #{@user.id},U1,#{@course.id},,#{@ase[0].course_section_id},,#{@ase[0].user.id},,#{@ase[0].id},active,95.0,A
               #{@user.id},U1,#{@course.id},,#{@ase[1].course_section_id},,#{@ase[1].user.id},,#{@ase[1].id},active,65.0,D
@@ -4626,8 +4984,8 @@ describe Course do
           @ase[3].scores.update_all(final_score: nil)
           @ase[4].scores.update_all(final_score: nil)
 
-          expect(@course.generate_grade_publishing_csv_output(@ase, @user, @pseudonym)).to eq [
-            [@ase.map(&:id) - [@ase[1].id, @ase[3].id, @ase[4].id], <<~CSV, "text/csv"]]
+          expect(@course.generate_grade_publishing_csv_output(@ase, @user, @pseudonym)).to eq(
+            [[@ase.map(&:id) - [@ase[1].id, @ase[3].id, @ase[4].id], <<~CSV, "text/csv"]])
               publisher_id,publisher_sis_id,course_id,course_sis_id,section_id,section_sis_id,student_id,student_sis_id,enrollment_id,enrollment_status,score,grade
               #{@user.id},U1,#{@course.id},,#{@ase[0].course_section_id},,#{@ase[0].user.id},,#{@ase[0].id},active,95.0,A
               #{@user.id},U1,#{@course.id},,#{@ase[2].course_section_id},,#{@ase[2].user.id},,#{@ase[2].id},active,0.0,F
@@ -4864,7 +5222,7 @@ describe Course do
     end
 
     context "integration suite" do
-      def quick_sanity_check(user, expect_success = true)
+      def quick_sanity_check(user, expect_success: true)
         Course.valid_grade_export_types["test_export"] = {
           name: "test export",
           callback: lambda do |course, _enrollments, publishing_user, publishing_pseudonym|
@@ -4905,7 +5263,7 @@ describe Course do
 
       it "does not allow grade publishing for a user that is disallowed" do
         @user = User.new
-        expect { quick_sanity_check(@user, false) }.to raise_error("publishing disallowed for this publishing user")
+        expect { quick_sanity_check(@user, expect_success: false) }.to raise_error("publishing disallowed for this publishing user")
       end
 
       it "does not allow grade publishing for a user with a pseudonym in the wrong account" do
@@ -4913,7 +5271,7 @@ describe Course do
         @pseudonym.account = account_model
         @pseudonym.sis_user_id = "U1"
         @pseudonym.save!
-        expect { quick_sanity_check(@user, false) }.to raise_error("publishing disallowed for this publishing user")
+        expect { quick_sanity_check(@user, expect_success: false) }.to raise_error("publishing disallowed for this publishing user")
       end
 
       it "does not allow grade publishing for a user with a pseudonym without a sis id" do
@@ -4921,7 +5279,7 @@ describe Course do
         @pseudonym.account_id = @course.root_account_id
         @pseudonym.sis_user_id = nil
         @pseudonym.save!
-        expect { quick_sanity_check(@user, false) }.to raise_error("publishing disallowed for this publishing user")
+        expect { quick_sanity_check(@user, expect_success: false) }.to raise_error("publishing disallowed for this publishing user")
       end
 
       it "does not publish empty csv" do
@@ -4940,7 +5298,7 @@ describe Course do
         @ps.save!
 
         @course.grading_standard_id = 0
-        expect(SSLCommon).to_not receive(:post_data) # like c'mon dude why send an empty csv file
+        expect(SSLCommon).not_to receive(:post_data) # like c'mon dude why send an empty csv file
         @course.publish_final_grades(@user)
       end
 
@@ -5405,7 +5763,7 @@ describe Course do
       expect(Course.manageable_by_user(user.id).map(&:id)).to include(course.id)
 
       user.account_users.first.destroy!
-      expect(Course.manageable_by_user(user.id)).to_not be_exists
+      expect(Course.manageable_by_user(user.id)).not_to be_exists
     end
 
     it "includes courses the user is actively enrolled in as a teacher" do
@@ -5545,10 +5903,10 @@ describe Course do
     it "includes the course's banks if include_self is true" do
       @account = Account.create
       @course = Course.create(account: @account)
-      expect(@course.inherited_assessment_question_banks(true)).to be_empty
+      expect(@course.inherited_assessment_question_banks(include_self: true)).to be_empty
 
       bank = @course.assessment_question_banks.create
-      expect(@course.inherited_assessment_question_banks(true)).to eq [bank]
+      expect(@course.inherited_assessment_question_banks(include_self: true)).to eq [bank]
     end
 
     it "includes all banks in the account hierarchy" do
@@ -5576,7 +5934,7 @@ describe Course do
       @course = Course.create(account: @account)
       bank = @course.assessment_question_banks.create
 
-      banks = @course.inherited_assessment_question_banks(true)
+      banks = @course.inherited_assessment_question_banks(include_self: true)
       expect(banks.order(:id)).to eq [root_bank, account_bank, bank]
       expect(banks.where(id: bank).first).to eql bank
       expect(banks.where(id: account_bank).first).to eql account_bank
@@ -5662,7 +6020,7 @@ describe Course do
         enrollment = @course.enrollments.where(user: @student2).first
         enrollment.deactivate
 
-        expect(@course.users_visible_to(@teacher, include: [:inactive])).to include(@student2)
+        expect(@course.users_visible_to(@teacher, include_priors: true)).to include(@student2)
       end
 
       it "does not return inactive users when not included from all sections" do
@@ -5676,7 +6034,7 @@ describe Course do
         enrollment = @course.enrollments.where(user: @student2).first
         enrollment.conclude
 
-        expect(@course.users_visible_to(@teacher, include: [:completed])).to include(@student2)
+        expect(@course.users_visible_to(@teacher, include_priors: true)).to include(@student2)
       end
 
       it "does not return concluded users when not included from all sections" do
@@ -5942,7 +6300,7 @@ describe Course do
   describe "#sync_homeroom_enrollments" do
     before :once do
       @homeroom_course = course_factory(active_course: true)
-      toggle_k5_setting(@homeroom_course.account, true)
+      toggle_k5_setting(@homeroom_course.account)
       @homeroom_course.homeroom_course = true
       @homeroom_course.save!
 
@@ -6052,7 +6410,7 @@ describe Course do
       before :once do
         @shard1.activate do
           account = Account.create!
-          toggle_k5_setting(account, true)
+          toggle_k5_setting(account, enable: true)
           @cross_shard_course = course_factory(account:, active_course: true)
           @cross_shard_course.sync_enrollments_from_homeroom = true
           @cross_shard_course.homeroom_course_id = @homeroom_course.id
@@ -6077,7 +6435,7 @@ describe Course do
   describe "#sync_homeroom_participation" do
     before :once do
       @homeroom_course = course_factory(active_course: true)
-      toggle_k5_setting(@homeroom_course.account, true)
+      toggle_k5_setting(@homeroom_course.account)
       @homeroom_course.homeroom_course = true
       @homeroom_course.save!
 
@@ -6144,7 +6502,7 @@ describe Course do
   describe "#sync_with_homeroom" do
     before :once do
       @account = Account.default
-      toggle_k5_setting(@account, true)
+      toggle_k5_setting(@account)
 
       @homeroom_course1 = course_factory(active_course: true, account: @account)
       @homeroom_course1.homeroom_course = true
@@ -6196,7 +6554,7 @@ describe Course do
   describe ".syncing_subjects" do
     before :once do
       @account = Account.default
-      toggle_k5_setting(@account, true)
+      toggle_k5_setting(@account)
 
       @homeroom_course1 = course_factory(active_course: true, account: @account)
       @homeroom_course1.homeroom_course = true
@@ -6520,7 +6878,7 @@ describe Course do
 
       it "does not allow students to read files" do
         user.student_enrollments.create!(workflow_state: "active", course: @course)
-        expect(@course.check_policy(user)).to_not include :read_files
+        expect(@course.check_policy(user)).not_to include :read_files
       end
 
       it "allows teachers to read files" do
@@ -6602,6 +6960,39 @@ describe Course do
         @course.complete!
         teacher_in_course
         expect(@course.grants_right?(@teacher, :direct_share)).to be(true)
+      end
+    end
+
+    describe "update_course_details" do
+      context "when course_navigation_and_feature_options_permissions is disabled" do
+        it "grants :update_course_details when teacher has :manage_course_content_edit" do
+          teacher_in_course(active_all: true)
+          expect(@course.grants_right?(@teacher, :update_course_details)).to be(true)
+        end
+
+        it "does not grant :update_course_details when :manage_course_content_edit is revoked" do
+          RoleOverride.create!(context: @course.account, permission: "manage_course_content_edit", role: teacher_role, enabled: false)
+          teacher_in_course(active_all: true)
+          expect(@course.grants_right?(@teacher, :update_course_details)).to be(false)
+        end
+      end
+
+      context "when course_navigation_and_feature_options_permissions is enabled" do
+        before do
+          @course.root_account.enable_feature!(:course_navigation_and_feature_options_permissions)
+        end
+
+        it "grants :update_course_details via :manage_course_details even when :manage_course_content_edit is revoked" do
+          RoleOverride.create!(context: @course.account, permission: "manage_course_content_edit", role: teacher_role, enabled: false)
+          teacher_in_course(active_all: true)
+          expect(@course.grants_right?(@teacher, :update_course_details)).to be(true)
+        end
+
+        it "does not grant :update_course_details when :manage_course_details is revoked" do
+          RoleOverride.create!(context: @course.account, permission: "manage_course_details", role: teacher_role, enabled: false)
+          teacher_in_course(active_all: true)
+          expect(@course.grants_right?(@teacher, :update_course_details)).to be(false)
+        end
       end
     end
   end
@@ -7060,14 +7451,14 @@ describe Course do
         enrollment1 = @course.enroll_user(@user, "StudentEnrollment", role: @lazy_role)
         enrollment2 = @course.enroll_user(@user, "StudentEnrollment", role: @honor_role)
         expect(@user.enrollments.count).to be 2
-        expect(enrollment1).to_not eql enrollment2
+        expect(enrollment1).not_to eql enrollment2
       end
 
       it "does not re-use an enrollment with no role when enrolling with a role" do
         enrollment1 = @course.enroll_user(@user, "StudentEnrollment")
         enrollment2 = @course.enroll_user(@user, "StudentEnrollment", role: @honor_role)
         expect(@user.enrollments.count).to be 2
-        expect(enrollment1).to_not eql enrollment2
+        expect(enrollment1).not_to eql enrollment2
       end
 
       it "does not re-use an enrollment with a role when enrolling with no role" do
@@ -7535,12 +7926,12 @@ describe Course do
       end
 
       it "does not show to student not in section" do
-        expect(@course.module_items_visible_to(@student)).to_not include(@topic_tag)
+        expect(@course.module_items_visible_to(@student)).not_to include(@topic_tag)
       end
 
       it "does not show to student if visibiilty is deleted" do
         @topic.discussion_topic_section_visibilities.destroy_all
-        expect(@course.module_items_visible_to(@other_section_student)).to_not include(@topic_tag)
+        expect(@course.module_items_visible_to(@other_section_student)).not_to include(@topic_tag)
       end
 
       it "shows to teacher" do
@@ -7585,7 +7976,7 @@ describe Course do
       end
 
       context "when module not exist on the course" do
-        subject { @course.visible_module_items_by_module(@teacher, double("mock", id: "noop")) }
+        subject { @course.visible_module_items_by_module(@teacher, instance_double(ContextModule, id: "noop")) }
 
         it "should return empty list" do
           expect(subject.length).to be(0)
@@ -7609,7 +8000,7 @@ describe Course do
       end
 
       context "when module not exist on the course" do
-        subject { @course.visible_module_items_by_module(@student, double("mock", id: "noop")) }
+        subject { @course.visible_module_items_by_module(@student, instance_double(ContextModule, id: "noop")) }
 
         it "should return empty list" do
           expect(subject.length).to be(0)
@@ -7983,6 +8374,71 @@ describe Course do
         expect(course.can_stop_being_template?).to be false
         course.template = false
         expect(course).not_to be_valid
+      end
+    end
+
+    describe "#snapshot_account_default_discussion_settings" do
+      let(:account) { Account.default }
+      let(:template_defaults) do
+        {
+          anonymous_state: "full_anonymity",
+          require_initial_post: false,
+          allow_rating: false,
+          sort_order: "desc"
+        }
+      end
+      let(:template_course) do
+        Course.create!(template: true).tap do |c|
+          c.default_discussion_settings = template_defaults
+          c.save!
+        end
+      end
+
+      before do
+        account.enable_feature!(:default_discussion_options)
+        account.update!(course_template: template_course)
+      end
+
+      it "snapshots template default discussion settings onto new course" do
+        course = account.courses.create!
+        expect(course.default_discussion_settings).to include(
+          anonymous_state: "full_anonymity",
+          require_initial_post: false,
+          allow_rating: false,
+          sort_order: "desc"
+        )
+      end
+
+      it "snapshots use_default_discussion_settings from template when true" do
+        template_course.use_default_discussion_settings = true
+        template_course.save!
+
+        course = account.courses.create!
+        expect(course.use_default_discussion_settings).to be true
+      end
+
+      it "snapshots use_default_discussion_settings from template when false" do
+        template_course.use_default_discussion_settings = false
+        template_course.save!
+
+        course = account.courses.create!
+        expect(course.use_default_discussion_settings).to be false
+      end
+
+      it "does not snapshot when template has no default_discussion_settings" do
+        template_course.default_discussion_settings = nil
+        template_course.save!
+
+        course = account.courses.create!
+        expect(course.default_discussion_settings).to be_nil
+      end
+
+      it "does not snapshot when account has no course template" do
+        account.update!(course_template_id: 0)
+
+        course = account.courses.create!
+        expect(course.default_discussion_settings).to be_nil
+        expect(course.use_default_discussion_settings).to be false
       end
     end
 
@@ -8472,6 +8928,67 @@ describe Course do
     end
   end
 
+  describe "removing course pacing overrides on disable" do
+    before do
+      @course = course_model
+      @course.enable_course_paces = true
+      @course.save!
+      @course.offer!
+
+      @assignment = @course.assignments.create!(title: "Test Assignment")
+      @student = user_model
+      @course.enroll_student(@student, enrollment_state: "active")
+
+      @override = @assignment.assignment_overrides.create!(
+        title: "Course Pacing",
+        set_type: "ADHOC",
+        due_at_overridden: true,
+        due_at: 1.day.from_now
+      )
+      @override.assignment_override_students.create!(user: @student)
+    end
+
+    context "when feature flag is enabled" do
+      before do
+        @course.root_account.enable_feature!(:course_pace_remove_overrides_on_disable)
+      end
+
+      it "queues a job to remove course pacing overrides when course pacing is disabled" do
+        expect(CoursePacing::RemoveOverridesService).to receive(:delay_if_production).and_return(CoursePacing::RemoveOverridesService)
+        expect(CoursePacing::RemoveOverridesService).to receive(:call).with(@course.id)
+
+        @course.update!(enable_course_paces: false)
+      end
+
+      it "does not queue a job when course pacing is enabled" do
+        @course.enable_course_paces = false
+        @course.save!
+
+        expect(CoursePacing::RemoveOverridesService).not_to receive(:delay_if_production)
+
+        @course.update!(enable_course_paces: true)
+      end
+
+      it "does not queue a job when course pacing setting is not changed" do
+        expect(CoursePacing::RemoveOverridesService).not_to receive(:delay_if_production)
+
+        @course.update!(name: "New Name")
+      end
+    end
+
+    context "when feature flag is disabled" do
+      before do
+        @course.root_account.disable_feature!(:course_pace_remove_overrides_on_disable)
+      end
+
+      it "does not queue a job to remove overrides" do
+        expect(CoursePacing::RemoveOverridesService).not_to receive(:delay_if_production)
+
+        @course.update!(enable_course_paces: false)
+      end
+    end
+  end
+
   describe "#batch_update_context_modules" do
     before do
       @course = course_model
@@ -8585,6 +9102,21 @@ describe Course do
     it "returns the completed_ids" do
       completed_ids = @course.batch_update_context_modules(module_ids: @ids_to_update, event: :publish)
       expect(completed_ids).to eq @ids_to_update
+    end
+
+    it "sets the wiki page user to the progress user when publishing" do
+      user2 = user_model
+      progress = Progress.create!(context: @course, tag: "context_module_batch_update", user: user2)
+      @course.batch_update_context_modules(progress, module_ids: @ids_to_update, event: :publish)
+      expect(@wiki_page.reload.user).to eq user2
+    end
+
+    it "sets the wiki page user to the progress user when unpublishing" do
+      user2 = user_model
+      @wiki_page_tag.trigger_publish!
+      progress = Progress.create!(context: @course, tag: "context_module_batch_update", user: user2)
+      @course.batch_update_context_modules(progress, module_ids: @ids_to_update, event: :unpublish)
+      expect(@wiki_page.reload.user).to eq user2
     end
   end
 
@@ -8946,6 +9478,48 @@ describe Course do
       course_model
       expect { @course.destroy }.to change { @course.reload.deleted_at }.from(nil).to be_truthy
     end
+
+    it "soft-deletes associated LTI context controls" do
+      course = course_model
+      registration = lti_registration_with_tool(account: course.account)
+      deployment = registration.deployments.first
+
+      # Create a context control for the course
+      control = Lti::ContextControl.create!(
+        context: course,
+        registration:,
+        deployment:
+      )
+
+      expect(control.workflow_state).not_to eq("deleted_with_context")
+
+      course.destroy
+
+      expect(control.reload.workflow_state).to eq("deleted_with_context")
+      expect(control.updated_at).to be > control.created_at
+    end
+
+    it "restores LTI context controls when course is undeleted" do
+      course = course_model
+      registration = lti_registration_with_tool(account: course.account)
+      deployment = registration.deployments.first
+
+      control = Lti::ContextControl.create!(
+        context: course,
+        registration:,
+        deployment:
+      )
+
+      # Delete the course
+      course.destroy
+      expect(control.reload.workflow_state).to eq("deleted_with_context")
+
+      # Undelete the course
+      course.process_event(:undelete)
+      course.save!
+
+      expect(control.reload.workflow_state).to eq("active")
+    end
   end
 
   describe "#all_dates" do
@@ -9145,18 +9719,190 @@ describe Course do
     end
   end
 
+  describe "career_learning_library_only" do
+    describe "scopes" do
+      before :once do
+        @horizon_account = Account.create!
+        @horizon_account.enable_feature!(:horizon_course_setting)
+        @horizon_account.enable_feature!(:horizon_learning_library_ms2)
+        @horizon_account.horizon_account = true
+        @horizon_account.save!
+      end
+
+      it ".career_learning_library returns only courses with career_learning_library_only=true" do
+        regular_course = @horizon_account.courses.create!(name: "Regular Course")
+        regular_course.update!(career_learning_library_only: false)
+
+        cll_course = @horizon_account.courses.create!(name: "CLL Course")
+        cll_course.update!(career_learning_library_only: true)
+
+        expect(Course.career_learning_library).to include(cll_course)
+        expect(Course.career_learning_library).not_to include(regular_course)
+      end
+
+      it ".not_career_learning_library returns only courses with career_learning_library_only=false" do
+        regular_course = @horizon_account.courses.create!(name: "Regular Course")
+        regular_course.update!(career_learning_library_only: false)
+
+        cll_course = @horizon_account.courses.create!(name: "CLL Course")
+        cll_course.update!(career_learning_library_only: true)
+
+        expect(Course.not_career_learning_library).to include(regular_course)
+        expect(Course.not_career_learning_library).not_to include(cll_course)
+      end
+    end
+
+    describe "default value" do
+      it "defaults to false for new courses" do
+        course = course_factory
+        expect(course.career_learning_library_only).to be false
+      end
+    end
+
+    describe "#set_career_learning_library_only" do
+      let(:horizon_account) do
+        account = Account.create!
+        account.enable_feature!(:horizon_course_setting)
+        account.enable_feature!(:horizon_learning_library_ms2)
+        account.horizon_account = true
+        account.save!
+        account
+      end
+
+      let(:regular_account) { Account.create! }
+
+      it "allows setting to true in a horizon account with feature flag enabled" do
+        course = horizon_account.courses.create!(career_learning_library_only: true)
+        course.save!
+        expect(course.career_learning_library_only).to be true
+      end
+
+      it "forces to false in a non-horizon account" do
+        regular_account.enable_feature!(:horizon_learning_library_ms2)
+        course = regular_account.courses.create!(career_learning_library_only: true)
+        course.save!
+        expect(course.career_learning_library_only).to be false
+      end
+
+      it "forces to false when feature flag is not enabled" do
+        account = Account.create!
+        account.enable_feature!(:horizon_course_setting)
+        account.horizon_account = true
+        account.save!
+
+        course = account.courses.create!(career_learning_library_only: true)
+        course.save!
+        expect(course.career_learning_library_only).to be false
+      end
+
+      it "forces to false when moving course from horizon to non-horizon account" do
+        course = horizon_account.courses.create!(career_learning_library_only: true)
+        course.save!
+        expect(course.career_learning_library_only).to be true
+
+        course.account = regular_account
+        course.save!
+        expect(course.career_learning_library_only).to be false
+      end
+
+      it "allows keeping true when moving course between horizon accounts" do
+        horizon_account2 = Account.create!
+        horizon_account2.enable_feature!(:horizon_course_setting)
+        horizon_account2.enable_feature!(:horizon_learning_library_ms2)
+        horizon_account2.horizon_account = true
+        horizon_account2.save!
+
+        course = horizon_account.courses.create!(career_learning_library_only: true)
+        course.save!
+        expect(course.career_learning_library_only).to be true
+
+        course.account = horizon_account2
+        course.save!
+        expect(course.career_learning_library_only).to be true
+      end
+
+      it "runs callback on account change" do
+        course = horizon_account.courses.create!
+        expect(course).to receive(:set_career_learning_library_only).and_call_original
+
+        course.account = regular_account
+        course.save!
+      end
+
+      it "runs callback when career_learning_library_only is changed" do
+        course = horizon_account.courses.create!
+        expect(course).to receive(:set_career_learning_library_only).and_call_original
+
+        course.career_learning_library_only = true
+        course.save!
+      end
+    end
+
+    describe "clonable_attributes" do
+      it "includes career_learning_library_only in clonable attributes" do
+        expect(Course.clonable_attributes).to include(:career_learning_library_only)
+      end
+
+      it "clones career_learning_library_only when copying a course in horizon account" do
+        horizon_account = Account.create!
+        horizon_account.enable_feature!(:horizon_course_setting)
+        horizon_account.enable_feature!(:horizon_learning_library_ms2)
+        horizon_account.horizon_account = true
+        horizon_account.save!
+
+        original_course = horizon_account.courses.create!(
+          name: "Original Course",
+          career_learning_library_only: true
+        )
+        original_course.save!
+
+        copied_course = original_course.dup
+        Course.clonable_attributes.each do |attr|
+          copied_course.send(:"#{attr}=", original_course.send(attr))
+        end
+        copied_course.save!
+
+        expect(copied_course.career_learning_library_only).to be true
+      end
+
+      it "forces to false when cloning to non-horizon account" do
+        horizon_account = Account.create!
+        horizon_account.enable_feature!(:horizon_course_setting)
+        horizon_account.enable_feature!(:horizon_learning_library_ms2)
+        horizon_account.horizon_account = true
+        horizon_account.save!
+
+        regular_account = Account.create!
+
+        original_course = horizon_account.courses.create!(
+          name: "Original Course",
+          career_learning_library_only: true
+        )
+        original_course.save!
+
+        copied_course = regular_account.courses.build
+        Course.clonable_attributes.each do |attr|
+          copied_course.send(:"#{attr}=", original_course.send(attr))
+        end
+        copied_course.save!
+
+        # Should be forced to false because regular_account is not horizon
+        expect(copied_course.career_learning_library_only).to be false
+      end
+    end
+  end
+
   describe "horizon content ingestion" do
     let(:horizon_account) do
       account = Account.create!
       account.enable_feature!(:horizon_course_setting)
-      account.enable_feature!(:horizon_auto_content_ingestion)
       account.horizon_account = true
       account.save!
       account
     end
 
     let(:regular_account) { Account.create! }
-    let(:pine_client_mock) { double("PineClient") }
+    let(:pine_client_mock) { class_double(PineClient) }
 
     before do
       allow(pine_client_mock).to receive_messages(enabled?: true, ingest_url: true, ingest_html: true)
@@ -9174,16 +9920,6 @@ describe Course do
           singleton: "horizon_content_discovery:#{course.global_id}"
         ).and_return(course)
         expect(course).to receive(:ingest_horizon_content)
-
-        course.account = horizon_account
-        course.save!
-      end
-
-      it "does not enqueue job when feature flag is disabled" do
-        horizon_account.disable_feature!(:horizon_auto_content_ingestion)
-        course = regular_account.courses.create!
-
-        expect(course).not_to receive(:ingest_horizon_content)
 
         course.account = horizon_account
         course.save!
@@ -9297,13 +10033,19 @@ describe Course do
 
     describe "#exceeds_accessibility_scan_limit?" do
       before do
-        allow(course.wiki_pages).to receive(:not_deleted).and_return(double(count: wiki_count))
-        allow(course.assignments).to receive(:active).and_return(double(count: assignment_count))
+        allow(course.wiki_pages).to receive(:not_deleted).and_return(instance_double(ActiveRecord::Relation, count: wiki_count))
+        not_excluded = instance_double(ActiveRecord::Relation, count: assignment_count)
+        active_assignments = class_double(Assignment, not_excluded_from_accessibility_scan: not_excluded)
+        allow(course.assignments).to receive(:active).and_return(active_assignments)
+        allow(course.discussion_topics).to receive(:scannable).and_return(instance_double(ActiveRecord::Relation, count: discussion_topic_count))
+        allow(course.announcements).to receive(:active).and_return(instance_double(ActiveRecord::Relation, count: announcement_count))
       end
 
       context "when total resources exceed limit" do
         let(:wiki_count) { 500 }
-        let(:assignment_count) { 600 }
+        let(:assignment_count) { 300 }
+        let(:discussion_topic_count) { 300 }
+        let(:announcement_count) { 200 }
 
         it "returns true" do
           expect(course.exceeds_accessibility_scan_limit?).to be true
@@ -9312,7 +10054,9 @@ describe Course do
 
       context "when total resources are within limit" do
         let(:wiki_count) { 500 }
-        let(:assignment_count) { 400 }
+        let(:assignment_count) { 200 }
+        let(:discussion_topic_count) { 200 }
+        let(:announcement_count) { 50 }
 
         it "returns false" do
           expect(course.exceeds_accessibility_scan_limit?).to be false
@@ -9321,7 +10065,9 @@ describe Course do
 
       context "when total resources equal limit" do
         let(:wiki_count) { 500 }
-        let(:assignment_count) { 500 }
+        let(:assignment_count) { 200 }
+        let(:discussion_topic_count) { 200 }
+        let(:announcement_count) { 100 }
 
         it "returns false" do
           expect(course.exceeds_accessibility_scan_limit?).to be false
@@ -9451,7 +10197,7 @@ describe Course do
         course.restrict_enrollments_to_course_dates = true
       else
         course.restrict_enrollments_to_course_dates = false
-        enrollment_term = double("EnrollmentTerm", start_at:, end_at:)
+        enrollment_term = instance_double(EnrollmentTerm, start_at:, end_at:)
         allow(course).to receive(:enrollment_term).and_return(enrollment_term)
       end
       expect(course.active_now?).to eq(expected)
@@ -9528,11 +10274,90 @@ describe Course do
     end
   end
 
+  describe "#a11y_checker_enabled?" do
+    let(:course) { Course.new(account: Account.default) }
+
+    context "when both a11y_checker and a11y_checker_eap features are enabled" do
+      before do
+        allow(course.account).to receive(:feature_enabled?).with(:a11y_checker).and_return(true)
+        allow(course).to receive(:feature_flag).with(:a11y_checker_eap).and_return(true)
+        allow(course).to receive(:feature_enabled?).with(:a11y_checker_eap).and_return(true)
+        allow(course.account).to receive(:feature_enabled?).with(:a11y_checker_ga1).and_return(false)
+      end
+
+      it "returns true" do
+        expect(course.a11y_checker_enabled?).to be true
+      end
+    end
+
+    context "when only a11y_checker_ga1 is enabled" do
+      before do
+        allow(course.account).to receive(:feature_enabled?).with(:a11y_checker).and_return(false)
+        allow(course).to receive(:feature_enabled?).with(:a11y_checker_eap).and_return(false)
+        allow(course.account).to receive(:feature_enabled?).with(:a11y_checker_ga1).and_return(true)
+      end
+
+      it "returns true" do
+        expect(course.a11y_checker_enabled?).to be true
+      end
+    end
+
+    context "when both EAP path and GA1 are enabled" do
+      before do
+        allow(course.account).to receive(:feature_enabled?).with(:a11y_checker).and_return(true)
+        allow(course).to receive(:feature_flag).with(:a11y_checker_eap).and_return(true)
+        allow(course).to receive(:feature_enabled?).with(:a11y_checker_eap).and_return(true)
+        allow(course.account).to receive(:feature_enabled?).with(:a11y_checker_ga1).and_return(true)
+      end
+
+      it "returns true" do
+        expect(course.a11y_checker_enabled?).to be true
+      end
+    end
+
+    context "when account a11y_checker is enabled but course a11y_checker_eap is disabled and ga1 is disabled" do
+      before do
+        allow(course.account).to receive(:feature_enabled?).with(:a11y_checker).and_return(true)
+        allow(course).to receive(:feature_flag).with(:a11y_checker_eap).and_return(true)
+        allow(course).to receive(:feature_enabled?).with(:a11y_checker_eap).and_return(false)
+        allow(course.account).to receive(:feature_enabled?).with(:a11y_checker_ga1).and_return(false)
+      end
+
+      it "returns false" do
+        expect(course.a11y_checker_enabled?).to be false
+      end
+    end
+
+    context "when account a11y_checker is disabled but course a11y_checker_eap is enabled and ga1 is disabled" do
+      before do
+        allow(course.account).to receive(:feature_enabled?).with(:a11y_checker).and_return(false)
+        allow(course).to receive(:feature_enabled?).with(:a11y_checker_eap).and_return(true)
+        allow(course.account).to receive(:feature_enabled?).with(:a11y_checker_ga1).and_return(false)
+      end
+
+      it "returns false" do
+        expect(course.a11y_checker_enabled?).to be false
+      end
+    end
+
+    context "when all features are disabled" do
+      before do
+        allow(course.account).to receive(:feature_enabled?).with(:a11y_checker).and_return(false)
+        allow(course).to receive(:feature_enabled?).with(:a11y_checker_eap).and_return(false)
+        allow(course.account).to receive(:feature_enabled?).with(:a11y_checker_ga1).and_return(false)
+      end
+
+      it "returns false" do
+        expect(course.a11y_checker_enabled?).to be false
+      end
+    end
+  end
+
   describe "syllabus versioning" do
     let(:course) { Course.create!(name: "Test Course") }
 
     context "when syllabus_versioning feature flag is enabled" do
-      before { Account.site_admin.enable_feature!(:syllabus_versioning) }
+      before { course.account.enable_feature!(:syllabus_versioning) }
 
       it "creates version when syllabus_body changes and excludes specified fields" do
         expect do
@@ -9548,15 +10373,387 @@ describe Course do
           expect(versioned_data).not_to have_key(excluded_field)
         end
       end
+
+      it "saves original version when editing existing syllabus for the first time" do
+        course.account.disable_feature!(:syllabus_versioning)
+        course.update!(syllabus_body: "Original syllabus content")
+        course.reload
+        expect(course.versions.count).to eq(0)
+
+        course.account.enable_feature!(:syllabus_versioning)
+        expect do
+          course.update!(syllabus_body: "Updated syllabus content")
+        end.to change { course.versions.count }.by(2)
+
+        first_version = course.versions.where(number: 1).first
+        first_version_data = YAML.safe_load(first_version.yaml, permitted_classes: [Time, Date, Symbol, ActiveSupport::TimeWithZone, ActiveSupport::TimeZone])
+        expect(first_version_data["syllabus_body"]).to eq("Original syllabus content")
+
+        second_version = course.versions.where(number: 2).first
+        second_version_data = YAML.safe_load(second_version.yaml, permitted_classes: [Time, Date, Symbol, ActiveSupport::TimeWithZone, ActiveSupport::TimeZone])
+        expect(second_version_data["syllabus_body"]).to eq("Updated syllabus content")
+      end
+
+      it "does not save original version if syllabus was blank" do
+        course.account.disable_feature!(:syllabus_versioning)
+        course.update!(syllabus_body: nil)
+        expect(course.versions.count).to eq(0)
+
+        course.account.enable_feature!(:syllabus_versioning)
+        expect do
+          course.update!(syllabus_body: "New syllabus content")
+        end.to change { course.versions.count }.by(1)
+
+        version = course.versions.last
+        versioned_data = YAML.safe_load(version.yaml, permitted_classes: [Time, Date, Symbol, ActiveSupport::TimeWithZone, ActiveSupport::TimeZone])
+        expect(versioned_data["syllabus_body"]).to eq("New syllabus content")
+      end
+
+      it "does not save duplicate original version on subsequent edits" do
+        course.account.disable_feature!(:syllabus_versioning)
+        course.update!(syllabus_body: "Original syllabus content")
+        course.reload
+        expect(course.versions.count).to eq(0)
+
+        course.account.enable_feature!(:syllabus_versioning)
+        course.update!(syllabus_body: "First edit")
+        expect(course.versions.count).to eq(2)
+
+        expect do
+          course.update!(syllabus_body: "Second edit")
+        end.to change { course.versions.count }.by(1)
+
+        expect(course.versions.count).to eq(3)
+      end
     end
 
     context "when syllabus_versioning feature flag is disabled" do
-      before { Account.site_admin.disable_feature!(:syllabus_versioning) }
+      before { course.account.disable_feature!(:syllabus_versioning) }
 
       it "does not create versions when syllabus_body changes" do
         expect do
           course.update!(syllabus_body: "Initial syllabus content", name: "Updated Course Name")
         end.not_to change { course.versions.count }
+      end
+    end
+  end
+
+  describe "a11y_checker_ai feature methods" do
+    let(:course) { Course.create! }
+    let(:account) { course.account }
+
+    describe "#a11y_checker_ai_table_caption_generation?" do
+      it "delegates to account" do
+        allow(account).to receive(:a11y_checker_ai_table_caption_generation?).and_return(true)
+
+        expect(course.a11y_checker_ai_table_caption_generation?).to be true
+      end
+
+      it "returns false when account returns false" do
+        allow(account).to receive(:a11y_checker_ai_table_caption_generation?).and_return(false)
+
+        expect(course.a11y_checker_ai_table_caption_generation?).to be false
+      end
+    end
+
+    describe "#a11y_checker_ai_alt_text_generation?" do
+      it "delegates to account" do
+        allow(account).to receive(:a11y_checker_ai_alt_text_generation?).and_return(true)
+
+        expect(course.a11y_checker_ai_alt_text_generation?).to be true
+      end
+
+      it "returns false when account returns false" do
+        allow(account).to receive(:a11y_checker_ai_alt_text_generation?).and_return(false)
+
+        expect(course.a11y_checker_ai_alt_text_generation?).to be false
+      end
+    end
+  end
+
+  describe "syllabus accessibility scan" do
+    let(:course) { course_model }
+
+    context "when a11y_checker_additional_resources is disabled" do
+      before do
+        Account.site_admin.disable_feature!(:a11y_checker_additional_resources)
+        course.root_account.enable_feature!(:a11y_checker)
+        course.enable_feature!(:a11y_checker_eap)
+        Progress.create!(tag: Accessibility::CourseScanService::SCAN_TAG, context: course, workflow_state: "completed")
+      end
+
+      it "does not trigger accessibility scan for syllabus on update" do
+        expect(Accessibility::ResourceScannerService).not_to receive(:call)
+
+        course.update!(syllabus_body: "<h1>Test Syllabus</h1>")
+      end
+    end
+
+    context "when a11y_checker_additional_resources is enabled" do
+      before do
+        Account.site_admin.enable_feature!(:a11y_checker_additional_resources)
+        course.root_account.enable_feature!(:accessibility_automatic_scanning)
+        course.root_account.enable_feature!(:a11y_checker)
+        course.enable_feature!(:a11y_checker_eap)
+        Progress.create!(tag: Accessibility::CourseScanService::SCAN_TAG, context: course, workflow_state: "completed")
+      end
+
+      it "triggers accessibility scan when syllabus_body changes" do
+        expect(Accessibility::ResourceScannerService).to receive(:call).with(resource: course)
+
+        course.update!(syllabus_body: "<h1>Updated Syllabus</h1>")
+      end
+
+      it "does not trigger scan when syllabus_body doesn't change" do
+        course.update!(syllabus_body: "<p>Initial content</p>")
+
+        expect(Accessibility::ResourceScannerService).not_to receive(:call)
+
+        course.update!(name: "New Course Name")
+      end
+
+      it "does not trigger scan when syllabus_body remains blank" do
+        course.update!(syllabus_body: "")
+
+        expect(Accessibility::ResourceScannerService).not_to receive(:call)
+
+        course.update!(syllabus_body: "")
+      end
+
+      it "triggers scan when syllabus_body changes to blank" do
+        course.update!(syllabus_body: "<p>Some content</p>")
+
+        expect(Accessibility::ResourceScannerService).to receive(:call).with(resource: course)
+
+        course.update!(syllabus_body: "")
+      end
+
+      it "creates scan with is_syllabus flag" do
+        course.update!(syllabus_body: "<h1>Test Syllabus</h1>")
+
+        # Process the delayed job
+        run_jobs
+
+        scan = AccessibilityResourceScan.where(course_id: course.id, is_syllabus: true).last
+        expect(scan).not_to be_nil
+        expect(scan.is_syllabus).to be true
+        expect(scan.context_id).to be_nil
+        expect(scan.context_type).to be_nil
+      end
+
+      it "updates existing scan when syllabus changes again" do
+        # Create initial scan
+        AccessibilityResourceScan.create!(
+          course:,
+          is_syllabus: true,
+          workflow_state: "completed",
+          issue_count: 0,
+          resource_name: "Course Syllabus",
+          resource_workflow_state: "published"
+        )
+
+        expect(Accessibility::ResourceScannerService).to receive(:call).with(resource: course)
+
+        course.update!(syllabus_body: "<h1>Updated Again</h1>")
+      end
+    end
+
+    context "when course has no initial scan" do
+      before do
+        Account.site_admin.enable_feature!(:a11y_checker_additional_resources)
+        course.root_account.enable_feature!(:a11y_checker)
+        course.enable_feature!(:a11y_checker_eap)
+        # No initial course scan exists
+      end
+
+      it "does not trigger accessibility scan for syllabus" do
+        expect(Accessibility::ResourceScannerService).not_to receive(:call)
+
+        course.update!(syllabus_body: "<h1>Test Syllabus</h1>")
+      end
+    end
+
+    context "when a11y_checker is disabled" do
+      before do
+        Account.site_admin.enable_feature!(:a11y_checker_additional_resources)
+        course.root_account.disable_feature!(:a11y_checker)
+      end
+
+      it "does not trigger accessibility scan for syllabus" do
+        expect(Accessibility::ResourceScannerService).not_to receive(:call)
+
+        course.update!(syllabus_body: "<h1>Test Syllabus</h1>")
+      end
+    end
+
+    context "when additional_resources FF is on with EAP enabled (uses delegated method)" do
+      before do
+        Account.site_admin.enable_feature!(:a11y_checker_additional_resources)
+        course.root_account.enable_feature!(:a11y_checker)
+        course.root_account.enable_feature!(:accessibility_automatic_scanning)
+        course.enable_feature!(:a11y_checker_eap)
+        Progress.create!(tag: Accessibility::CourseScanService::SCAN_TAG, context: course, workflow_state: "completed")
+      end
+
+      it "triggers accessibility scan for syllabus on update" do
+        expect(Accessibility::ResourceScannerService).to receive(:call).with(resource: course)
+
+        course.update!(syllabus_body: "<h1>Test Syllabus with EAP</h1>")
+      end
+    end
+
+    context "when additional_resources FF is on but neither EAP nor a11y_checker is enabled" do
+      before do
+        Account.site_admin.enable_feature!(:a11y_checker_additional_resources)
+        Account.site_admin.disable_feature!(:a11y_checker_ga2_features)
+        course.root_account.disable_feature!(:a11y_checker)
+        # Don't set a11y_checker_eap since it requires a11y_checker to be enabled
+        Progress.create!(tag: Accessibility::CourseScanService::SCAN_TAG, context: course, workflow_state: "completed")
+      end
+
+      it "does not trigger accessibility scan for syllabus on update" do
+        expect(Accessibility::ResourceScannerService).not_to receive(:call)
+
+        course.update!(syllabus_body: "<h1>Test Syllabus without proper flags</h1>")
+      end
+    end
+
+    context "when additional_resources FF is on with GA2 features enabled (alternative path)" do
+      before do
+        Account.site_admin.enable_feature!(:a11y_checker_additional_resources)
+        Account.site_admin.enable_feature!(:a11y_checker_ga2_features)
+        # Don't disable a11y_checker at root account level since GA2 works at site admin level
+        # But enable a11y_checker_eap requires a11y_checker to be enabled, so enable it
+        course.root_account.enable_feature!(:a11y_checker)
+        course.root_account.enable_feature!(:accessibility_automatic_scanning)
+        course.enable_feature!(:a11y_checker_eap)
+        Progress.create!(tag: Accessibility::CourseScanService::SCAN_TAG, context: course, workflow_state: "completed")
+      end
+
+      it "triggers accessibility scan for syllabus on update" do
+        expect(Accessibility::ResourceScannerService).to receive(:call).with(resource: course)
+
+        course.update!(syllabus_body: "<h1>Test Syllabus with GA2</h1>")
+      end
+    end
+
+    context "when automatic scanning feature flag is disabled" do
+      before do
+        Account.site_admin.enable_feature!(:a11y_checker_additional_resources)
+        course.root_account.enable_feature!(:a11y_checker)
+        course.root_account.disable_feature!(:accessibility_automatic_scanning)
+        course.enable_feature!(:a11y_checker_eap)
+        Progress.create!(tag: Accessibility::CourseScanService::SCAN_TAG, context: course, workflow_state: "completed")
+      end
+
+      it "does not trigger accessibility scan for syllabus on update" do
+        expect(Accessibility::ResourceScannerService).not_to receive(:call)
+
+        course.update!(syllabus_body: "<h1>Test Syllabus</h1>")
+      end
+    end
+  end
+
+  describe ".preload_active_enrollments_for_permissions" do
+    let(:user) { user_model }
+    let(:courses) do
+      Array.new(3) do
+        c = course_factory(active_all: true)
+        c.enroll_teacher(user, enrollment_state: "active")
+        c
+      end
+    end
+
+    def count_enrollment_selects(&)
+      count = 0
+      counter = lambda do |_name, _start, _finish, _id, payload|
+        sql = payload[:sql].to_s
+        count += 1 if sql.match?(/FROM (?:"\w+"\.)?"enrollments"/) && sql.include?("enrollment_states")
+      end
+      ActiveSupport::Notifications.subscribed(counter, "sql.active_record", &)
+      count
+    end
+
+    before do
+      courses # force creation before measuring
+      Rails.cache.clear
+    end
+
+    it "collapses per-course permission checks to a single query" do
+      RequestCache.enable do
+        count = count_enrollment_selects do
+          Course.preload_active_enrollments_for_permissions(user, courses)
+          courses.each { |c| c.active_enrollment_allows(user, :manage_course_content_edit) }
+        end
+        expect(count).to eq(1)
+      end
+    end
+
+    it "issues a query per course without the preload (baseline)" do
+      RequestCache.enable do
+        count = count_enrollment_selects do
+          courses.each { |c| c.active_enrollment_allows(user, :manage_course_content_edit) }
+        end
+        expect(count).to eq(courses.size)
+      end
+    end
+
+    it "returns the same permission result as direct checks" do
+      expected = courses.map { |c| c.active_enrollment_allows(user, :manage_course_content_edit) }
+      Rails.cache.clear
+      RequestCache.enable do
+        Course.preload_active_enrollments_for_permissions(user, courses)
+        actual = courses.map { |c| c.active_enrollment_allows(user, :manage_course_content_edit) }
+        expect(actual).to eq(expected)
+      end
+    end
+
+    it "filters out non-admin enrollments for unpublished courses" do
+      unpublished = course_factory(account: Account.default)
+      unpublished.enroll_student(user, enrollment_state: "active")
+      unpublished.enroll_teacher(user, enrollment_state: "active")
+      expect(unpublished).to be_created.or be_claimed
+      RequestCache.enable do
+        Course.preload_active_enrollments_for_permissions(user, [unpublished])
+        cached = RequestCache.cache("active_enrollments_for_permissions2", user, unpublished, true) { :missing }
+        expect(cached).not_to eq(:missing)
+        expect(cached.map(&:type)).to contain_exactly("TeacherEnrollment")
+      end
+    end
+
+    it "no-ops with nil user" do
+      expect { Course.preload_active_enrollments_for_permissions(nil, courses) }.not_to raise_error
+    end
+
+    it "no-ops with empty courses" do
+      expect { Course.preload_active_enrollments_for_permissions(user, []) }.not_to raise_error
+    end
+
+    context "with courses on multiple shards" do
+      specs_require_sharding
+
+      it "groups by shard and returns correct permission results across shards" do
+        cross_shard_user = user_factory(active_all: true)
+        shard1_course = nil
+        shard2_course = nil
+
+        @shard1.activate do
+          shard1_course = course_factory(active_all: true, account: Account.create!)
+          shard1_course.enroll_teacher(cross_shard_user, enrollment_state: "active")
+        end
+
+        @shard2.activate do
+          shard2_course = course_factory(active_all: true, account: Account.create!)
+          shard2_course.enroll_teacher(cross_shard_user, enrollment_state: "active")
+        end
+
+        Rails.cache.clear
+
+        RequestCache.enable do
+          Course.preload_active_enrollments_for_permissions(cross_shard_user, [shard1_course, shard2_course])
+          expect(shard1_course.active_enrollment_allows(cross_shard_user, :manage_course_content_edit)).to be true
+          expect(shard2_course.active_enrollment_allows(cross_shard_user, :manage_course_content_edit)).to be true
+        end
       end
     end
   end

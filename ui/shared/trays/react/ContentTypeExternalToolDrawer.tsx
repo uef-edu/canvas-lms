@@ -15,7 +15,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-import React, {useEffect, useRef, useState} from 'react'
+import React, {useCallback, useEffect, useRef, useState} from 'react'
 import $ from 'jquery'
 import {CloseButton, IconButton} from '@instructure/ui-buttons'
 import {DrawerLayout} from '@instructure/ui-drawer-layout'
@@ -30,9 +30,9 @@ import {handleExternalContentMessages} from '@canvas/external-tools/messages'
 import ToolLaunchIframe from '@canvas/external-tools/react/components/ToolLaunchIframe'
 import MutexManager from '@canvas/mutex-manager/MutexManager'
 import type {Tool} from '@canvas/global/env/EnvCommon'
-import iframeAllowances from '@canvas/external-apps/iframeAllowances'
 import {onLtiClosePostMessage} from '@canvas/lti/jquery/messages'
 import useBreakpoints from '@canvas/lti-apps/hooks/useBreakpoints'
+import {usePageContentWrapper} from '@canvas/page-content-wrapper'
 import useGlobalNavWidth from './hooks/useGlobalNavWidth'
 
 type Props = {
@@ -68,10 +68,22 @@ export default function ContentTypeExternalToolDrawer({
   const toolIconAlt = toolTitle ? `${toolTitle} Icon` : 'Tool Icon'
   const allow_fullscreen = tool?.allow_fullscreen
   const iframeRef = useRef<HTMLIFrameElement>(null)
-  const pageContentRef = useRef()
-  // @ts-expect-error
+  const pageContentRef = useRef<HTMLDivElement | null>(null)
   const initDrawerLayoutMutex = window.ENV.INIT_DRAWER_LAYOUT_MUTEX
-  const STD_TRAY_WIDTH = window.ENV.FEATURES?.increased_top_nav_pane_size ? '33vw' : '320px'
+  const PageContentWrapper = usePageContentWrapper()
+
+  // Callback ref so reparenting still happens if the slot div remounts (e.g.,
+  // when a wrapper is registered after this component first rendered).
+  const handlePageContentSlotRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      pageContentRef.current = el
+      if (el && pageContent && !el.contains(pageContent)) {
+        el.appendChild(pageContent)
+      }
+    },
+    [pageContent],
+  )
+  const STD_TRAY_WIDTH = '33vw'
 
   const {isMaxTablet} = useBreakpoints()
   const globalNavWidth = useGlobalNavWidth()
@@ -96,24 +108,14 @@ export default function ContentTypeExternalToolDrawer({
     }
   }, [open])
 
-  useEffect(
-    // setup DrawerLayout content
-    () => {
-      // appends pageContent to DrawerLayout.content
-      if (pageContentRef.current && pageContent) {
-        // @ts-expect-error
-        pageContentRef.current.appendChild(pageContent)
-      }
-      /* Reparenting causes iFrames to reload or cancel load.
-       * This ensures that any tool launch iFrames are not loaded
-       * until after we complete reparenting.
-       */
-      if (initDrawerLayoutMutex) {
-        MutexManager.releaseMutex(initDrawerLayoutMutex)
-      }
-    },
-    [pageContent, initDrawerLayoutMutex],
-  )
+  useEffect(() => {
+    // Reparenting causes iframes to reload or cancel load. This mutex prevents
+    // tool-launch iframes from loading until reparenting completes. Child effects
+    // run before parent effects, so by this point any wrapper has reparented.
+    if (initDrawerLayoutMutex) {
+      MutexManager.releaseMutex(initDrawerLayoutMutex)
+    }
+  }, [pageContent, initDrawerLayoutMutex, PageContentWrapper])
 
   useEffect(() => {
     window.addEventListener('resize', onResize)
@@ -141,8 +143,11 @@ export default function ContentTypeExternalToolDrawer({
     <View display="block" height={pageContentHeight}>
       <DrawerLayout minWidth={pageContentMinWidth}>
         <DrawerLayout.Content label={pageContentTitle} id="drawer-layout-content">
-          {/* @ts-expect-error */}
-          <div ref={pageContentRef} />
+          {PageContentWrapper ? (
+            <PageContentWrapper pageContent={pageContent as HTMLElement} />
+          ) : (
+            <div ref={handlePageContentSlotRef} />
+          )}
         </DrawerLayout.Content>
         <DrawerLayout.Tray
           label={toolTitle}
@@ -203,7 +208,6 @@ export default function ContentTypeExternalToolDrawer({
                   ref={iframeRef}
                   src={iframeUrl}
                   title={toolTitle}
-                  allow={iframeAllowances()}
                 />
               )}
             </Flex.Item>

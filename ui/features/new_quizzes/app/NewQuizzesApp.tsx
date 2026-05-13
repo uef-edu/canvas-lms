@@ -20,6 +20,7 @@ import {captureException} from '@sentry/browser'
 import {useEffect, useRef} from 'react'
 import {fetchNewQuizzesToken} from '../api/jwt'
 import {ZAccountId} from '@canvas/lti-apps/models/AccountId'
+import {useModuleItemSequence} from '../hooks/useModuleItemSequence'
 
 interface RemoteModule {
   render?: (element: HTMLDivElement, props: any) => void
@@ -33,6 +34,10 @@ export function NewQuizzesApp() {
   const mountPoint = useRef<HTMLDivElement>(null)
   const quizzesData = ENV.NEW_QUIZZES
 
+  const courseId = quizzesData?.params?.custom_canvas_course_id?.toString()
+
+  const moduleItemId = quizzesData?.params?.custom_canvas_module_item_id?.toString() ?? undefined
+  const moduleNavigation = useModuleItemSequence(courseId, moduleItemId)
   useEffect(() => {
     let unmount = () => {}
 
@@ -46,13 +51,14 @@ export function NewQuizzesApp() {
         const module: RemoteModule = await import('newquizzes/appInjector')
 
         if (typeof module.render === 'function') {
-          const basename = `/courses/${quizzesData.params.custom_canvas_course_id}/assignments/${quizzesData.params.custom_canvas_assignment_id}`
+          const basename = quizzesData.basename || window.location.pathname
 
           module.render(mountPoint.current, {
             ...quizzesData,
             themeOverrides: window.CANVAS_ACTIVE_BRAND_VARIABLES || null,
             basename,
             fetchToken: () => fetchNewQuizzesToken(accountId),
+            moduleNavigation,
           })
         } else {
           captureException(new Error('Remote module does not have a render function'))
@@ -70,7 +76,13 @@ export function NewQuizzesApp() {
     return () => {
       unmount()
     }
-  }, [quizzesData])
+  }, [quizzesData, moduleNavigation])
 
-  return <div id="root" ref={mountPoint} />
+  return (
+    <>
+      <div id="alertHolder" role="alert" aria-live="assertive" />
+      <div id="politeAlertHolder" role="alert" aria-live="polite" />
+      <div id="root" ref={mountPoint} />
+    </>
+  )
 }

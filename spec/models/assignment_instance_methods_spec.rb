@@ -600,7 +600,7 @@ describe Assignment do
               post_to_sis: true,
               due_at: nil
             )
-            allow(new_assignment).to receive_messages(checkpoints_parent?: true, sub_assignments: double(empty?: true))
+            allow(new_assignment).to receive_messages(checkpoints_parent?: true, sub_assignments: instance_double(ActiveRecord::Relation, empty?: true))
 
             expect(new_assignment.valid?).to be true
           end
@@ -1003,9 +1003,9 @@ describe Assignment do
       end
 
       it "does not sync grading_type" do
-        @peer_review_sub.update!(grading_type: "not_graded")
+        @peer_review_sub.update!(grading_type: "pass_fail")
         @parent_assignment.update!(grading_type: "letter_grade")
-        expect(@peer_review_sub.reload.grading_type).to eq "not_graded"
+        expect(@peer_review_sub.reload.grading_type).to eq "pass_fail"
       end
 
       it "does not sync due_at" do

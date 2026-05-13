@@ -18,7 +18,6 @@
 
 // tests/SearchIssue.test.js
 import {render, screen, fireEvent, waitFor} from '@testing-library/react'
-import '@testing-library/jest-dom'
 import {SearchIssue} from '../SearchIssue'
 
 describe('SearchIssue Component', () => {
@@ -29,23 +28,153 @@ describe('SearchIssue Component', () => {
   })
 
   it('should initialize the search input with the value from the URL', () => {
-    const mockOnSearchChange = jest.fn()
+    const mockOnSearchChange = vi.fn()
     render(<SearchIssue onSearchChange={mockOnSearchChange} />)
 
-    const input = screen.getByPlaceholderText('Search...')
+    const input = screen.getByTestId('issue-search-input')
     expect(input).toHaveValue('test')
   })
 
   it('should call onSearchChange when the input value changes', async () => {
-    const mockOnSearchChange = jest.fn()
+    const mockOnSearchChange = vi.fn().mockResolvedValue(true)
     render(<SearchIssue onSearchChange={mockOnSearchChange} />)
 
-    const input = screen.getByPlaceholderText('Search...')
+    const input = screen.getByTestId('issue-search-input')
     fireEvent.change(input, {target: {value: 'new search'}})
 
     await waitFor(() => {
       expect(mockOnSearchChange).toHaveBeenCalledWith('new search')
     })
     expect(input).toHaveValue('new search')
+  })
+
+  it.skip('should not call onSearchChange when input has 1 character', async () => {
+    const mockOnSearchChange = vi.fn()
+    render(<SearchIssue onSearchChange={mockOnSearchChange} />)
+    const input = screen.getByTestId('issue-search-input')
+
+    fireEvent.change(input, {target: {value: 'a'}})
+
+    vi.advanceTimersByTime(300)
+
+    await waitFor(() => {
+      expect(mockOnSearchChange).not.toHaveBeenCalled()
+    })
+    expect(input).toHaveValue('a')
+  })
+
+  it('should call onSearchChange when input has 3 or more characters', async () => {
+    const mockOnSearchChange = vi.fn().mockResolvedValue(true)
+    render(<SearchIssue onSearchChange={mockOnSearchChange} />)
+    const input = screen.getByTestId('issue-search-input')
+
+    fireEvent.change(input, {target: {value: 'testing'}})
+
+    await waitFor(() => {
+      expect(mockOnSearchChange).toHaveBeenCalledWith('testing')
+    })
+    expect(input).toHaveValue('testing')
+  })
+
+  it('should call onSearchChange when input is cleared to empty string', async () => {
+    const mockOnSearchChange = vi.fn().mockResolvedValue(true)
+    render(<SearchIssue onSearchChange={mockOnSearchChange} />)
+    const input = screen.getByTestId('issue-search-input')
+
+    fireEvent.change(input, {target: {value: 'testing'}})
+    await waitFor(() => {
+      expect(mockOnSearchChange).toHaveBeenCalledWith('testing')
+    })
+    expect(input).toHaveValue('testing')
+
+    mockOnSearchChange.mockClear()
+
+    fireEvent.change(input, {target: {value: ''}})
+
+    await waitFor(() => {
+      expect(mockOnSearchChange).toHaveBeenCalledWith('')
+    })
+    expect(input).toHaveValue('')
+  })
+
+  it('should not show clear button when search is empty', () => {
+    const mockOnSearchChange = vi.fn()
+    render(<SearchIssue onSearchChange={mockOnSearchChange} />)
+
+    const input = screen.getByTestId('issue-search-input')
+    fireEvent.change(input, {target: {value: ''}})
+
+    const clearButton = screen.queryByTestId('clear-search-button')
+    expect(clearButton).not.toBeInTheDocument()
+  })
+
+  it('should show clear button when search has value', () => {
+    const mockOnSearchChange = vi.fn()
+    render(<SearchIssue onSearchChange={mockOnSearchChange} />)
+
+    const input = screen.getByTestId('issue-search-input')
+    fireEvent.change(input, {target: {value: 'test search'}})
+
+    const clearButton = screen.getByTestId('clear-search-button')
+    expect(clearButton).toBeInTheDocument()
+  })
+
+  it('should clear search input when clear button is clicked', async () => {
+    const mockOnSearchChange = vi.fn().mockResolvedValue(true)
+    render(<SearchIssue onSearchChange={mockOnSearchChange} />)
+
+    const input = screen.getByTestId('issue-search-input')
+    fireEvent.change(input, {target: {value: 'test search'}})
+
+    const clearButton = screen.getByTestId('clear-search-button')
+    fireEvent.click(clearButton)
+
+    expect(input).toHaveValue('')
+    await waitFor(() => {
+      expect(mockOnSearchChange).toHaveBeenCalledWith('')
+    })
+  })
+
+  it('should hide clear button after clearing search', () => {
+    const mockOnSearchChange = vi.fn()
+    render(<SearchIssue onSearchChange={mockOnSearchChange} />)
+
+    const input = screen.getByPlaceholderText('Search resource titles...')
+    fireEvent.change(input, {target: {value: 'test search'}})
+
+    const clearButton = screen.getByTestId('clear-search-button')
+    fireEvent.click(clearButton)
+
+    expect(screen.queryByTestId('clear-search-button')).not.toBeInTheDocument()
+  })
+
+  it('should use semantic search input type', () => {
+    const mockOnSearchChange = vi.fn()
+    render(<SearchIssue onSearchChange={mockOnSearchChange} />)
+
+    const input = screen.getByTestId('issue-search-input')
+
+    expect(input).toHaveAttribute('type', 'search')
+  })
+
+  it('should have accessible label for screen readers', () => {
+    const mockOnSearchChange = vi.fn()
+    const {container} = render(<SearchIssue onSearchChange={mockOnSearchChange} />)
+
+    const label = container.querySelector('label[for="issueSearchInput"]')
+
+    expect(label).toBeInTheDocument()
+    expect(label).toHaveTextContent('Search resource titles')
+  })
+
+  it('should provide hint message for search behavior', () => {
+    const mockOnSearchChange = vi.fn()
+    render(<SearchIssue onSearchChange={mockOnSearchChange} />)
+
+    const hintText = screen.getByText(
+      'Start typing to search. Results will update automatically after 3 characters.',
+    )
+
+    expect(hintText).toBeInTheDocument()
   })
 })

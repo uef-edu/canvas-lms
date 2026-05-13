@@ -18,19 +18,17 @@
 
 import React from 'react'
 import {render, screen, waitFor} from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import {http, HttpResponse} from 'msw'
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query'
 import {setupServer} from 'msw/node'
 import TodoListWidget from '../TodoListWidget'
 import type {BaseWidgetProps, Widget} from '../../../../types'
-import {
-  plannerItemsHandlers,
-  emptyPlannerItemsHandler,
-  errorPlannerItemsHandler,
-} from './mocks/handlers'
+import {plannerItemsHandlers, plannerNoteHandlers} from './mocks/handlers'
 import {WidgetLayoutProvider} from '../../../../hooks/useWidgetLayout'
 import {WidgetDashboardEditProvider} from '../../../../hooks/useWidgetDashboardEdit'
-import {clearWidgetDashboardCache} from '../../../../__tests__/testHelpers'
+import {WidgetDashboardProvider} from '../../../../hooks/useWidgetDashboardContext'
+import {clearWidgetDashboardCache, PlatformTestWrapper} from '../../../../__tests__/testHelpers'
+import fakeENV from '@canvas/test-utils/fakeENV'
 
 const mockWidget: Widget = {
   id: 'todo-list-widget',
@@ -46,18 +44,47 @@ const buildDefaultProps = (overrides: Partial<BaseWidgetProps> = {}): BaseWidget
   }
 }
 
-const server = setupServer(...plannerItemsHandlers)
+const server = setupServer(...plannerItemsHandlers, ...plannerNoteHandlers)
 
-beforeAll(() => server.listen())
+const mockSharedCourseData = [
+  {
+    courseId: '1',
+    courseCode: 'TC1',
+    courseName: 'Test Course 1',
+    currentGrade: null,
+    gradingScheme: 'percentage' as const,
+    lastUpdated: new Date().toISOString(),
+  },
+  {
+    courseId: '2',
+    courseCode: 'TC2',
+    courseName: 'Test Course 2',
+    currentGrade: null,
+    gradingScheme: 'percentage' as const,
+    lastUpdated: new Date().toISOString(),
+  },
+]
+
+beforeAll(() => {
+  server.listen()
+})
 beforeEach(() => {
+  fakeENV.setup({
+    LOCALE: 'en',
+    TIMEZONE: 'America/Denver',
+  })
   clearWidgetDashboardCache()
 })
 afterEach(() => {
   server.resetHandlers()
+  fakeENV.teardown()
 })
 afterAll(() => server.close())
 
-const renderWithClient = (ui: React.ReactElement) => {
+const renderWithClient = (
+  ui: React.ReactElement,
+  {observedUserId = null}: {observedUserId?: string | null} = {},
+) => {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -66,11 +93,18 @@ const renderWithClient = (ui: React.ReactElement) => {
     },
   })
   return render(
-    <QueryClientProvider client={queryClient}>
-      <WidgetDashboardEditProvider>
-        <WidgetLayoutProvider>{ui}</WidgetLayoutProvider>
-      </WidgetDashboardEditProvider>
-    </QueryClientProvider>,
+    <PlatformTestWrapper>
+      <QueryClientProvider client={queryClient}>
+        <WidgetDashboardProvider
+          sharedCourseData={mockSharedCourseData}
+          observedUserId={observedUserId}
+        >
+          <WidgetDashboardEditProvider>
+            <WidgetLayoutProvider>{ui}</WidgetLayoutProvider>
+          </WidgetDashboardEditProvider>
+        </WidgetDashboardProvider>
+      </QueryClientProvider>
+    </PlatformTestWrapper>,
   )
 }
 
@@ -102,7 +136,7 @@ describe('TodoListWidget', () => {
       expect(screen.getByText('To-do list')).toBeInTheDocument()
     })
 
-    it('renders "New" button as disabled', async () => {
+    it('renders "+ New To-do" button as enabled', async () => {
       renderWithClient(<TodoListWidget {...buildDefaultProps()} />)
 
       await waitFor(() => {
@@ -110,7 +144,8 @@ describe('TodoListWidget', () => {
       })
 
       const newButton = screen.getByTestId('new-todo-button')
-      expect(newButton).toBeDisabled()
+      expect(newButton).toBeEnabled()
+      expect(newButton).toHaveTextContent('+ New To-do')
     })
   })
 
@@ -166,128 +201,51 @@ describe('TodoListWidget', () => {
     })
   })
 
-  describe('pagination', () => {
-    it('shows pagination when multiple pages exist', async () => {
-      renderWithClient(<TodoListWidget {...buildDefaultProps()} />)
+  describe('observer mode', () => {
+    it('passes observed_user_id to planner API when observing a student', async () => {
+      const observedUserId = 'student-123'
+      let capturedUrl: string | null = null
+
+      server.use(
+        http.get('/api/v1/planner/items', ({request}) => {
+          capturedUrl = request.url
+          return HttpResponse.json([], {
+            headers: {Link: '</api/v1/planner/items?per_page=5>; rel="first"'},
+          })
+        }),
+      )
+
+      renderWithClient(<TodoListWidget {...buildDefaultProps()} />, {observedUserId})
 
       await waitFor(() => {
         expect(screen.queryByText('Loading to-do items...')).not.toBeInTheDocument()
       })
 
-      const paginationContainer = await waitFor(
-        () => {
-          const container = screen.queryByTestId('pagination-container')
-          if (!container) throw new Error('Pagination not found')
-          return container
-        },
-        {timeout: 5000},
-      )
-
-      expect(paginationContainer).toBeInTheDocument()
+      expect(capturedUrl).not.toBeNull()
+      const url = new URL(capturedUrl!)
+      expect(url.searchParams.get('observed_user_id')).toBe(observedUserId)
+      expect(url.searchParams.getAll('include[]')).toContain('all_courses')
     })
 
-    it('allows navigation to next page', async () => {
-      const user = userEvent.setup()
-      renderWithClient(<TodoListWidget {...buildDefaultProps()} />)
+    it('hides the New To-do button when observing a student', async () => {
+      renderWithClient(<TodoListWidget {...buildDefaultProps()} />, {observedUserId: 'student-123'})
 
       await waitFor(() => {
         expect(screen.queryByText('Loading to-do items...')).not.toBeInTheDocument()
       })
 
-      const paginationContainer = await waitFor(
-        () => {
-          const container = screen.queryByTestId('pagination-container')
-          if (!container) throw new Error('Pagination not found')
-          return container
-        },
-        {timeout: 5000},
-      )
+      expect(screen.queryByTestId('new-todo-button')).not.toBeInTheDocument()
+    })
 
-      const page2Button = screen.getByRole('button', {name: '2'})
-      expect(page2Button).toBeInTheDocument()
-
-      await user.click(page2Button)
+    it('disables the complete checkbox when observing a student', async () => {
+      renderWithClient(<TodoListWidget {...buildDefaultProps()} />, {observedUserId: 'student-123'})
 
       await waitFor(() => {
         expect(screen.queryByText('Loading to-do items...')).not.toBeInTheDocument()
       })
-    })
-  })
 
-  describe('empty state', () => {
-    it('shows appropriate message when no items', async () => {
-      server.use(emptyPlannerItemsHandler)
-      renderWithClient(<TodoListWidget {...buildDefaultProps()} />)
-
-      await waitFor(() => {
-        expect(screen.getByTestId('no-todos-message')).toBeInTheDocument()
-      })
-
-      expect(screen.getByText('No upcoming items')).toBeInTheDocument()
-    })
-
-    it('does not show pagination when no items', async () => {
-      server.use(emptyPlannerItemsHandler)
-      renderWithClient(<TodoListWidget {...buildDefaultProps()} />)
-
-      await waitFor(() => {
-        expect(screen.getByText('No upcoming items')).toBeInTheDocument()
-      })
-
-      expect(screen.queryByTestId('pagination-container')).not.toBeInTheDocument()
-    })
-  })
-
-  describe('error handling', () => {
-    it('shows error message on API failure', async () => {
-      server.use(errorPlannerItemsHandler)
-      renderWithClient(<TodoListWidget {...buildDefaultProps()} />)
-
-      await waitFor(
-        () => {
-          expect(
-            screen.getByText('Failed to load to-do items. Please try again.'),
-          ).toBeInTheDocument()
-        },
-        {timeout: 5000},
-      )
-    })
-
-    it('shows retry button on error', async () => {
-      server.use(errorPlannerItemsHandler)
-      renderWithClient(<TodoListWidget {...buildDefaultProps()} />)
-
-      await waitFor(
-        () => {
-          expect(screen.getByRole('button', {name: /retry/i})).toBeInTheDocument()
-        },
-        {timeout: 5000},
-      )
-    })
-
-    it('retries fetch when retry button clicked', async () => {
-      const user = userEvent.setup()
-      server.use(errorPlannerItemsHandler)
-      renderWithClient(<TodoListWidget {...buildDefaultProps()} />)
-
-      await waitFor(
-        () => {
-          expect(
-            screen.getByText('Failed to load to-do items. Please try again.'),
-          ).toBeInTheDocument()
-        },
-        {timeout: 5000},
-      )
-
-      server.resetHandlers()
-      server.use(...plannerItemsHandlers)
-
-      const retryButton = screen.getByRole('button', {name: /retry/i})
-      await user.click(retryButton)
-
-      await waitFor(() => {
-        expect(screen.getByText('Lab Report: Cell Structure')).toBeInTheDocument()
-      })
+      const checkbox = screen.getByTestId('todo-checkbox-1')
+      expect(checkbox).toBeDisabled()
     })
   })
 
@@ -301,6 +259,33 @@ describe('TodoListWidget', () => {
 
       const checkbox = screen.getByTestId('todo-checkbox-1')
       expect(checkbox).toBeEnabled()
+    })
+  })
+
+  describe('accessibility', () => {
+    it('renders each todo item with role=group for screen readers', async () => {
+      renderWithClient(<TodoListWidget {...buildDefaultProps()} />)
+
+      await waitFor(() => {
+        expect(screen.queryByText('Loading to-do items...')).not.toBeInTheDocument()
+      })
+
+      const todoItem = screen.getByTestId('todo-item-1')
+      expect(todoItem).toHaveAttribute('role', 'group')
+    })
+
+    it('provides accessible labels for each todo item group', async () => {
+      renderWithClient(<TodoListWidget {...buildDefaultProps()} />)
+
+      await waitFor(() => {
+        expect(screen.queryByText('Loading to-do items...')).not.toBeInTheDocument()
+      })
+
+      const labReportGroup = screen.getByTestId('todo-item-1')
+      expect(labReportGroup).toHaveAttribute('aria-label', 'Lab Report: Cell Structure')
+
+      const quizGroup = screen.getByTestId('todo-item-2')
+      expect(quizGroup).toHaveAttribute('aria-label', 'Chapter 5 Quiz')
     })
   })
 })

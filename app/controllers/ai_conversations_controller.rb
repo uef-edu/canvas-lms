@@ -21,12 +21,44 @@
 # @API AI Conversations
 # API for managing conversations with AI Experiences.
 class AiConversationsController < ApplicationController
-  protect_from_forgery except: %i[create post_message], with: :exception
+  include Api::V1::AiExperience
 
   before_action :require_context
   before_action :check_ai_experiences_feature_flag
+  before_action :require_access_right
   before_action :load_experience
-  before_action :load_conversation, only: %i[post_message destroy]
+  before_action :load_conversation, only: %i[post_message destroy show evaluation create_feedback delete_feedback]
+
+  # @API Show conversation
+  #
+  # Get a specific conversation by ID (for teachers viewing student conversations)
+  #
+  # @returns {Object} Hash with conversation details including messages
+  def show
+    # Teachers can view any student's conversation
+    permissions = %i[manage_assignments_add manage_assignments_edit manage_assignments_delete]
+    unless @context.grants_any_right?(@current_user, *permissions)
+      return render_unauthorized_action
+    end
+
+    messages_and_progress = AiExperiences::ConversationMessagesService.new(account: @context.account).fetch_with_progress(
+      conversation_id: @conversation.llm_conversation_id,
+      requesting_user: @current_user
+    )
+
+    render json: {
+      id: @conversation.id,
+      user_id: @conversation.user_id.to_s,
+      llm_conversation_id: @conversation.llm_conversation_id,
+      workflow_state: @conversation.workflow_state,
+      created_at: @conversation.created_at,
+      updated_at: @conversation.updated_at,
+      messages: messages_and_progress[:messages],
+      progress: messages_and_progress[:progress]
+    }
+  rescue LlmConversation::Errors::ConversationError => e
+    render json: { error: e.message }, status: :service_unavailable
+  end
 
   # @API Get active conversation
   #
@@ -40,17 +72,11 @@ class AiConversationsController < ApplicationController
                                        .first
 
     if existing_conversation
-      client = LLMConversationClient.new(
-        current_user: @current_user,
-        root_account_uuid: @context.root_account.uuid,
-        facts: @experience.facts,
-        learning_objectives: @experience.learning_objective,
-        scenario: @experience.pedagogical_guidance,
-        conversation_id: existing_conversation.llm_conversation_id
+      messages_and_progress = AiExperiences::ConversationMessagesService.new(account: @context.account).fetch_with_progress(
+        conversation_id: existing_conversation.llm_conversation_id,
+        requesting_user: @current_user
       )
-
-      messages = client.messages
-      render json: { id: existing_conversation.id, messages: }
+      render json: { id: existing_conversation.id, messages: messages_and_progress[:messages], progress: messages_and_progress[:progress] }
     else
       render json: {}
     end
@@ -73,15 +99,14 @@ class AiConversationsController < ApplicationController
     # If active conversation exists, complete it before creating a new one
     existing_conversation&.complete!
 
-    client = LLMConversationClient.new(
+    result = AiExperiences::ConversationStartService.new(account: @context.account).start(
       current_user: @current_user,
       root_account_uuid: @context.root_account.uuid,
+      conversation_context_id: @experience.llm_conversation_context_id,
       facts: @experience.facts,
       learning_objectives: @experience.learning_objective,
       scenario: @experience.pedagogical_guidance
     )
-
-    result = client.starting_messages
 
     # Save the conversation record
     conversation_record = nil
@@ -96,8 +121,8 @@ class AiConversationsController < ApplicationController
       )
     end
 
-    # Return only the Canvas conversation ID and messages, not the LLM conversation ID
-    render json: { id: conversation_record&.id, messages: result[:messages] }, status: :created
+    # Return only the Canvas conversation ID, messages, and progress
+    render json: { id: conversation_record&.id, messages: result[:messages], progress: result[:progress] }, status: :created
   rescue LlmConversation::Errors::ConversationError => e
     render json: { error: e.message }, status: :service_unavailable
   end
@@ -115,26 +140,14 @@ class AiConversationsController < ApplicationController
       return render json: { error: "message is required" }, status: :bad_request
     end
 
-    client = LLMConversationClient.new(
-      current_user: @current_user,
-      root_account_uuid: @context.root_account.uuid,
-      facts: @experience.facts,
-      learning_objectives: @experience.learning_objective,
-      scenario: @experience.pedagogical_guidance,
-      conversation_id: @conversation.llm_conversation_id
+    result = AiExperiences::ConversationContinueService.new(account: @context.account).continue(
+      conversation_id: @conversation.llm_conversation_id,
+      new_user_message: params[:message],
+      requesting_user: @current_user
     )
 
-    # Get current messages first
-    current_messages = client.messages
-
-    # Send the new message
-    result = client.continue_conversation(
-      messages: current_messages,
-      new_user_message: params[:message]
-    )
-
-    # Return only the Canvas conversation ID and messages, not the LLM conversation ID
-    render json: { id: @conversation.id, messages: result[:messages] }
+    # Return only the Canvas conversation ID, messages, and progress
+    render json: { id: @conversation.id, messages: result[:messages], progress: result[:progress] }
   rescue LlmConversation::Errors::ConversationError => e
     render json: { error: e.message }, status: :service_unavailable
   end
@@ -149,6 +162,68 @@ class AiConversationsController < ApplicationController
     render json: { message: "Conversation completed successfully" }
   end
 
+  # @API Get conversation evaluation
+  #
+  # Fetch evaluation data for a conversation from the llm-conversation service
+  #
+  # @returns {Object} Hash with evaluation metrics
+  def evaluation
+    # Only teachers can request evaluations
+    permissions = %i[manage_assignments_add manage_assignments_edit manage_assignments_delete]
+    unless @context.grants_any_right?(@current_user, *permissions)
+      return render_unauthorized_action
+    end
+
+    evaluation_data = AiExperiences::ConversationEvaluationService.new(account: @context.account).evaluate(
+      conversation_id: @conversation.llm_conversation_id
+    )
+
+    render json: {
+      id: @conversation.id,
+      evaluation: evaluation_data
+    }
+  rescue LlmConversation::Errors::ConversationError => e
+    render json: { error: e.message }, status: :service_unavailable
+  end
+
+  # @API Create feedback on a conversation message
+  #
+  # Submit a like or dislike vote on an AI-generated message.
+  #
+  # @argument vote [Required, String] "liked" or "disliked"
+  # @argument message_id [Required, String] llm-conversation message UUID
+  # @argument feedback_message [Optional, String] optional text for dislike
+  #
+  # @returns {Object} Hash with feedback record
+  def create_feedback
+    feedback = AiExperiences::ConversationMessageFeedbackService.new(account: @context.account).create(
+      conversation_id: @conversation.llm_conversation_id,
+      message_id: params[:message_id],
+      user_id: @current_user.uuid,
+      vote: params[:vote],
+      feedback_message: params[:feedback_message]
+    )
+    render json: { feedback: }
+  rescue LlmConversation::Errors::ConversationError => e
+    render json: { error: e.message }, status: :service_unavailable
+  end
+
+  # @API Delete feedback on a conversation message
+  #
+  # Remove a previously submitted vote (toggling off like/dislike).
+  #
+  # @returns {Object} Success response
+  def delete_feedback
+    AiExperiences::ConversationMessageFeedbackService.new(account: @context.account).delete(
+      conversation_id: @conversation.llm_conversation_id,
+      message_id: params[:message_id],
+      feedback_id: params[:feedback_id]
+    )
+    render json: { success: true }
+  rescue LlmConversation::Errors::ConversationError => e
+    render json: { error: e.message }, status: :service_unavailable
+  end
+
   private
 
   def check_ai_experiences_feature_flag
@@ -158,16 +233,35 @@ class AiConversationsController < ApplicationController
     end
   end
 
+  def require_access_right
+    permissions = %i[manage_assignments_add manage_assignments_edit manage_assignments_delete]
+    can_manage = @context.grants_any_right?(@current_user, *permissions)
+
+    # Allow if user can manage OR is enrolled in the course
+    return if can_manage || @context.grants_right?(@current_user, :read_as_member)
+
+    render_unauthorized_action
+    false
+  end
+
   def load_experience
     @experience = AiExperience.find_by(id: params[:ai_experience_id])
     render_404 unless @experience&.course == @context && !@experience.deleted?
   end
 
   def load_conversation
-    @conversation = @experience.ai_conversations
-                               .active
-                               .for_user(@current_user.id)
-                               .find_by(id: params[:id])
+    # For teachers, allow loading any conversation; for students, only their own
+    permissions = %i[manage_assignments_add manage_assignments_edit manage_assignments_delete]
+    @conversation = if @context.grants_any_right?(@current_user, *permissions)
+                      # Teachers can view any conversation
+                      @experience.ai_conversations.find_by(id: params[:id])
+                    else
+                      # Students can only view their own active conversations
+                      @experience.ai_conversations
+                                 .active
+                                 .for_user(@current_user.id)
+                                 .find_by(id: params[:id])
+                    end
     render_404 unless @conversation
   end
 

@@ -17,8 +17,6 @@
 # You should have received a copy of the GNU Affero General Public License along
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
-require "spec_helper"
-
 RSpec.describe PeerReview::SectionOverrideCommonService do
   let(:override_params) do
     {
@@ -136,7 +134,7 @@ RSpec.describe PeerReview::SectionOverrideCommonService do
   describe "#course_section" do
     let(:course) { course_model(name: "Test Course") }
     let(:section) { add_section("Test Section", course:) }
-    let(:peer_review_sub_assignment) { double("PeerReviewSubAssignment", course:) }
+    let(:peer_review_sub_assignment) { instance_double(SubAssignment, course:) }
     let(:service_with_peer_review) do
       described_class.new(
         peer_review_sub_assignment:,
@@ -159,7 +157,7 @@ RSpec.describe PeerReview::SectionOverrideCommonService do
     end
 
     context "when course is nil" do
-      let(:peer_review_sub_assignment_without_course) { double("PeerReviewSubAssignment", course: nil) }
+      let(:peer_review_sub_assignment_without_course) { instance_double(SubAssignment, course: nil) }
       let(:service_with_nil_course) do
         described_class.new(
           peer_review_sub_assignment: peer_review_sub_assignment_without_course,
@@ -174,8 +172,8 @@ RSpec.describe PeerReview::SectionOverrideCommonService do
     end
 
     context "when active_course_sections is nil" do
-      let(:course_without_sections) { double("Course", active_course_sections: nil) }
-      let(:peer_review_sub_assignment_without_sections) { double("PeerReviewSubAssignment", course: course_without_sections) }
+      let(:course_without_sections) { instance_double(Course, active_course_sections: nil) }
+      let(:peer_review_sub_assignment_without_sections) { instance_double(SubAssignment, course: course_without_sections) }
       let(:service_with_nil_sections) do
         described_class.new(
           peer_review_sub_assignment: peer_review_sub_assignment_without_sections,

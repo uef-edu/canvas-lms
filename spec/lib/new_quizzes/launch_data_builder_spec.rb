@@ -17,8 +17,6 @@
 # You should have received a copy of the GNU Affero General Public License along
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
-require_relative "../../spec_helper"
-
 module NewQuizzes
   describe LaunchDataBuilder do
     let_once(:account) { Account.default }
@@ -26,16 +24,55 @@ module NewQuizzes
     let_once(:assignment) { assignment_model(course:) }
     let_once(:user) { user_model }
     let(:tool) { external_tool_1_3_model(context: account, opts: { url: "https://account.quiz-lti-dub-prod.instructure.com/lti/launch" }) }
-    let(:request) { double("request", host: "canvas.instructure.com", host_with_port: "canvas.instructure.com", params: {}) }
+    let(:request) { instance_double(ActionDispatch::Request, host: "canvas.instructure.com", host_with_port: "canvas.instructure.com", params: {}) }
+    let(:controller) do
+      # Trigger lazy definition of route helper methods on ApplicationController
+      # so that instance_double can verify against them
+      ApplicationController.new.respond_to?(:lti_grade_passback_api_url)
+      instance_double(ApplicationController,
+                      request:,
+                      params: ActionController::Parameters.new({}),
+                      lti_grade_passback_api_url: "https://canvas.instructure.com/api/lti/v1/tools/grade_passback",
+                      blti_legacy_grade_passback_api_url: "https://canvas.instructure.com/api/lti/v1/tools/legacy_grade_passback",
+                      lti_turnitin_outcomes_placement_url: "https://canvas.instructure.com/api/lti/v1/turnitin/outcomes_placement",
+                      named_context_url: "https://canvas.instructure.com/courses/#{course.id}/external_content/success/external_tool_redirect",
+                      set_return_url: "https://canvas.instructure.com/courses/#{course.id}/external_content/success/external_tool_redirect")
+    end
+    let(:variable_expander) { Lti::VariableExpander.new(account, course, controller, current_user: user, tool:) }
+    let(:tag) do
+      assignment.external_tool_tag || assignment.create_external_tool_tag(
+        url: tool&.url || "https://example.com/lti",
+        content: tool
+      )
+    end
 
     subject(:builder) do
       described_class.new(
         context: course,
         assignment:,
         tool:,
+        tag:,
         current_user: user,
-        request:
+        controller:,
+        request:,
+        variable_expander:
       )
+    end
+
+    # Helper to create canonical string matching the builder's implementation
+    def canonical_string_for_params(params)
+      normalized_params = params.map do |k, v|
+        value = case v
+                when Float
+                  (v == v.to_i) ? v.to_i.to_s : v.to_s
+                when Array, Hash
+                  v.to_json
+                else
+                  v.to_s
+                end
+        [k.to_s, value]
+      end
+      URI.encode_www_form(normalized_params.sort_by { |k, _v| k })
     end
 
     describe "#build" do
@@ -65,9 +102,8 @@ module NewQuizzes
       context "when tool has no URL or domain" do
         let(:tool) { nil }
 
-        it "returns nil for backend_url" do
-          result = builder.build
-          expect(result[:backend_url]).to be_nil
+        it "raises an error when building" do
+          expect { builder.build }.to raise_error("Tool is required for resource_link_id")
         end
       end
 
@@ -78,6 +114,26 @@ module NewQuizzes
           expect(Rails.logger).to receive(:error).with(/Failed to parse tool URL/)
           result = builder.build
           expect(result[:backend_url]).to be_nil
+        end
+      end
+
+      context "locale parameter" do
+        it "includes locale in the build output" do
+          result = builder.build
+          expect(result["launch_presentation_locale"]).to be_present
+        end
+
+        it "returns current I18n locale" do
+          I18n.with_locale(:es) do
+            result = builder.build
+            expect(result["launch_presentation_locale"]).to eq(:es)
+          end
+        end
+
+        it "returns default locale when I18n.locale is nil" do
+          allow(I18n).to receive(:locale).and_return(nil)
+          result = builder.build
+          expect(result["launch_presentation_locale"]).to eq(I18n.default_locale)
         end
       end
 
@@ -253,11 +309,9 @@ module NewQuizzes
         params = result[:params]
 
         expect(params).to include(
-          custom_canvas_assignment_id: assignment.id,
-          custom_canvas_course_id: course.id,
-          custom_canvas_user_id: user.id,
           backend_url: "https://account.quiz-lti-dub-prod.instructure.com"
         )
+        expect(params["launch_presentation_locale"]).to eq(I18n.locale)
       end
 
       it "generates a base64-encoded signature" do
@@ -274,8 +328,7 @@ module NewQuizzes
         signature = Base64.strict_decode64(result[:signature])
 
         # Recreate the canonical string the same way the builder does
-        # Uses URL-encoded query-string format
-        canonical_string = URI.encode_www_form(params.sort)
+        canonical_string = canonical_string_for_params(params)
 
         # Verify the signature
         expected_signature = OpenSSL::HMAC.digest("sha256", tool.shared_secret, canonical_string)
@@ -284,13 +337,19 @@ module NewQuizzes
 
       it "produces different signatures for different params" do
         result1 = builder.build_with_signature
+        params1 = result1[:params]
 
-        # Modify the assignment to change params
-        assignment.update!(title: "Modified Title")
+        # Modify params to simulate different data
+        params1_modified = params1.dup
+        params1_modified[:backend_url] = "https://different.example.com"
 
-        result2 = builder.build_with_signature
+        # Generate a new signature for the modified params
+        canonical_string = canonical_string_for_params(params1_modified)
+        modified_signature = OpenSSL::HMAC.digest("sha256", tool.shared_secret, canonical_string)
+        modified_signature_base64 = Base64.strict_encode64(modified_signature)
 
-        expect(result1[:signature]).not_to eq(result2[:signature])
+        # The signature should be different for different params
+        expect(modified_signature_base64).not_to eq(result1[:signature])
       end
 
       it "produces the same signature for the same params" do
@@ -325,8 +384,8 @@ module NewQuizzes
       context "when tool is nil" do
         let(:tool) { nil }
 
-        it "raises an error" do
-          expect { builder.build_with_signature }.to raise_error("Missing shared secret for tool")
+        it "raises an error about missing tool" do
+          expect { builder.build_with_signature }.to raise_error("Tool is required for resource_link_id")
         end
       end
 
@@ -337,8 +396,7 @@ module NewQuizzes
           provided_signature = Base64.strict_decode64(result[:signature])
 
           # Simulate verification (what Quiz LTI will do)
-          # Uses URL-encoded query-string format
-          canonical_string = URI.encode_www_form(params.sort)
+          canonical_string = canonical_string_for_params(params)
           expected_signature = OpenSSL::HMAC.digest("sha256", tool.shared_secret, canonical_string)
 
           # Use secure_compare to prevent timing attacks
@@ -355,8 +413,7 @@ module NewQuizzes
           params[:custom_canvas_assignment_id] = 999_999
 
           # Try to verify with tampered params
-          # Uses URL-encoded query-string format
-          canonical_string = URI.encode_www_form(params.sort)
+          canonical_string = canonical_string_for_params(params)
           expected_signature = OpenSSL::HMAC.digest("sha256", tool.shared_secret, canonical_string)
 
           is_valid = ActiveSupport::SecurityUtils.secure_compare(provided_signature, expected_signature)
@@ -370,8 +427,7 @@ module NewQuizzes
 
           # Use wrong secret
           wrong_secret = "wrong-secret-key"
-          # Uses URL-encoded query-string format
-          canonical_string = URI.encode_www_form(params.sort)
+          canonical_string = canonical_string_for_params(params)
           expected_signature = OpenSSL::HMAC.digest("sha256", wrong_secret, canonical_string)
 
           is_valid = ActiveSupport::SecurityUtils.secure_compare(provided_signature, expected_signature)
@@ -387,12 +443,195 @@ module NewQuizzes
           provided_signature = Base64.strict_decode64(result[:signature])
 
           # Verify signature with URL encoding (what Quiz LTI will do)
-          canonical_string = URI.encode_www_form(params.sort)
+          canonical_string = canonical_string_for_params(params)
           expected_signature = OpenSSL::HMAC.digest("sha256", tool.shared_secret, canonical_string)
 
           is_valid = ActiveSupport::SecurityUtils.secure_compare(provided_signature, expected_signature)
           expect(is_valid).to be true
         end
+      end
+    end
+
+    describe "#build return_url behavior" do
+      it "includes launch_presentation_return_url in build output" do
+        result = builder.build
+        expect(result[:launch_presentation_return_url]).to be_present
+      end
+
+      context "when controller responds to set_return_url" do
+        let(:controller) do
+          # Trigger lazy definition of route helper methods on ApplicationController
+          # so that instance_double can verify against them
+          ApplicationController.new.respond_to?(:lti_grade_passback_api_url)
+          instance_double(ApplicationController,
+                          request:,
+                          params: ActionController::Parameters.new({}),
+                          lti_grade_passback_api_url: "https://canvas.instructure.com/api/lti/v1/tools/grade_passback",
+                          blti_legacy_grade_passback_api_url: "https://canvas.instructure.com/api/lti/v1/tools/legacy_grade_passback",
+                          lti_turnitin_outcomes_placement_url: "https://canvas.instructure.com/api/lti/v1/turnitin/outcomes_placement",
+                          set_return_url: "https://canvas.instructure.com/courses/#{course.id}/quizzes")
+        end
+
+        it "uses set_return_url from controller to match LTI launch behavior" do
+          # Simulate return URL based on referer (e.g., quizzes page)
+          expect(controller).to receive(:set_return_url).and_return("https://canvas.instructure.com/courses/#{course.id}/quizzes")
+          result = builder.build
+          expect(result[:launch_presentation_return_url]).to eq("https://canvas.instructure.com/courses/#{course.id}/quizzes")
+        end
+      end
+
+      context "when module_item_id is present in params" do
+        let(:request) { instance_double(ActionDispatch::Request, host: "canvas.instructure.com", host_with_port: "canvas.instructure.com", params: { module_item_id: "464" }) }
+        let(:controller) do
+          ApplicationController.new.respond_to?(:lti_grade_passback_api_url)
+          instance_double(ApplicationController,
+                          request:,
+                          params: ActionController::Parameters.new({ module_item_id: "464" }),
+                          lti_grade_passback_api_url: "https://canvas.instructure.com/api/lti/v1/tools/grade_passback",
+                          blti_legacy_grade_passback_api_url: "https://canvas.instructure.com/api/lti/v1/tools/legacy_grade_passback",
+                          lti_turnitin_outcomes_placement_url: "https://canvas.instructure.com/api/lti/v1/turnitin/outcomes_placement",
+                          course_assignment_url: "https://canvas.instructure.com/courses/#{course.id}/assignments/#{assignment.id}?module_item_id=464",
+                          set_return_url: "https://canvas.instructure.com/courses/#{course.id}/modules")
+        end
+
+        it "includes platform_redirect_url with the assignment URL and module_item_id" do
+          expect(controller).to receive(:course_assignment_url).with(course, assignment, module_item_id: "464")
+                                                               .and_return("https://canvas.instructure.com/courses/#{course.id}/assignments/#{assignment.id}?module_item_id=464")
+          result = builder.build
+          expect(result[:platform_redirect_url]).to eq("https://canvas.instructure.com/courses/#{course.id}/assignments/#{assignment.id}?module_item_id=464")
+        end
+
+        it "uses set_return_url for launch_presentation_return_url" do
+          allow(controller).to receive(:course_assignment_url)
+            .and_return("https://canvas.instructure.com/courses/#{course.id}/assignments/#{assignment.id}?module_item_id=464")
+          result = builder.build
+          expect(result[:launch_presentation_return_url]).to eq("https://canvas.instructure.com/courses/#{course.id}/modules")
+        end
+      end
+
+      context "when module_item_id is not present in params" do
+        it "does not include platform_redirect_url" do
+          result = builder.build
+          expect(result[:platform_redirect_url]).to be_nil
+        end
+      end
+
+      context "when controller is nil" do
+        subject(:builder) do
+          described_class.new(
+            context: course,
+            assignment:,
+            tool:,
+            tag:,
+            current_user: user,
+            controller: nil,
+            request:,
+            variable_expander:
+          )
+        end
+
+        it "returns nil for launch_presentation_return_url" do
+          result = builder.build
+          expect(result[:launch_presentation_return_url]).to be_nil
+        end
+      end
+    end
+
+    describe "result launch behavior (submission views)" do
+      let(:controller) do
+        ApplicationController.new.respond_to?(:lti_grade_passback_api_url)
+        instance_double(ApplicationController,
+                        request:,
+                        params: ActionController::Parameters.new({ participant_session_id: "85", quiz_session_id: "53" }),
+                        lti_grade_passback_api_url: "https://canvas.instructure.com/api/lti/v1/tools/grade_passback",
+                        blti_legacy_grade_passback_api_url: "https://canvas.instructure.com/api/lti/v1/tools/legacy_grade_passback",
+                        lti_turnitin_outcomes_placement_url: "https://canvas.instructure.com/api/lti/v1/turnitin/outcomes_placement",
+                        set_return_url: "https://canvas.instructure.com/courses/#{course.id}/assignments",
+                        polymorphic_url: "https://canvas.instructure.com/courses/#{course.id}")
+      end
+
+      it "includes participant_session_id and quiz_session_id in build output" do
+        result = builder.build
+        expect(result[:participant_session_id]).to eq("85")
+        expect(result[:quiz_session_id]).to eq("53")
+      end
+
+      it "excludes outcome service params for result launches" do
+        course.enroll_student(user, enrollment_state: "active")
+        result = builder.build
+        expect(result).not_to have_key(:lis_result_sourcedid)
+        expect(result).not_to have_key(:lis_outcome_service_url)
+        expect(result).not_to have_key(:ext_ims_lis_basic_outcome_url)
+        expect(result).not_to have_key(:ext_outcome_data_values_accepted)
+        expect(result).not_to have_key(:ext_outcome_result_total_score_accepted)
+        expect(result).not_to have_key(:ext_outcome_submission_submitted_at_accepted)
+        expect(result).not_to have_key(:ext_outcome_submission_needs_additional_review_accepted)
+        expect(result).not_to have_key(:ext_outcome_submission_prioritize_non_tool_grade_accepted)
+        expect(result).not_to have_key(:ext_outcomes_tool_placement_url)
+      end
+
+      it "uses course URL for launch_presentation_return_url" do
+        result = builder.build
+        expect(result[:launch_presentation_return_url]).to eq("https://canvas.instructure.com/courses/#{course.id}")
+      end
+    end
+
+    describe "API gateway routing" do
+      context "when new_quizzes_native_experience_api_gateway feature flag is enabled" do
+        before do
+          allow(course).to receive(:feature_enabled?).with(:new_quizzes_native_experience_api_gateway).and_return(true)
+          allow(Services::NewQuizzes).to receive(:api_gateway_host).and_return("https://gateway-prod.example.com")
+        end
+
+        it "routes backend_url through the API gateway" do
+          result = builder.build
+          expect(result[:backend_url]).to eq("https://gateway-prod.example.com/new-quizzes-lti")
+        end
+
+        it "appends /new-quizzes-lti to the gateway host" do
+          allow(Services::NewQuizzes).to receive(:api_gateway_host).and_return("https://gateway-beta.example.com")
+          result = builder.build
+          expect(result[:backend_url]).to eq("https://gateway-beta.example.com/new-quizzes-lti")
+        end
+      end
+
+      context "when feature flag is enabled but gateway host is blank" do
+        before do
+          allow(course).to receive(:feature_enabled?).with(:new_quizzes_native_experience_api_gateway).and_return(true)
+          allow(Services::NewQuizzes).to receive(:api_gateway_host).and_return(nil)
+        end
+
+        it "falls back to direct tool URL" do
+          result = builder.build
+          expect(result[:backend_url]).to eq("https://account.quiz-lti-dub-prod.instructure.com")
+        end
+      end
+
+      context "when feature flag is disabled" do
+        before do
+          allow(course).to receive(:feature_enabled?).with(:new_quizzes_native_experience_api_gateway).and_return(false)
+        end
+
+        it "uses the direct tool URL" do
+          result = builder.build
+          expect(result[:backend_url]).to eq("https://account.quiz-lti-dub-prod.instructure.com")
+        end
+      end
+    end
+
+    describe "non-result launch includes outcome service params" do
+      it "includes outcome service params when participant_session_id is absent" do
+        course.enroll_student(user, enrollment_state: "active")
+        result = builder.build
+        expect(result[:lis_outcome_service_url]).to be_present
+        expect(result[:ext_ims_lis_basic_outcome_url]).to be_present
+        expect(result).to have_key(:ext_outcome_data_values_accepted)
+      end
+
+      it "does not include participant_session_id or quiz_session_id" do
+        result = builder.build
+        expect(result[:participant_session_id]).to be_nil
+        expect(result[:quiz_session_id]).to be_nil
       end
     end
   end

@@ -17,8 +17,6 @@
 # You should have received a copy of the GNU Affero General Public License along
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
-require_relative "../spec_helper"
-
 RSpec.describe MicrofrontendsReleaseTagOverrideController do
   let(:account) { Account.default }
   let(:user) { user_model }
@@ -93,7 +91,7 @@ RSpec.describe MicrofrontendsReleaseTagOverrideController do
         it "returns 422 with error message" do
           get :create, params: { override: { invalid_app: "https://assets.instructure.com/test" } }
 
-          expect(response).to have_http_status(:unprocessable_entity)
+          expect(response).to have_http_status(:unprocessable_content)
           json_response = response.parsed_body
           expect(json_response["error"]).to include("must be one of")
         end
@@ -103,7 +101,7 @@ RSpec.describe MicrofrontendsReleaseTagOverrideController do
         it "returns 422 with error message" do
           get :create, params: { override: { canvas_career_learner: "https://evil.com/test" } }
 
-          expect(response).to have_http_status(:unprocessable_entity)
+          expect(response).to have_http_status(:unprocessable_content)
           json_response = response.parsed_body
           expect(json_response["error"]).to include("must be one of")
         end
@@ -113,7 +111,7 @@ RSpec.describe MicrofrontendsReleaseTagOverrideController do
         it "returns 422 with error message" do
           get :create, params: { override: { canvas_career_learner: "not a url" } }
 
-          expect(response).to have_http_status(:unprocessable_entity)
+          expect(response).to have_http_status(:unprocessable_content)
           json_response = response.parsed_body
           expect(json_response["error"]).to include("must be a valid URL")
         end

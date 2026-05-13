@@ -18,7 +18,7 @@
 
 import {ZAccountId} from '@canvas/lti-apps/models/AccountId'
 import fakeENV from '@canvas/test-utils/fakeENV'
-import {render, screen, waitFor} from '@testing-library/react'
+import {cleanup, render, screen, waitFor} from '@testing-library/react'
 import {http, HttpResponse} from 'msw'
 import {setupServer} from 'msw/node'
 import {ZLtiContextControlId} from '../../../../model/LtiContextControl'
@@ -94,6 +94,7 @@ const mockLtiRegistrationHistoryEntry = (
 describe('ToolHistory', () => {
   beforeAll(() => server.listen())
   afterEach(() => {
+    cleanup()
     server.resetHandlers()
     fakeENV.teardown()
   })
@@ -377,11 +378,11 @@ describe('ToolHistory', () => {
       render(renderWithRouter({child: <ToolHistory accountId={accountId} />, registration}))
 
       expect(await screen.findByText('Configuration Update History')).toBeInTheDocument()
-      expect(screen.getByText('Status')).toBeInTheDocument()
       expect(screen.getByText('Updated On')).toBeInTheDocument()
       expect(screen.getByText('Updated By')).toBeInTheDocument()
+      expect(screen.getByText('Summary')).toBeInTheDocument()
 
-      expect(screen.getByText('Updated')).toBeInTheDocument()
+      expect(screen.getByText('Availability & Exceptions')).toBeInTheDocument()
       expect(screen.getByText('Test User')).toBeInTheDocument()
     })
   })

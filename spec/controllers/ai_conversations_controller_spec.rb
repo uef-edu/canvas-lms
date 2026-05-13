@@ -17,10 +17,6 @@
 # You should have received a copy of the GNU Affero General Public License along
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
-require_relative "../spec_helper"
-require_relative "../../lib/llm_conversation"
-require_relative "../../lib/llm_conversation/errors"
-
 describe AiConversationsController do
   before :once do
     course_with_teacher(active_all: true)
@@ -35,20 +31,172 @@ describe AiConversationsController do
     )
   end
 
+  describe "GET #active_conversation" do
+    context "as teacher" do
+      before { user_session(@teacher) }
+
+      it "returns existing active conversation with progress" do
+        conversation = @ai_experience.ai_conversations.create!(
+          llm_conversation_id: "existing-llm-conv-id",
+          user: @teacher,
+          course: @course,
+          root_account: @course.root_account,
+          account: @course.account,
+          workflow_state: "active"
+        )
+
+        mock_service = instance_double(AiExperiences::ConversationMessagesService)
+        allow(AiExperiences::ConversationMessagesService).to receive(:new).and_return(mock_service)
+        allow(mock_service).to receive(:fetch_with_progress).and_return({
+                                                                          messages: [
+                                                                            { role: "User", text: "Hello" },
+                                                                            { role: "Assistant", text: "Hi there!" }
+                                                                          ],
+                                                                          progress: {
+                                                                            current: 1,
+                                                                            total: 3,
+                                                                            percentage: 33,
+                                                                            objectives: [
+                                                                              { objective: "Objective 1", status: "covered" },
+                                                                              { objective: "Objective 2", status: "" },
+                                                                              { objective: "Objective 3", status: "" }
+                                                                            ]
+                                                                          }
+                                                                        })
+
+        get :active_conversation,
+            params: { course_id: @course.id, ai_experience_id: @ai_experience.id },
+            format: :json
+
+        expect(response).to be_successful
+        json_response = json_parse(response.body)
+        expect(json_response["id"]).to eq(conversation.id)
+        expect(json_response["messages"]).to be_an(Array)
+        expect(json_response["progress"]).to be_present
+        expect(json_response["progress"]["percentage"]).to eq(33)
+        expect(json_response["progress"]["current"]).to eq(1)
+        expect(json_response["progress"]["total"]).to eq(3)
+      end
+
+      it "returns empty object when no active conversation" do
+        get :active_conversation,
+            params: { course_id: @course.id, ai_experience_id: @ai_experience.id },
+            format: :json
+
+        expect(response).to be_successful
+        json_response = json_parse(response.body)
+        expect(json_response).to eq({})
+      end
+    end
+
+    context "as unenrolled user" do
+      before :once do
+        @unenrolled_user = user_factory(active_all: true)
+      end
+
+      before { user_session(@unenrolled_user) }
+
+      it "returns forbidden for unenrolled users" do
+        get :active_conversation,
+            params: { course_id: @course.id, ai_experience_id: @ai_experience.id },
+            format: :json
+
+        expect(response).to have_http_status(:forbidden)
+      end
+    end
+  end
+
+  describe "GET #show" do
+    before :once do
+      @student2 = student_in_course(active_all: true, course: @course).user
+      @conversation = @ai_experience.ai_conversations.create!(
+        llm_conversation_id: "student-conv-123",
+        user: @student2,
+        course: @course,
+        root_account: @course.root_account,
+        account: @course.account,
+        workflow_state: "active"
+      )
+    end
+
+    context "as teacher" do
+      before do
+        user_session(@teacher)
+        mock_service = instance_double(AiExperiences::ConversationMessagesService)
+        allow(AiExperiences::ConversationMessagesService).to receive(:new).and_return(mock_service)
+        allow(mock_service).to receive(:fetch_with_progress).and_return({
+                                                                          messages: [
+                                                                            { role: "User", text: "Hello" },
+                                                                            { role: "Assistant", text: "Hi there!" }
+                                                                          ],
+                                                                          progress: {
+                                                                            current: 1,
+                                                                            total: 2,
+                                                                            percentage: 50,
+                                                                            objectives: []
+                                                                          }
+                                                                        })
+      end
+
+      it "returns student conversation with messages" do
+        get :show,
+            params: { course_id: @course.id, ai_experience_id: @ai_experience.id, id: @conversation.id },
+            format: :json
+
+        expect(response).to be_successful
+        json_response = json_parse(response.body)
+        expect(json_response["id"]).to eq(@conversation.id)
+        expect(json_response["user_id"]).to eq(@student2.id.to_s)
+        expect(json_response["messages"]).to be_an(Array)
+        expect(json_response["messages"].length).to eq(2)
+        expect(json_response["progress"]).to be_present
+      end
+
+      it "returns 404 for non-existent conversation" do
+        get :show,
+            params: { course_id: @course.id, ai_experience_id: @ai_experience.id, id: 99_999 },
+            format: :json
+
+        expect(response).to have_http_status(:not_found)
+      end
+    end
+
+    context "as student" do
+      before { user_session(@student) }
+
+      it "returns unauthorized when viewing another student's conversation" do
+        get :show,
+            params: { course_id: @course.id, ai_experience_id: @ai_experience.id, id: @conversation.id },
+            format: :json
+
+        assert_forbidden
+      end
+    end
+  end
+
   describe "POST #create" do
     context "as teacher" do
       before { user_session(@teacher) }
 
-      it "creates a new conversation and returns initial messages" do
-        mock_client = instance_double(LLMConversationClient)
-        allow(LLMConversationClient).to receive(:new).and_return(mock_client)
-        allow(mock_client).to receive(:starting_messages).and_return({
-                                                                       conversation_id: "llm-conv-id",
-                                                                       messages: [
-                                                                         { role: "User", text: "Hello" },
-                                                                         { role: "Assistant", text: "Hi there!" }
-                                                                       ]
-                                                                     })
+      it "creates a new conversation and returns initial messages with progress" do
+        mock_service = instance_double(AiExperiences::ConversationStartService)
+        allow(AiExperiences::ConversationStartService).to receive(:new).and_return(mock_service)
+        allow(mock_service).to receive(:start).and_return({
+                                                            conversation_id: "llm-conv-id",
+                                                            messages: [
+                                                              { role: "User", text: "Hello" },
+                                                              { role: "Assistant", text: "Hi there!" }
+                                                            ],
+                                                            progress: {
+                                                              current: 0,
+                                                              total: 2,
+                                                              percentage: 0,
+                                                              objectives: [
+                                                                { objective: "Objective 1", status: "" },
+                                                                { objective: "Objective 2", status: "" }
+                                                              ]
+                                                            }
+                                                          })
 
         post :create,
              params: { course_id: @course.id, ai_experience_id: @ai_experience.id },
@@ -60,15 +208,18 @@ describe AiConversationsController do
         expect(json_response["messages"]).to be_an(Array)
         expect(json_response["messages"].length).to eq(2)
         expect(json_response["conversation_id"]).to be_nil # Should not expose LLM conversation ID
+        expect(json_response["progress"]).to be_present
+        expect(json_response["progress"]["percentage"]).to eq(0)
+        expect(json_response["progress"]["objectives"]).to be_an(Array)
       end
 
       it "creates an AiConversation record" do
-        mock_client = instance_double(LLMConversationClient)
-        allow(LLMConversationClient).to receive(:new).and_return(mock_client)
-        allow(mock_client).to receive(:starting_messages).and_return({
-                                                                       conversation_id: "llm-conv-id",
-                                                                       messages: []
-                                                                     })
+        mock_service = instance_double(AiExperiences::ConversationStartService)
+        allow(AiExperiences::ConversationStartService).to receive(:new).and_return(mock_service)
+        allow(mock_service).to receive(:start).and_return({
+                                                            conversation_id: "llm-conv-id",
+                                                            messages: []
+                                                          })
 
         expect do
           post :create,
@@ -92,12 +243,12 @@ describe AiConversationsController do
           workflow_state: "active"
         )
 
-        mock_client = instance_double(LLMConversationClient)
-        allow(LLMConversationClient).to receive(:new).and_return(mock_client)
-        allow(mock_client).to receive(:starting_messages).and_return({
-                                                                       conversation_id: "new-llm-conv-id",
-                                                                       messages: []
-                                                                     })
+        mock_service = instance_double(AiExperiences::ConversationStartService)
+        allow(AiExperiences::ConversationStartService).to receive(:new).and_return(mock_service)
+        allow(mock_service).to receive(:start).and_return({
+                                                            conversation_id: "new-llm-conv-id",
+                                                            messages: []
+                                                          })
 
         post :create,
              params: { course_id: @course.id, ai_experience_id: @ai_experience.id },
@@ -116,9 +267,9 @@ describe AiConversationsController do
       end
 
       it "returns service unavailable on conversation error" do
-        mock_client = instance_double(LLMConversationClient)
-        allow(LLMConversationClient).to receive(:new).and_return(mock_client)
-        allow(mock_client).to receive(:starting_messages)
+        mock_service = instance_double(AiExperiences::ConversationStartService)
+        allow(AiExperiences::ConversationStartService).to receive(:new).and_return(mock_service)
+        allow(mock_service).to receive(:start)
           .and_raise(LlmConversation::Errors::ConversationError, "Service unavailable")
 
         post :create,
@@ -135,18 +286,34 @@ describe AiConversationsController do
       before { user_session(@student) }
 
       it "allows students to create conversations" do
-        mock_client = instance_double(LLMConversationClient)
-        allow(LLMConversationClient).to receive(:new).and_return(mock_client)
-        allow(mock_client).to receive(:starting_messages).and_return({
-                                                                       conversation_id: "llm-conv-id",
-                                                                       messages: []
-                                                                     })
+        mock_service = instance_double(AiExperiences::ConversationStartService)
+        allow(AiExperiences::ConversationStartService).to receive(:new).and_return(mock_service)
+        allow(mock_service).to receive(:start).and_return({
+                                                            conversation_id: "llm-conv-id",
+                                                            messages: []
+                                                          })
 
         post :create,
              params: { course_id: @course.id, ai_experience_id: @ai_experience.id },
              format: :json
 
         expect(response).to have_http_status(:created)
+      end
+    end
+
+    context "as unenrolled user" do
+      before :once do
+        @unenrolled_user = user_factory(active_all: true)
+      end
+
+      before { user_session(@unenrolled_user) }
+
+      it "returns forbidden for unenrolled users" do
+        post :create,
+             params: { course_id: @course.id, ai_experience_id: @ai_experience.id },
+             format: :json
+
+        expect(response).to have_http_status(:forbidden)
       end
     end
   end
@@ -166,20 +333,26 @@ describe AiConversationsController do
     context "as teacher" do
       before { user_session(@teacher) }
 
-      it "posts a message and returns updated messages" do
-        mock_client = instance_double(LLMConversationClient)
-        allow(LLMConversationClient).to receive(:new).and_return(mock_client)
-        allow(mock_client).to receive_messages(messages: [
-                                                 { role: "User", text: "Hello" }
-                                               ],
-                                               continue_conversation: {
-                                                 conversation_id: "llm-conv-id",
-                                                 messages: [
-                                                   { role: "User", text: "Hello" },
-                                                   { role: "User", text: "How are you?" },
-                                                   { role: "Assistant", text: "I'm doing well!" }
-                                                 ]
-                                               })
+      it "posts a message and returns updated messages with progress" do
+        mock_service = instance_double(AiExperiences::ConversationContinueService)
+        allow(AiExperiences::ConversationContinueService).to receive(:new).and_return(mock_service)
+        allow(mock_service).to receive(:continue).and_return({
+                                                               conversation_id: "llm-conv-id",
+                                                               messages: [
+                                                                 { role: "User", text: "Hello" },
+                                                                 { role: "User", text: "How are you?" },
+                                                                 { role: "Assistant", text: "I'm doing well!" }
+                                                               ],
+                                                               progress: {
+                                                                 current: 1,
+                                                                 total: 2,
+                                                                 percentage: 50,
+                                                                 objectives: [
+                                                                   { objective: "Objective 1", status: "covered" },
+                                                                   { objective: "Objective 2", status: "" }
+                                                                 ]
+                                                               }
+                                                             })
 
         post :post_message,
              params: {
@@ -196,6 +369,8 @@ describe AiConversationsController do
         expect(json_response["messages"]).to be_an(Array)
         expect(json_response["messages"].length).to eq(3)
         expect(json_response["conversation_id"]).to be_nil # Should not expose LLM conversation ID
+        expect(json_response["progress"]).to be_present
+        expect(json_response["progress"]["percentage"]).to eq(50)
       end
 
       it "returns bad request when message is missing" do
@@ -209,9 +384,9 @@ describe AiConversationsController do
       end
 
       it "returns service unavailable on conversation error" do
-        mock_client = instance_double(LLMConversationClient)
-        allow(LLMConversationClient).to receive(:new).and_return(mock_client)
-        allow(mock_client).to receive(:messages)
+        mock_service = instance_double(AiExperiences::ConversationContinueService)
+        allow(AiExperiences::ConversationContinueService).to receive(:new).and_return(mock_service)
+        allow(mock_service).to receive(:continue)
           .and_raise(LlmConversation::Errors::ConversationError, "Failed to send")
 
         post :post_message,
@@ -241,12 +416,13 @@ describe AiConversationsController do
       end
 
       it "allows students to post messages to their own conversations" do
-        mock_client = instance_double(LLMConversationClient)
-        allow(LLMConversationClient).to receive(:new).and_return(mock_client)
-        allow(mock_client).to receive_messages(messages: [], continue_conversation: {
-                                                 conversation_id: "student-llm-conv-id",
-                                                 messages: []
-                                               })
+        mock_service = instance_double(AiExperiences::ConversationContinueService)
+        allow(AiExperiences::ConversationContinueService).to receive(:new).and_return(mock_service)
+        allow(mock_service).to receive(:continue).and_return({
+                                                               conversation_id: "student-llm-conv-id",
+                                                               messages: [],
+                                                               progress: nil
+                                                             })
 
         post :post_message,
              params: {
@@ -310,6 +486,276 @@ describe AiConversationsController do
                format: :json
 
         expect(response).to be_successful
+      end
+    end
+  end
+
+  describe "GET #evaluation" do
+    before :once do
+      @student2 = student_in_course(active_all: true, course: @course).user
+      @conversation = @ai_experience.ai_conversations.create!(
+        llm_conversation_id: "student-conv-123",
+        user: @student2,
+        course: @course,
+        root_account: @course.root_account,
+        account: @course.account,
+        workflow_state: "active"
+      )
+    end
+
+    context "as teacher" do
+      before do
+        user_session(@teacher)
+        @evaluation_data = {
+          "overall_assessment" => "Student demonstrated strong analytical skills.",
+          "key_moments" => [
+            {
+              "learning_objective" => "Critical thinking",
+              "evidence" => "Student analyzed the problem systematically",
+              "message_number" => 3
+            }
+          ],
+          "learning_objectives_evaluation" => [
+            {
+              "objective" => "Critical thinking",
+              "met" => true,
+              "score" => 85,
+              "explanation" => "Student showed excellent analytical skills"
+            }
+          ],
+          "strengths" => [
+            "Clear communication",
+            "Systematic approach"
+          ],
+          "areas_for_improvement" => [
+            "Historical context analysis"
+          ],
+          "overall_score" => 85
+        }
+        mock_service = instance_double(AiExperiences::ConversationEvaluationService)
+        allow(AiExperiences::ConversationEvaluationService).to receive(:new).and_return(mock_service)
+        allow(mock_service).to receive(:evaluate).and_return(@evaluation_data)
+      end
+
+      it "returns evaluation data for a student conversation" do
+        get :evaluation,
+            params: { course_id: @course.id, ai_experience_id: @ai_experience.id, id: @conversation.id },
+            format: :json
+
+        expect(response).to be_successful
+        json_response = json_parse(response.body)
+        expect(json_response["id"]).to eq(@conversation.id)
+        expect(json_response["evaluation"]).to be_present
+        expect(json_response["evaluation"]["overall_score"]).to eq(85)
+        expect(json_response["evaluation"]["overall_assessment"]).to be_present
+        expect(json_response["evaluation"]["learning_objectives_evaluation"]).to be_an(Array)
+        expect(json_response["evaluation"]["strengths"]).to be_an(Array)
+        expect(json_response["evaluation"]["areas_for_improvement"]).to be_an(Array)
+      end
+
+      it "returns 404 for non-existent conversation" do
+        get :evaluation,
+            params: { course_id: @course.id, ai_experience_id: @ai_experience.id, id: 99_999 },
+            format: :json
+
+        expect(response).to have_http_status(:not_found)
+      end
+
+      it "returns service unavailable on conversation error" do
+        mock_service = instance_double(AiExperiences::ConversationEvaluationService)
+        allow(AiExperiences::ConversationEvaluationService).to receive(:new).and_return(mock_service)
+        allow(mock_service).to receive(:evaluate)
+          .and_raise(LlmConversation::Errors::ConversationError, "Evaluation service unavailable")
+
+        get :evaluation,
+            params: { course_id: @course.id, ai_experience_id: @ai_experience.id, id: @conversation.id },
+            format: :json
+
+        expect(response).to have_http_status(:service_unavailable)
+        json_response = json_parse(response.body)
+        expect(json_response["error"]).to eq("Evaluation service unavailable")
+      end
+    end
+
+    context "as student" do
+      before { user_session(@student) }
+
+      it "returns unauthorized when requesting evaluation" do
+        get :evaluation,
+            params: { course_id: @course.id, ai_experience_id: @ai_experience.id, id: @conversation.id },
+            format: :json
+
+        assert_forbidden
+      end
+    end
+
+    context "as unenrolled user" do
+      before :once do
+        @unenrolled_user = user_factory(active_all: true)
+      end
+
+      before { user_session(@unenrolled_user) }
+
+      it "returns forbidden for unenrolled users" do
+        get :evaluation,
+            params: { course_id: @course.id, ai_experience_id: @ai_experience.id, id: @conversation.id },
+            format: :json
+
+        expect(response).to have_http_status(:forbidden)
+      end
+    end
+  end
+
+  describe "POST #create_feedback" do
+    before do
+      @conversation = @ai_experience.ai_conversations.create!(
+        llm_conversation_id: "llm-conv-id",
+        user: @teacher,
+        course: @course,
+        root_account: @course.root_account,
+        account: @course.account,
+        workflow_state: "active"
+      )
+    end
+
+    context "as teacher" do
+      before { user_session(@teacher) }
+
+      it "creates feedback and returns it" do
+        feedback_data = { "id" => "fb-1", "vote" => "liked", "user_id" => @teacher.uuid }
+        mock_service = instance_double(AiExperiences::ConversationMessageFeedbackService)
+        allow(AiExperiences::ConversationMessageFeedbackService).to receive(:new).and_return(mock_service)
+        allow(mock_service).to receive(:create).and_return(feedback_data)
+
+        post :create_feedback,
+             params: {
+               course_id: @course.id,
+               ai_experience_id: @ai_experience.id,
+               id: @conversation.id,
+               message_id: "msg-123",
+               vote: "liked"
+             },
+             format: :json
+
+        expect(response).to be_successful
+        json_response = json_parse(response.body)
+        expect(json_response["feedback"]["id"]).to eq("fb-1")
+        expect(json_response["feedback"]["vote"]).to eq("liked")
+      end
+
+      it "returns service unavailable on conversation error" do
+        mock_service = instance_double(AiExperiences::ConversationMessageFeedbackService)
+        allow(AiExperiences::ConversationMessageFeedbackService).to receive(:new).and_return(mock_service)
+        allow(mock_service).to receive(:create)
+          .and_raise(LlmConversation::Errors::ConversationError, "Feedback service error")
+
+        post :create_feedback,
+             params: {
+               course_id: @course.id,
+               ai_experience_id: @ai_experience.id,
+               id: @conversation.id,
+               message_id: "msg-123",
+               vote: "liked"
+             },
+             format: :json
+
+        expect(response).to have_http_status(:service_unavailable)
+        json_response = json_parse(response.body)
+        expect(json_response["error"]).to eq("Feedback service error")
+      end
+    end
+
+    context "as student" do
+      before do
+        user_session(@student)
+        @student_conversation = @ai_experience.ai_conversations.create!(
+          llm_conversation_id: "student-llm-conv-id",
+          user: @student,
+          course: @course,
+          root_account: @course.root_account,
+          account: @course.account,
+          workflow_state: "active"
+        )
+      end
+
+      it "allows students to create feedback on their own conversations" do
+        feedback_data = { "id" => "fb-2", "vote" => "disliked", "user_id" => @student.uuid }
+        mock_service = instance_double(AiExperiences::ConversationMessageFeedbackService)
+        allow(AiExperiences::ConversationMessageFeedbackService).to receive(:new).and_return(mock_service)
+        allow(mock_service).to receive(:create).and_return(feedback_data)
+
+        post :create_feedback,
+             params: {
+               course_id: @course.id,
+               ai_experience_id: @ai_experience.id,
+               id: @student_conversation.id,
+               message_id: "msg-456",
+               vote: "disliked",
+               feedback_message: "Irrelevant"
+             },
+             format: :json
+
+        expect(response).to be_successful
+        json_response = json_parse(response.body)
+        expect(json_response["feedback"]["vote"]).to eq("disliked")
+      end
+    end
+  end
+
+  describe "DELETE #delete_feedback" do
+    before do
+      @conversation = @ai_experience.ai_conversations.create!(
+        llm_conversation_id: "llm-conv-id",
+        user: @teacher,
+        course: @course,
+        root_account: @course.root_account,
+        account: @course.account,
+        workflow_state: "active"
+      )
+    end
+
+    context "as teacher" do
+      before { user_session(@teacher) }
+
+      it "deletes feedback and returns success" do
+        mock_service = instance_double(AiExperiences::ConversationMessageFeedbackService)
+        allow(AiExperiences::ConversationMessageFeedbackService).to receive(:new).and_return(mock_service)
+        allow(mock_service).to receive(:delete)
+
+        delete :delete_feedback,
+               params: {
+                 course_id: @course.id,
+                 ai_experience_id: @ai_experience.id,
+                 id: @conversation.id,
+                 message_id: "msg-123",
+                 feedback_id: "fb-1"
+               },
+               format: :json
+
+        expect(response).to be_successful
+        json_response = json_parse(response.body)
+        expect(json_response["success"]).to be true
+      end
+
+      it "returns service unavailable on conversation error" do
+        mock_service = instance_double(AiExperiences::ConversationMessageFeedbackService)
+        allow(AiExperiences::ConversationMessageFeedbackService).to receive(:new).and_return(mock_service)
+        allow(mock_service).to receive(:delete)
+          .and_raise(LlmConversation::Errors::ConversationError, "Delete feedback error")
+
+        delete :delete_feedback,
+               params: {
+                 course_id: @course.id,
+                 ai_experience_id: @ai_experience.id,
+                 id: @conversation.id,
+                 message_id: "msg-123",
+                 feedback_id: "fb-1"
+               },
+               format: :json
+
+        expect(response).to have_http_status(:service_unavailable)
+        json_response = json_parse(response.body)
+        expect(json_response["error"]).to eq("Delete feedback error")
       end
     end
   end

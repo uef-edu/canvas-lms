@@ -67,6 +67,27 @@ describe "Accessibility Checker", :ignore_js_errors do
 
         expect(driver.current_url).to include("/courses/#{@course.id}/accessibility")
       end
+
+      it "displays the Accessibility tab when a11y_checker_ga1 feature flag is enabled" do
+        @course.account.enable_feature!(:a11y_checker_ga1)
+
+        get "/courses/#{@course.id}"
+
+        accessibility_tab = f("#section-tabs a.accessibility")
+        expect(accessibility_tab).to be_displayed
+        expect(accessibility_tab.text).to eq("Accessibility")
+      end
+
+      it "navigates to the Accessibility page when tab is clicked with a11y_checker_ga1" do
+        @course.account.enable_feature!(:a11y_checker_ga1)
+
+        get "/courses/#{@course.id}"
+
+        accessibility_tab = f("#section-tabs a.accessibility")
+        expect_new_page_load { accessibility_tab.click }
+
+        expect(driver.current_url).to include("/courses/#{@course.id}/accessibility")
+      end
     end
 
     context "Check Accessibility button on course home" do
@@ -110,6 +131,27 @@ describe "Accessibility Checker", :ignore_js_errors do
 
         expect(driver.current_url).to include("/courses/#{@course.id}/accessibility")
       end
+
+      it "displays the Check Accessibility button when a11y_checker_ga1 feature flag is enabled" do
+        @course.account.enable_feature!(:a11y_checker_ga1)
+
+        get "/courses/#{@course.id}"
+
+        accessibility_btn = f("#course_check_accessibility_btn")
+        expect(accessibility_btn).to be_displayed
+        expect(accessibility_btn.text).to include("Check Accessibility")
+      end
+
+      it "navigates to the Accessibility page when button is clicked with a11y_checker_ga1" do
+        @course.account.enable_feature!(:a11y_checker_ga1)
+
+        get "/courses/#{@course.id}"
+
+        accessibility_btn = f("#course_check_accessibility_btn")
+        expect_new_page_load { accessibility_btn.click }
+
+        expect(driver.current_url).to include("/courses/#{@course.id}/accessibility")
+      end
     end
   end
 
@@ -134,8 +176,29 @@ describe "Accessibility Checker", :ignore_js_errors do
 
         get "/courses/#{@course.id}/accessibility"
 
-        # Should be redirected or see unauthorized
-        expect(driver.current_url).not_to include("/courses/#{@course.id}/accessibility")
+        # Should display unauthorized message (case-insensitive)
+        body_text = f("body").text.downcase
+        expect(body_text).to include("access denied".downcase)
+        expect(body_text).to include("you don't have access to view this resource.".downcase)
+      end
+
+      it "does not display the Accessibility tab even when a11y_checker_ga1 is enabled" do
+        @course.account.enable_feature!(:a11y_checker_ga1)
+
+        get "/courses/#{@course.id}"
+
+        expect(f("#section-tabs")).not_to contain_css("a.accessibility")
+      end
+
+      it "does not allow direct access to the Accessibility page with a11y_checker_ga1" do
+        @course.account.enable_feature!(:a11y_checker_ga1)
+
+        get "/courses/#{@course.id}/accessibility"
+
+        # Should display unauthorized message (case-insensitive)
+        body_text = f("body").text.downcase
+        expect(body_text).to include("access denied".downcase)
+        expect(body_text).to include("you don't have access to view this resource.".downcase)
       end
     end
 
@@ -147,6 +210,30 @@ describe "Accessibility Checker", :ignore_js_errors do
         get "/courses/#{@course.id}"
 
         expect(f("#content")).not_to contain_css("#course_check_accessibility_btn")
+      end
+
+      it "does not display the Check Accessibility button even when a11y_checker_ga1 is enabled" do
+        @course.account.enable_feature!(:a11y_checker_ga1)
+
+        get "/courses/#{@course.id}"
+
+        expect(f("#content")).not_to contain_css("#course_check_accessibility_btn")
+      end
+
+      context "when course home page is set to a front page" do
+        before do
+          page = @course.wiki_pages.create!(title: "Home", body: "<p>Welcome</p>")
+          page.set_as_front_page!
+          @course.update_attribute(:default_view, "wiki")
+          @course.account.enable_feature!(:a11y_checker_ga1)
+        end
+
+        it "does not display the Check Accessibility button and loads the page successfully" do
+          get "/courses/#{@course.id}"
+
+          expect(f("#content")).not_to contain_css("#course_check_accessibility_btn")
+          expect(f("#wiki_page_show")).to be_displayed
+        end
       end
     end
   end
@@ -167,6 +254,14 @@ describe "Accessibility Checker", :ignore_js_errors do
     it "does not display the Accessibility column when feature flags are enabled" do
       @course.account.enable_feature!(:a11y_checker)
       @course.enable_feature!(:a11y_checker_eap)
+
+      get "/courses"
+
+      expect(f("#my_courses_table")).not_to contain_css(".course-list-accessibility-column")
+    end
+
+    it "does not display the Accessibility column when a11y_checker_ga1 is enabled" do
+      @course.account.enable_feature!(:a11y_checker_ga1)
 
       get "/courses"
 

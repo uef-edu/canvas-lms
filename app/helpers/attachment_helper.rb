@@ -24,7 +24,6 @@ module AttachmentHelper
     url_opts = {
       anonymous_instructor_annotations: attrs.delete(:anonymous_instructor_annotations),
       enable_annotations: attrs.delete(:enable_annotations),
-      moderated_grading_allow_list: attrs[:moderated_grading_allow_list],
       submission_id: attrs.delete(:submission_id)
     }
     url_opts[:enrollment_type] = attrs.delete(:enrollment_type) if url_opts[:enable_annotations]
@@ -54,7 +53,7 @@ module AttachmentHelper
     end
     attrs.map do |attr, val|
       %(data-#{attr}="#{ERB::Util.html_escape(val)}")
-    end.join(" ").html_safe
+    end.join(" ").html_safe # rubocop:disable Rails/OutputSafety
   end
 
   def media_preview_attributes(attachment, attrs = {})
@@ -158,9 +157,16 @@ module AttachmentHelper
   def access_allowed(attachment:, user:, access_type:, no_error_on_failure: false)
     return true if sf_verifier_match?(attachment, access_type) || jwt_resource_match(attachment) || access_via_location?(attachment, user, access_type)
 
-    if params[:verifier]
+    if params[:verifier] && !params[:location]
       verifier_checker = Attachments::Verification.new(attachment)
-      return true if verifier_checker.valid_verifier_for_permission?(params[:verifier], access_type, @domain_root_account, session)
+      return true if verifier_checker.valid_verifier_for_permission?(
+        params[:verifier],
+        access_type,
+        @domain_root_account,
+        session,
+        request:,
+        files_domain: @files_domain
+      )
     end
 
     submissions = attachment.attachment_associations.where(context_type: "Submission").preload(:context)
@@ -192,6 +198,11 @@ module AttachmentHelper
     can_proxy = inline && attachment.can_be_proxied?
     must_proxy = inline && csp_enforced? && attachment.mime_class == "html"
     direct = attachment.stored_locally? || can_proxy || must_proxy
+
+    if !inline && attachment.kaltura_manifest_file? && (download_url = attachment.kaltura_media_download_url)
+      redirect_to download_url
+      return
+    end
 
     # up here to preempt files domain redirect
     if attachment.instfs_hosted? && file_location_mode? && !direct

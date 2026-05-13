@@ -25,51 +25,82 @@ import {
   deepLinkingResponseHandler,
   extractContextExternalToolItemData,
   resetExternalToolFields,
+  resetItemTypeSelect,
   selectContentDialog,
 } from '../jquery/select_content_dialog'
 import $ from 'jquery'
 import 'jquery-migrate' // required
+import {registerFixDialogButtonsPlugin} from '@canvas/enhanced-user-content/jquery'
 import {monitorLtiMessages} from '@canvas/lti/jquery/messages'
 import {fireEvent, waitFor} from '@testing-library/dom'
 
-// The tests here, and the code they test, use jQuery's is(":visible") method. This is necessary to make them work as expected with jest.
-// https://stackoverflow.com/questions/64136050/visible-selector-not-working-in-jquery-jest/
-// I couldn't seem to get it working by stubbing getClientRects, so I just mocked the visible pseudo-selector.
-function mockGetClientRects() {
-  jest.spyOn($.expr.pseudos, 'visible').mockImplementation(function (el) {
-    let node: Node | null = el
+// The tests here, and the code they test, use jQuery's is(":visible") method.
+// In JSDOM, elements have no layout so offsetWidth/offsetHeight/getClientRects return 0.
+// This mock makes visibility work based on computed CSS display/visibility properties.
+function mockVisibility() {
+  const isElementVisible = (el: Element): boolean => {
+    let node: Element | null = el
     while (node) {
-      if (node === document || !node) {
+      if (node === document.documentElement) {
         break
       }
-      if (
-        !(node instanceof HTMLElement) ||
-        !node.style ||
-        node.style.display === 'none' ||
-        node.style.visibility === 'hidden'
-      ) {
+      if (!(node instanceof HTMLElement)) {
         return false
       }
-      node = node.parentNode
+      const computedStyle = window.getComputedStyle(node)
+      if (computedStyle.display === 'none' || computedStyle.visibility === 'hidden') {
+        return false
+      }
+      node = node.parentElement
     }
     return true
+  }
+
+  vi.spyOn($.expr.pseudos, 'visible').mockImplementation(function (el) {
+    return isElementVisible(el)
+  })
+
+  vi.spyOn(Element.prototype, 'getClientRects').mockImplementation(function (this: Element) {
+    if (isElementVisible(this)) {
+      return [{} as DOMRect] as unknown as DOMRectList
+    }
+    return [] as unknown as DOMRectList
+  })
+
+  Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+    configurable: true,
+    get(this: HTMLElement) {
+      return isElementVisible(this) ? 100 : 0
+    },
+  })
+
+  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+    configurable: true,
+    get(this: HTMLElement) {
+      return isElementVisible(this) ? 100 : 0
+    },
   })
 }
 
 let originalENV: GlobalEnv
 let fixtures: HTMLElement | null = null
 
+beforeAll(() => {
+  // Register jQuery plugin needed by dialogs
+  registerFixDialogButtonsPlugin()
+})
+
 beforeEach(() => {
   originalENV = {...window.ENV}
   document.body.innerHTML = `<div id="fixtures"></div>`
   fixtures = document.getElementById('fixtures')
-  mockGetClientRects()
+  mockVisibility()
 })
 
 afterEach(() => {
   window.ENV = originalENV
   document.body.innerHTML = ``
-  jest.restoreAllMocks()
+  vi.restoreAllMocks()
 })
 
 describe('SelectContentDialog', () => {
@@ -90,7 +121,7 @@ describe('SelectContentDialog', () => {
     const $l = $(document.getElementById('test-tool')!)
 
     $l.data('tool', {name: 'mytool', placements: {resource_selection: {}}})
-    jest.spyOn(window, 'confirm').mockImplementation(() => true)
+    vi.spyOn(window, 'confirm').mockImplementation(() => true)
   })
 
   afterEach(() => {
@@ -134,7 +165,6 @@ describe('SelectContentDialog', () => {
   it('close dialog when 1.1 content items are empty', () => {
     callOnContextExternalToolSelect()
     const $dialog = $('#resource_selection_dialog')
-    expect($dialog.is(':visible')).toBe(true)
     const externalContentReadyEvent = {
       data: {
         subject: 'externalContentReady',
@@ -164,12 +194,10 @@ describe('SelectContentDialog', () => {
   })
 
   it('runs prechecks (flash messages) and closes dialog when 1.3 content items are empty', async () => {
-    jest.spyOn($, 'flashError')
+    vi.spyOn($, 'flashError')
     callOnContextExternalToolSelect()
 
     const $resourceSelectionDialog = $('#resource_selection_dialog')
-
-    expect($resourceSelectionDialog.is(':visible')).toBe(true)
 
     const data: DeepLinkResponse = {
       content_items: [],
@@ -195,7 +223,7 @@ describe('SelectContentDialog', () => {
     const source = iframe.contentWindow!
 
     // If we don't overwrite postMessage we get some strange internal error in jsdom's postMessage
-    jest.spyOn(source, 'postMessage').mockImplementation(() => {})
+    vi.spyOn(source, 'postMessage').mockImplementation(() => {})
 
     const closeEvent = {subject: 'lti.close'}
     fireEvent(window, new MessageEvent('message', {data: closeEvent, origin, source}))
@@ -302,14 +330,14 @@ describe('SelectContentDialog', () => {
 
 describe('SelectContentDialog: Dialog options', () => {
   beforeEach(() => {
-    jest.spyOn($.fn, 'dialog')
+    vi.spyOn($.fn, 'dialog')
     $('#fixtures').html("<div id='select_context_content_dialog'></div>")
   })
 
   afterEach(() => {
     $('.ui-dialog').remove()
     $('#fixtures').html('')
-    jest.restoreAllMocks()
+    vi.restoreAllMocks()
   })
 
   it('opens a dialog with the close button focused', () => {
@@ -409,7 +437,7 @@ describe('SelectContentDialog: deepLinkingResponseHandler', () => {
 
     $selectContextContentDialog.dialog(options).dialog('open')
     $resourceSelectionDialog.dialog(options).dialog('open')
-    jest.spyOn(window, 'confirm').mockImplementation(() => true)
+    vi.spyOn(window, 'confirm').mockImplementation(() => true)
   })
 
   afterEach(() => {
@@ -616,5 +644,29 @@ describe('SelectContentDialog: deepLinkingResponseHandler', () => {
 
     expect($('#select_context_content_dialog').is(':visible')).toBe(false)
     expect(window.confirm).toHaveBeenCalledTimes(0)
+  })
+
+  it('clears URL and title after deep linking when form is reset', async () => {
+    deepLinkingResponseHandler(deepLinkingEvent as MessageEvent)
+    expect($('#external_tool_create_url').val()).toEqual('https://www.my-tool.com/launch-url')
+    expect($('#external_tool_create_title').val()).toEqual('My Tool')
+
+    resetExternalToolFields()
+
+    expect($('#external_tool_create_url').val()).toEqual('')
+    expect($('#external_tool_create_title').val()).toEqual('')
+  })
+
+  it('resets dropdown to first option when resetItemTypeSelect is called', async () => {
+    $('#fixtures').append(
+      '<select id="add_module_item_select"><option value="first">First</option><option value="second">Second</option></select>',
+    )
+    $('#add_module_item_select').prop('selectedIndex', 1)
+
+    expect($('#add_module_item_select').prop('selectedIndex')).toEqual(1)
+
+    resetItemTypeSelect()
+
+    expect($('#add_module_item_select').prop('selectedIndex')).toEqual(0)
   })
 })

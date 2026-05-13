@@ -19,7 +19,7 @@
 #
 require "English"
 
-class ContentExport < ActiveRecord::Base
+class ContentExport < ApplicationRecord
   include Workflow
 
   belongs_to :context, polymorphic: [:course, :group, { context_user: "User" }]
@@ -326,9 +326,7 @@ class ContentExport < ActiveRecord::Base
         )
         settings[:quizzes2][:qti_export] = {}
         settings[:quizzes2][:qti_export][:url] = attachment.public_download_url
-        if Account.site_admin.feature_enabled?(:new_quizzes_surveys)
-          settings[:quizzes2][:anonymous_participants] = assignment.anonymous_participants?
-        end
+        settings[:quizzes2][:anonymous_participants] = assignment.anonymous_participants?
         self.progress = 100
         mark_exported
       else
@@ -480,7 +478,11 @@ class ContentExport < ActiveRecord::Base
   end
 
   def is_external_object?(obj)
-    obj.is_a?(ContextExternalTool) && obj.context_type == "Account"
+    (
+      obj.is_a?(ContextExternalTool) && obj.context_type == "Account"
+    ) || (
+      obj.is_a?(NavMenuLink) && obj.course_id.nil?
+    )
   end
 
   # Method Summary
@@ -499,6 +501,24 @@ class ContentExport < ActiveRecord::Base
       return true if selected_content["discussion_topics"] && is_set?(selected_content["discussion_topics"][select_content_key(obj)])
 
       asset_type ||= "announcements"
+    end
+
+    if obj.is_a?(ContentTag) &&
+       Account.site_admin.feature_enabled?(:selective_content_tag_export) &&
+       context.try(:horizon_course?) &&
+       obj.context_module.present? &&
+       export_object?(obj.context_module)
+      if settings[:selective_content_tag_export]
+        # Selective mode: EXCLUDE content tags even when parent module is selected,
+        # unless the content tag is explicitly selected. This allows exporting individual
+        # module items (like ExternalUrls) without exporting all items in the module.
+        return false unless selected_content["content_tags"]
+
+        return is_set?(selected_content["content_tags"][select_content_key(obj)])
+      end
+
+      # parent module is being exported, export this content tag
+      return true
     end
 
     asset_type ||= obj.class.table_name

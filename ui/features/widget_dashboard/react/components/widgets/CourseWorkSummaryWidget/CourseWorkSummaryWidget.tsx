@@ -22,15 +22,14 @@ import {Flex} from '@instructure/ui-flex'
 import {Tooltip} from '@instructure/ui-tooltip'
 import {IconButton} from '@instructure/ui-buttons'
 import {IconInfoLine} from '@instructure/ui-icons'
-import TemplateWidget from '../TemplateWidget/TemplateWidget'
+import {TemplateWidget} from '@instructure/platform-widget-dashboard'
 import CourseWorkFilters, {
   type DateFilterOption,
   isValidDateFilterOption,
 } from '../../shared/CourseWorkFilters'
 import StatisticsCardsGrid from '../../shared/StatisticsCardsGrid'
-import type {CourseOption, BaseWidgetProps} from '../../../types'
+import type {BaseWidgetProps} from '../../../types'
 import {useCourseWorkStatistics} from '../../../hooks/useCourseWorkStatistics'
-import {useSharedCourses} from '../../../hooks/useSharedCourses'
 import {convertDateFilterToStatisticsRange} from '../../../utils/dateUtils'
 import {useWidgetConfig} from '../../../hooks/useWidgetConfig'
 
@@ -48,13 +47,6 @@ const CourseWorkSummaryWidget: React.FC<BaseWidgetProps> = ({widget, isEditMode 
     'not_submitted',
     isValidDateFilterOption,
   )
-
-  // Fetch user's enrolled courses
-  const {data: courseGrades = []} = useSharedCourses({limit: 1000})
-  const userCourses: CourseOption[] = courseGrades.map(courseGrade => ({
-    id: courseGrade.courseId,
-    name: courseGrade.courseName,
-  }))
 
   const selectedDateRangeOption = convertDateFilterToStatisticsRange(selectedDateRange)
 
@@ -106,7 +98,6 @@ const CourseWorkSummaryWidget: React.FC<BaseWidgetProps> = ({widget, isEditMode 
           selectedDateFilter={selectedDateRange}
           onCourseChange={handleCourseChange}
           onDateFilterChange={handleDateRangeChange}
-          userCourses={userCourses}
         />
       }
     >

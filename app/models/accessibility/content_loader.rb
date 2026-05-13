@@ -26,13 +26,23 @@ module Accessibility
 
     def initialize(issue_id:)
       @issue = AccessibilityIssue.find(issue_id)
-      @resource = @issue.context
+      # Use the resource from ResourceResolvable concern (handles syllabus)
+      @resource = @issue.resource
       @rule_id = @issue.rule_type
       @path = @issue.node_path
     end
 
+    def resource_updated_since_issue?
+      @resource.updated_at > @issue.created_at
+    end
+
     def content
-      @path.present? ? extract_element_from_content : full_document
+      if @path.present?
+        html, metadata = extract_element_from_content
+        { content: html, metadata: }
+      else
+        { content: full_document, metadata: {} }
+      end
     end
 
     def full_document
@@ -46,19 +56,30 @@ module Accessibility
 
       raise ElementNotFoundError, "Element not found at path: #{@path}" unless element
 
-      generate_preview_html(element)
+      html = generate_preview_html(element)
+      metadata = extract_metadata(element)
+      [html, metadata]
     end
 
     private
 
     def resource_html_content
-      case @resource
-      when Assignment
-        @resource.description
-      when WikiPage
-        @resource.body
+      # Check if resource implements the new AccessibilityCheckable interface
+      if @resource.respond_to?(:scannable_content)
+        # New path for resources using AccessibilityCheckable (e.g., SyllabusResource)
+        @resource.scannable_content
       else
-        raise UnsupportedResourceTypeError, "Unsupported resource type: #{@resource.class.name}"
+        # Legacy path for non-migrated resources
+        case @resource
+        when Assignment
+          @resource.description
+        when WikiPage
+          @resource.body
+        when DiscussionTopic, Announcement
+          @resource.message
+        else
+          raise UnsupportedResourceTypeError, "Unsupported resource type: #{@resource.class.name}"
+        end
       end
     end
 
@@ -69,6 +90,15 @@ module Accessibility
       return element.to_html unless rule
 
       rule.issue_preview(element) || element.to_html
+    end
+
+    def extract_metadata(element)
+      return {} unless @rule_id
+
+      rule = Accessibility::Rule.registry[@rule_id]
+      return {} unless rule
+
+      rule.respond_to?(:issue_metadata) ? rule.issue_metadata(element) : {}
     end
   end
 end

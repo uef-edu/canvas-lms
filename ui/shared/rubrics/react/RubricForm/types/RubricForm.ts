@@ -23,15 +23,17 @@ import {MutableRefObject} from 'react'
 export type GenerateCriteriaFormProps = {
   criteriaCount: number
   ratingCount: number
-  pointsPerCriterion: string
+  totalPoints: string
   useRange: boolean
   additionalPromptInfo: string
   gradeLevel: string
   standard: string
 }
+export type AssociationType = 'Assignment' | 'Account' | 'Course'
 
 export type RubricFormProps = {
-  associationType: 'Assignment' | 'Account' | 'Course'
+  associationType: AssociationType
+  associationTypeId?: string
   id?: string
   canUpdateRubric: boolean
   title: string
@@ -68,7 +70,7 @@ export type RatingRowProps = {
   errorMessage: FormMessage[]
   hidePoints: boolean
   index: number
-  rangeStart: number
+  rangeStart?: number
   rating: RubricRating
   ratingInputRefs: MutableRefObject<HTMLInputElement[]>
   scale: number

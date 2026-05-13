@@ -30,7 +30,6 @@ import {openRegistrationWizard} from '../manage/registration_wizard/Registration
 import {useMedia} from 'react-use'
 import {View} from '@instructure/ui-view'
 import {LtiRegistrationsTab} from './constants'
-import {isLtiRegistrationsDiscoverEnabled} from '../discover/utils'
 import {isLtiRegistrationsUsageEnabled} from '../monitor/utils'
 import {refreshRegistrations} from '../manage/api/registrations'
 const I18n = createI18nScope('lti_registrations')
@@ -107,12 +106,15 @@ export const LtiAppsLayout = React.memo(() => {
       lti_version: '1p3',
       method: 'dynamic_registration',
       registering: false,
-      onSuccessfulInstallation: () => {
+      onSuccessfulInstallation: registrationId => {
         refreshRegistrations()
+        if (window.ENV.FEATURES.lti_registrations_next) {
+          navigate(`/manage/${registrationId}`)
+        }
       },
       jsonFetch: {_tag: 'initial'},
     })
-  }, [])
+  }, [navigate])
 
   return (
     <>
@@ -133,15 +135,19 @@ export const LtiAppsLayout = React.memo(() => {
         ) : null}
       </Flex>
       <Text>
-        {I18n.t(
-          'Apps is the central hub to discover, manage, and monitor integrated apps. Extend and enhance your digital teaching and learning experience with powerful apps that provide and/or enrich your content, assessment, multimedia, collaboration, analytics, accessibility, and more. Select Discover to explore and install new apps, Manage to review and manage installed apps, and Monitor to view and understand usage.',
-        )}
+        {ENV.FEATURES.canvas_apps_sub_account_access
+          ? I18n.t(
+              'The Canvas Apps page lets root account administrators discover, install, and oversee integrated applications, while sub-account administrators can monitor usage.',
+            )
+          : I18n.t(
+              'Apps is the central hub to discover, manage, and monitor integrated apps. Extend and enhance your digital teaching and learning experience with powerful apps that provide and/or enrich your content, assessment, multimedia, collaboration, analytics, accessibility, and more. Select Discover to explore and install new apps, Manage to review and manage installed apps, and Monitor to view and understand usage.',
+            )}
       </Text>
       {isMobile ? (
         <>
           <View margin="small 0" display="block">
             <SimpleSelect renderLabel="" onChange={onTabClick} value={tabSelected}>
-              {isLtiRegistrationsDiscoverEnabled() && !isSubAccount && (
+              {!isSubAccount && (
                 <SimpleSelect.Option id="discover" value="discover">
                   {I18n.t('Discover')}
                 </SimpleSelect.Option>
@@ -162,7 +168,7 @@ export const LtiAppsLayout = React.memo(() => {
         </>
       ) : (
         <Tabs margin="medium auto" padding="medium" onRequestTabChange={onTabClick}>
-          {isLtiRegistrationsDiscoverEnabled() && !isSubAccount && (
+          {!isSubAccount && (
             <Tabs.Panel
               renderTitle={
                 <Text style={{color: 'initial', textDecoration: 'initial'}}>
@@ -190,6 +196,7 @@ export const LtiAppsLayout = React.memo(() => {
               padding="large x-small"
               active={isTabManage}
               isSelected={isTabManage}
+              themeOverride={{defaultOverflowY: 'unset'}}
             >
               <Outlet />
             </Tabs.Panel>
@@ -204,6 +211,7 @@ export const LtiAppsLayout = React.memo(() => {
               id={LtiRegistrationsTab.monitor}
               active={isTabMonitor}
               isSelected={isTabMonitor}
+              themeOverride={{defaultOverflowY: 'unset'}}
             >
               <Outlet />
             </Tabs.Panel>

@@ -18,7 +18,7 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
-class LearningOutcome < ActiveRecord::Base
+class LearningOutcome < ApplicationRecord
   include ManyRootAccounts
   include Workflow
   include MasterCourses::Restrictor
@@ -523,11 +523,11 @@ class LearningOutcome < ActiveRecord::Base
     # Find all unassessed, active rubrics aligned to this outcome, referenced by no more than one assignment
     Rubric.where(
       id: Rubric
-        .active
-        .joins(:learning_outcome_alignments)
-        .where(content_tags: conds)
-        .with_at_most_one_association
-        .select("rubrics.id")
+          .active
+          .joins(:learning_outcome_alignments)
+          .where(content_tags: conds)
+          .with_at_most_one_association
+          .select("rubrics.id")
     ).unassessed
   end
 

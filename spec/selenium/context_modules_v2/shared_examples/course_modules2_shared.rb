@@ -170,7 +170,7 @@ shared_examples_for "course_module2 add module tray" do |context|
   include Modules2IndexPage
   include Modules2ActionTray
 
-  new_module_name = "First Week 1"
+  let(:new_module_name) { "First Week 1" }
 
   before do
     case context
@@ -287,21 +287,25 @@ shared_examples_for "course_module2 module tray lock until" do |context|
   it "updates lock until date on edit module tray" do
     @module2.unlock_at = 1.week.from_now
     @module2.save!
-    current_due = format_date_for_view(@module2.unlock_at)
-    future_date = format_date_for_view(Time.zone.today + 2.days)
-
     get @mod_url
+
+    # the UI always shows "Jan 4 at 7:05am" format (never includes year, even across year boundaries)
+    # we use strftime directly because format_time_for_view would add the year when dates cross
+    # into a different year (e.g., running this test in Dec 2025 with dates in Jan 2026)
+    current_due = @module2.unlock_at.strftime("%b %-d at %l:%M%P").squeeze(" ").strip # rubocop:disable Specs/NoStrftime
     expect(module_header_will_unlock_label(@module2.id).text).to include "Will unlock #{current_due}"
 
     module_action_menu(@module2.id).click
     module_item_action_menu_link("Edit").click
 
-    update_lock_until_date(future_date)
+    update_lock_until_date(format_date_for_view(Time.zone.today + 2.days))
     update_lock_until_time("12:00 AM")
     click_save_module_tray_change
     ignore_relock
 
-    expect(module_header_will_unlock_label(@module2.id).text).to include "Will unlock #{future_date}"
+    future_datetime = Time.zone.parse((Time.zone.today + 2.days).to_s + " 00:00:00")
+    future_due = future_datetime.strftime("%b %-d at %l:%M%P").squeeze(" ").strip # rubocop:disable Specs/NoStrftime
+    expect(module_header_will_unlock_label(@module2.id).text).to include "Will unlock #{future_due}"
   end
 end
 
@@ -379,7 +383,7 @@ shared_examples_for "course_module2 module tray requirements" do |context|
 
     module_action_menu(@module2.id).click
     module_item_action_menu_link("Edit").click
-    expect(element_exists?(sequential_order_checkbox_selector, true)).to be true
+    expect(element_exists?(sequential_order_checkbox_selector, xpath: true)).to be true
   end
 
   it "adds a requirement and validates complete one requirement pill", :ignore_js_errors do

@@ -41,7 +41,7 @@ module Api::V1::Attachment
       options[:master_course_status] = setup_master_course_restrictions(files, options[:context])
     end
 
-    ActiveRecord::Associations::Preloader.new(records: files, associations: [:root_account]).call
+    ActiveRecord::Associations::Preloader.new(records: files, associations: [:root_account, :last_attachment_upload_status]).call
 
     files.map do |f|
       attachment_json(f, user, url_options, options)
@@ -51,7 +51,9 @@ module Api::V1::Attachment
   def attachment_json(attachment, user, url_options = {}, options = {})
     hash = attachment.slice("id", "folder_id", "display_name", "filename")
 
-    hash["uuid"] = attachment.uuid unless Account.site_admin.feature_enabled?(:deprecate_uuid_in_files_api)
+    if (attachment.context_type == "User" && attachment.context_id == user&.id) || !attachment.root_account.feature_enabled?(:deprecate_uuid_in_files_api)
+      hash["uuid"] = attachment.uuid
+    end
 
     hash["upload_status"] = AttachmentUploadStatus.upload_status(attachment)
 
@@ -90,7 +92,7 @@ module Api::V1::Attachment
     downloadable = skip_permission_checks || !attachment.locked_for?(user, check_policies: true)
 
     if downloadable
-      url_options[:location] = nil unless attachment.root_account.feature_enabled?(:file_association_access) || attachment.root_account.feature_enabled?(:disable_file_verifiers_in_public_syllabus)
+      url_options[:location] = nil unless attachment.root_account.feature_enabled?(:file_association_access)
       # using the multi-parameter form because not every class that mixes in
       # this api helper also mixes in ApplicationHelper (I'm looking at you,
       # DiscussionTopic::MaterializedView), and in those cases we need to
@@ -167,7 +169,6 @@ module Api::V1::Attachment
     end
     if includes.include? "preview_url"
       url_opts = {
-        moderated_grading_allow_list: options[:moderated_grading_allow_list],
         enable_annotations: options[:enable_annotations],
         enrollment_type: options[:enrollment_type],
         anonymous_instructor_annotations: options[:anonymous_instructor_annotations],

@@ -17,8 +17,6 @@
 # You should have received a copy of the GNU Affero General Public License along
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
-require "spec_helper"
-
 describe CaptchaValidation do
   let(:root_account) { account_model }
 
@@ -40,20 +38,20 @@ describe CaptchaValidation do
     end
 
     it "returns nil for authenticated users" do
-      controller.instance_variable_set(:@current_user, double(User))
+      controller.instance_variable_set(:@current_user, instance_double(User))
       expect(controller.send(:validate_captcha)).to be_nil
     end
 
     it "returns error when captcha verification fails" do
       allow(CanvasHttp).to receive(:post).and_return(
-        double(code: "200", body: { "success" => false, "error-codes" => ["invalid-input"] }.to_json)
+        instance_double(Net::HTTPResponse, code: "200", body: { "success" => false, "error-codes" => ["invalid-input"] }.to_json)
       )
       expect(controller.send(:validate_captcha)).to eq(["invalid-input"])
     end
 
     it "returns error when hostname doesn't match" do
       allow(CanvasHttp).to receive(:post).and_return(
-        double(code: "200", body: { "success" => true, "hostname" => "wrong.host" }.to_json)
+        instance_double(Net::HTTPResponse, code: "200", body: { "success" => true, "hostname" => "wrong.host" }.to_json)
       )
       allow(controller.request).to receive(:host).and_return("correct.host")
       expect(controller.send(:validate_captcha)).to eq(["invalid-hostname"])
@@ -61,14 +59,14 @@ describe CaptchaValidation do
 
     it "returns nil when verification succeeds" do
       allow(CanvasHttp).to receive(:post).and_return(
-        double(code: "200", body: { "success" => true, "hostname" => "test.host" }.to_json)
+        instance_double(Net::HTTPResponse, code: "200", body: { "success" => true, "hostname" => "test.host" }.to_json)
       )
       allow(controller.request).to receive(:host).and_return("test.host")
       expect(controller.send(:validate_captcha)).to be_nil
     end
 
     it "raises error when captcha service fails" do
-      allow(CanvasHttp).to receive(:post).and_return(double(code: "500"))
+      allow(CanvasHttp).to receive(:post).and_return(instance_double(Net::HTTPResponse, code: "500"))
       expect { controller.send(:validate_captcha) }.to raise_error(/Failed to connect to captcha service/)
     end
   end

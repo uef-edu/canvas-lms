@@ -19,8 +19,12 @@ development:
     access_key: aws-key-id-goes-here
     secret_key: secret-goes-here
   'sts/testaccount/sts/canvas-release-notes':
-    access_key: 'fake-access-key'
-    secret_key: 'fake-secret-key'
+    access_key: 'AKIAIOSFODNN7EXAMPLE'
+    secret_key: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
+    security_token: 'fake-security-token'
+  'sts/testaccount/sts/canvas-global-lookups':
+    access_key: 'AKIAIOSFODNN7EXAMPLE'
+    secret_key: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
     security_token: 'fake-security-token'
   'app-canvas/data/secrets':
     data:
@@ -34,6 +38,9 @@ development:
         cedar_audience: "cedar-local"
         cedar_shared_secret: fake-secrete-key
         cedar_consumer_name: "canvas"
+      content_service_client:
+        hostname: "http://content-service-api:3010"
+        audience: "content-service-local"
       observe_api:
         host: "103443579803.observeinc.com"
         customer_id: "103443579803"
@@ -76,6 +83,9 @@ development:
         # app_host: "http://inst-fs-api.<your INST_DOMAIN>"
         app_host: "http://api.inst-fs.docker"
         secret: "YXN0cmluZ3RoYXRpc2FjdHVhbGx5MzJieXRlc2xvbmc="
+#      kafka_events:
+#        brokers: localhost:9094 # or `kafka:9092` inside docker network
+#        security_protocol: PLAINTEXT
 #      linked_in_creds:
 #        api_key: <api_key>
 #        secret_key: <secret_key>

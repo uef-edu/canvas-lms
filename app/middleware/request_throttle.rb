@@ -88,10 +88,13 @@ class RequestThrottle
       cost
     end
 
+    limit_remaining = bucket.remaining.to_s
+    limit_remaining = 0.0.to_s if blocked?(request)
+    RequestContext::Generator.add_meta_header("rlr", limit_remaining)
+
     if client_identifier(request) && !client_identifier(request).starts_with?("session")
       headers["X-Request-Cost"] = cost.to_s unless throttled
-      headers["X-Rate-Limit-Remaining"] = bucket.remaining.to_s
-      headers["X-Rate-Limit-Remaining"] = 0.0.to_s if blocked?(request)
+      headers["X-Rate-Limit-Remaining"] = limit_remaining
     end
 
     [status, headers, response]
@@ -119,6 +122,7 @@ class RequestThrottle
 
   def allowed?(request, bucket)
     if approved?(request)
+      Rails.logger.info("approved request, skipping throttling, client id: #{client_identifiers(request).inspect} ip: #{request.remote_ip}")
       true
     elsif blocked?(request)
       # blocking is useful even if throttling is disabled, this is left in intentionally
@@ -384,7 +388,7 @@ class RequestThrottle
       @up_front_cost_regex_map ||=
         begin
           hash = RequestThrottle.dynamic_settings["up_front_cost_by_path_regex"] || {}
-          hash.keys.select { |k| k.is_a?(String) }.map { |k| hash[Regexp.new(k)] = hash.delete(k) } # regexify strings
+          hash.keys.grep(String).map { |k| hash[Regexp.new(k)] = hash.delete(k) } # regexify strings
           hash.each do |k, v|
             next if k.is_a?(Regexp) && v.is_a?(Numeric)
 
